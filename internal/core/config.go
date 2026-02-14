@@ -42,6 +42,9 @@ type ServerConfig struct {
 	EnablePushDelivery       bool `yaml:"enable_push_delivery" json:"enablePushDelivery"`
 	EnablePresenceMonitoring bool `yaml:"enable_presence_monitoring" json:"enablePresenceMonitoring"`
 	EnableMetrics            bool `yaml:"enable_metrics" json:"enableMetrics"`
+	EnableRelay              bool `yaml:"enable_relay" json:"enableRelay"`
+	EnableAutoRelay          bool `yaml:"enable_auto_relay" json:"enableAutoRelay"`
+	EnableHolePunching       bool `yaml:"enable_hole_punching" json:"enableHolePunching"`
 
 	// Security
 	EnableAuthentication bool          `yaml:"enable_authentication" json:"enableAuthentication"`
@@ -177,6 +180,12 @@ func (c *ServerConfig) Validate() error {
 	}
 	if c.Storage.UsePostgres() && c.Storage.Postgres == nil {
 		return fmt.Errorf("postgres config required when backend is 'postgres'")
+	}
+	if c.EnableAutoRelay && !c.EnableRelay {
+		return fmt.Errorf("enable_auto_relay requires enable_relay")
+	}
+	if c.EnableHolePunching && !c.EnableRelay {
+		return fmt.Errorf("enable_hole_punching requires enable_relay")
 	}
 	return nil
 }

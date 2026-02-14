@@ -26,6 +26,12 @@ type MailboxServer struct {
 	mailboxCache map[string]mailboxes.Mailbox
 	mu           sync.RWMutex
 	logger       *slog.Logger
+	notifier     *Notifier
+}
+
+// SetNotifier sets the push notification sender for the MDA.
+func (s *MailboxServer) SetNotifier(n *Notifier) {
+	s.notifier = n
 }
 
 // NewMailboxServer creates a new MDA.
@@ -117,6 +123,11 @@ func (s *MailboxServer) DeliverLocal(ctx context.Context, msg *core.Message) (in
 		"message_id", msg.MessageID,
 		"mailbox", addr.FullPath(),
 	)
+
+	// Fire push notification (non-blocking).
+	if s.notifier != nil {
+		s.notifier.NotifyNewMessage(ctx, addr, msg)
+	}
 
 	return int(msg.SequenceNumber), nil
 }

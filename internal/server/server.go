@@ -218,6 +218,13 @@ func (s *Server) initializeServices(ctx context.Context) {
 	)
 	s.logger.Info("MTA initialized")
 
+	// Create push notifier
+	if s.config.EnablePushDelivery {
+		notifier := mda.NewNotifier(s.host, s.node, s.presenceMonitor, s.logger)
+		s.mdaSrv.SetNotifier(notifier)
+		s.logger.Info("push notifier initialized")
+	}
+
 	// Create service registry
 	s.registry = registry.NewRegistry(s.node, s.config, s.host.ID(), s.logger)
 	s.logger.Info("service registry initialized")

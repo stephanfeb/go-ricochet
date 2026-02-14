@@ -9,6 +9,7 @@ import (
 	"sort"
 	"time"
 
+	libp2pcrypto "github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -24,8 +25,9 @@ import (
 
 // Client provides access to Ricochet store-and-forward services over libp2p streams.
 type Client struct {
-	host host.Host
-	cfg  Config
+	host    host.Host
+	cfg     Config
+	privKey libp2pcrypto.PrivKey
 }
 
 // Config configures the Client.
@@ -74,7 +76,8 @@ func New(h host.Host, cfg Config) *Client {
 	if cfg.MessageTimeout == 0 {
 		cfg.MessageTimeout = 30 * time.Second
 	}
-	return &Client{host: h, cfg: cfg}
+	privKey := h.Peerstore().PrivKey(h.ID())
+	return &Client{host: h, cfg: cfg, privKey: privKey}
 }
 
 // PeerID returns the client's own peer ID.
@@ -132,6 +135,29 @@ func (c *Client) SendMessage(ctx context.Context, recipient peer.ID, payload []b
 	msg.Persistent = cfg.Persistent
 	if cfg.Expiry > 0 {
 		msg.ExpiryTimestamp = time.Now().Add(cfg.Expiry).UnixMilli()
+	}
+
+	// Compress payload if requested.
+	if cfg.Compress {
+		compressedPayload, compressedFlags, err := CompressPayload(msg.Payload, msg.Flags, cfg.CompressionThreshold)
+		if err != nil {
+			return nil, fmt.Errorf("compress payload: %w", err)
+		}
+		msg.Payload = compressedPayload
+		msg.Flags = compressedFlags
+	}
+
+	// Encrypt payload if requested (after compression, before frame encoding).
+	if cfg.Encrypt {
+		if c.privKey == nil {
+			return nil, fmt.Errorf("encryption requires an Ed25519 private key in the host peerstore")
+		}
+		encrypted, encFlags, err := EncryptPayload(msg.Payload, recipient, c.privKey)
+		if err != nil {
+			return nil, fmt.Errorf("encrypt payload: %w", err)
+		}
+		msg.Payload = encrypted
+		msg.Flags |= encFlags
 	}
 
 	msgData, err := frame.EncodeMessage(msg)
@@ -232,6 +258,34 @@ func (c *Client) RetrieveMessages(ctx context.Context, opts ...RetrieveOption) (
 	resp, err := frame.DecodeRetrieveResponse(respData)
 	if err != nil {
 		return nil, fmt.Errorf("decode retrieve response: %w", err)
+	}
+
+	// Decrypt then decompress message payloads.
+	// Order: decrypt first (reverse of send: compress -> encrypt).
+	for _, msg := range resp.Messages {
+		if msg.Flags.IsEncrypted() {
+			if c.privKey == nil {
+				return nil, fmt.Errorf("decryption requires an Ed25519 private key in the host peerstore")
+			}
+			senderPeerID, err := peer.Decode(msg.SenderPeerID)
+			if err != nil {
+				return nil, fmt.Errorf("parse sender peer ID for decryption: %w", err)
+			}
+			decrypted, err := DecryptPayload(msg.Payload, senderPeerID, c.privKey)
+			if err != nil {
+				return nil, fmt.Errorf("decrypt message %s: %w", msg.MessageID, err)
+			}
+			msg.Payload = decrypted
+			msg.Flags = msg.Flags.WithoutFlag(core.FlagEncrypted)
+		}
+		if msg.Flags.IsCompressed() {
+			decompressed, err := DecompressPayload(msg.Payload, msg.Flags, MaxDecompressedSize)
+			if err != nil {
+				return nil, fmt.Errorf("decompress message %s: %w", msg.MessageID, err)
+			}
+			msg.Payload = decompressed
+			msg.Flags = msg.Flags.WithoutFlag(core.FlagCompressed)
+		}
 	}
 
 	return resp.Messages, nil

@@ -11,10 +11,13 @@ import (
 type SendOption func(*sendConfig)
 
 type sendConfig struct {
-	FolderPath string
-	Priority   core.MessagePriority
-	Expiry     time.Duration
-	Persistent bool
+	FolderPath           string
+	Priority             core.MessagePriority
+	Expiry               time.Duration
+	Persistent           bool
+	Compress             bool
+	CompressionThreshold int
+	Encrypt              bool
 }
 
 // WithFolderPath sets the target folder path for the message.
@@ -42,6 +45,28 @@ func WithExpiry(d time.Duration) SendOption {
 func WithPersistent(p bool) SendOption {
 	return func(c *sendConfig) {
 		c.Persistent = p
+	}
+}
+
+// WithCompression enables LZ4 compression for the message payload.
+// An optional threshold parameter specifies the minimum payload size to compress.
+func WithCompression(threshold ...int) SendOption {
+	return func(c *sendConfig) {
+		c.Compress = true
+		if len(threshold) > 0 && threshold[0] > 0 {
+			c.CompressionThreshold = threshold[0]
+		} else {
+			c.CompressionThreshold = DefaultCompressionThreshold
+		}
+	}
+}
+
+// WithEncryption enables end-to-end encryption for the message using NaCl box
+// (X25519 key agreement + XSalsa20-Poly1305). The sender's Ed25519 private key
+// and the recipient's public key (derived from their peer ID) are used.
+func WithEncryption() SendOption {
+	return func(c *sendConfig) {
+		c.Encrypt = true
 	}
 }
 
