@@ -1,0 +1,408 @@
+# go-ricochet
+
+A production-ready store-and-forward messaging server for P2P networks, built on [libp2p](https://libp2p.io/). Provides reliable message delivery when recipients are offline, following an email MX server architecture.
+
+go-ricochet is the Go implementation of the [Ricochet](https://github.com/user/ricochet) protocol, designed for decentralized messaging, document storage, and mailbox management over peer-to-peer networks.
+
+## Features
+
+- **Store-and-Forward Messaging** -- Messages are stored on the server until the recipient comes online to retrieve them
+- **Mailbox Management** -- Private, shared, and public mailboxes with ACL-based access control
+- **Document Store** -- Key-value document storage with ETag-based conditional operations, versioning, and merge-patch support
+- **End-to-End Encryption** -- NaCl box encryption (X25519 + XSalsa20-Poly1305) derived from Ed25519 identity keys
+- **LZ4 Compression** -- Transparent payload compression with configurable threshold
+- **Push Notifications** -- Hybrid delivery: direct P2P streams for private mailboxes, GossipSub for shared/public
+- **Relay Support** -- Circuit Relay v2, AutoRelay with static relays, and DCUtR hole punching for NAT traversal
+- **IMAP-Style Flags** -- Seen, flagged, deleted, draft flags with expunge support
+- **Presence Detection** -- Real-time peer online/offline status with TTL-based caching
+- **Service Discovery** -- GossipSub-based server announcements and health monitoring
+- **PostgreSQL Storage** -- Production-grade storage with BYTEA binary encoding and connection pooling
+
+## Architecture
+
+The system follows an email-inspired agent separation:
+
+```
+                          +-----------------------+
+  Client                  |      Server           |
+  ------                  |      ------           |
+                          |                       |
+  SendMessage() --------> |  MSA (Submit)         |
+                          |    |                  |
+                          |    v                  |
+                          |  MTA (Route)          |
+                          |    |                  |
+                          |    v                  |
+                          |  MDA (Deliver)        |
+                          |    |                  |
+  RetrieveMessages() <--- |  MAA (Access)         |
+                          |                       |
+  CreateMailbox() ------> |  MMA (Admin)          |
+                          |                       |
+  PutDocument() --------> |  SDA (Documents)      |
+                          +-----------------------+
+```
+
+| Agent | Protocol ID | Purpose |
+|-------|------------|---------|
+| **MSA** (Mail Submission) | `/sf-network/submit/1.0.0` | Message submission (write path) |
+| **MAA** (Mail Access) | `/sf-network/access/1.0.0` | Message retrieval, flags, expunge |
+| **MMA** (Mailbox Management) | `/sf-network/admin/1.0.0` | Mailbox lifecycle, ACLs, capacity |
+| **SDA** (Store-Document) | `/ricochet/store/doc/1.0.0` | Document CRUD operations |
+| **MTA** (Mail Transfer) | Internal | Message routing and validation |
+| **MDA** (Mail Delivery) | Internal | Local storage and push notifications |
+
+## Quick Start
+
+### Prerequisites
+
+- Go 1.24.6+
+- PostgreSQL 14+
+
+### Database Setup
+
+```bash
+createdb ricochet
+psql ricochet < schema.sql
+```
+
+### Build and Run
+
+```bash
+# Build
+go build -o ricochet ./cmd/ricochet
+
+# Run in development mode
+./ricochet --development \
+  --pg-host localhost \
+  --pg-database ricochet \
+  --pg-username ricochet \
+  --pg-password secret \
+  --pg-sslmode disable
+
+# Run in production mode
+./ricochet --production \
+  --pg-host db.example.com \
+  --pg-database ricochet \
+  --pg-username ricochet \
+  --pg-password secret
+```
+
+### CLI Options
+
+```
+--port              Listen port (default: 55223)
+--development       Development mode (1GB, relaxed limits, debug logging)
+--production        Production mode (50GB, 10K connections, auth enabled)
+--data-dir          Data directory path
+--identity-file     Path to Ed25519 identity key file
+--pg-host           PostgreSQL host
+--pg-port           PostgreSQL port (default: 5432)
+--pg-database       PostgreSQL database name
+--pg-username       PostgreSQL username
+--pg-password       PostgreSQL password
+--pg-sslmode        PostgreSQL SSL mode (require, disable)
+```
+
+## Client Library
+
+The `pkg/client` package provides a full-featured client for interacting with Ricochet servers.
+
+### Creating a Client
+
+```go
+import (
+    "github.com/libp2p/go-libp2p"
+    client "github.com/twostack/go-ricochet/pkg/client"
+)
+
+// Create a libp2p host
+h, _ := libp2p.New()
+
+// Create the Ricochet client
+cl := client.New(h, client.Config{
+    PreferredServers: []client.ServerPreference{
+        {PeerID: serverPeerID, Priority: 1},
+    },
+    ConnectionTimeout: 10 * time.Second,
+    MessageTimeout:    30 * time.Second,
+})
+```
+
+### Sending Messages
+
+```go
+// Simple message
+result, err := cl.SendMessage(ctx, recipientID, []byte("hello"))
+
+// With options
+result, err := cl.SendMessage(ctx, recipientID, payload,
+    client.WithFolderPath("orders"),
+    client.WithPriority(core.PriorityUrgent),
+    client.WithExpiry(24 * time.Hour),
+    client.WithCompression(),       // LZ4, default 1KB threshold
+    client.WithEncryption(),        // NaCl box E2E encryption
+)
+```
+
+### Retrieving Messages
+
+```go
+// Retrieve from inbox
+messages, err := cl.RetrieveMessages(ctx)
+
+// With filters
+messages, err := cl.RetrieveMessages(ctx,
+    client.WithRetrieveFolderPath("orders"),
+    client.WithFromSequence(100),
+    client.WithMaxMessages(50),
+    client.WithMinPriority(core.PriorityHigh),
+)
+```
+
+### Message Flags
+
+```go
+// Mark as delivered (seen)
+ack, err := cl.MarkDelivered(ctx, []string{msg.MessageID})
+
+// Flag a message
+ack, err := cl.UpdateFlags(ctx, msg.MessageID, uint32(core.MsgFlagFlagged), 0)
+
+// Mark for deletion
+ack, err := cl.UpdateFlags(ctx, msg.MessageID, uint32(core.MsgFlagDeleted), 0)
+
+// Permanently remove deleted messages
+ack, err := cl.Expunge(ctx)
+
+// Immediate delete (bypasses flag/expunge)
+ack, err := cl.DeleteMessages(ctx, []string{msg.MessageID})
+```
+
+### Mailbox Management
+
+```go
+// Create mailboxes
+cl.CreateMailbox(ctx, "invoices", core.MailboxPrivate)
+cl.CreateMailbox(ctx, "team-updates", core.MailboxShared)
+cl.CreateMailbox(ctx, "announcements", core.MailboxPublic,
+    client.WithMailboxMaxMessages(500),
+    client.WithRetentionDays(7),
+)
+
+// Access control
+cl.GrantAccess(ctx, "team-updates", colleaguePeerID, core.AccessReadWrite)
+cl.RevokeAccess(ctx, "team-updates", colleaguePeerID)
+entries, _ := cl.ListACL(ctx, "team-updates")
+
+// List and delete
+mailboxes, _ := cl.ListMailboxes(ctx)
+cl.DeleteMailbox(ctx, "old-folder")
+
+// Server capacity
+capacity, _ := cl.QueryCapacity(ctx)
+fmt.Printf("Usage: %.1f%%\n", capacity.UsagePercent())
+```
+
+### Document Store
+
+```go
+ownerID := cl.PeerID()
+
+// Create/replace a document
+putResp, err := cl.PutDocument(ctx, ownerID, "config/settings",
+    []byte(`{"theme":"dark"}`),
+    client.WithContentType("application/json"),
+)
+
+// Conditional put (optimistic locking)
+_, err = cl.PutDocument(ctx, ownerID, "config/settings",
+    []byte(`{"theme":"light"}`),
+    client.WithIfMatch(putResp.ETag),
+)
+
+// Merge-patch update
+_, err = cl.PatchDocument(ctx, ownerID, "config/settings",
+    map[string]any{"fontSize": 14},
+)
+
+// Conditional get (returns 304 if unchanged)
+getResp, err := cl.GetDocument(ctx, ownerID, "config/settings",
+    client.WithIfNoneMatch(putResp.ETag),
+)
+
+// Metadata only
+meta, err := cl.HeadDocument(ctx, ownerID, "config/settings")
+
+// List all documents
+docs, err := cl.ListDocuments(ctx, ownerID)
+
+// Delete
+deleted, err := cl.DeleteDocument(ctx, ownerID, "config/settings")
+```
+
+### Push Notifications
+
+```go
+cl.RegisterNotificationHandler(func(n *notify.Notification) {
+    fmt.Printf("New message in %s (type: %s)\n",
+        n.MailboxPath, n.MailboxType)
+})
+```
+
+## Configuration Presets
+
+| Setting | Default | Development | Production | High-Capacity |
+|---------|---------|-------------|------------|---------------|
+| Storage | 10 GB | 1 GB | 50 GB | 100 GB |
+| Connections | 10,000 | 100 | 10,000 | 50,000 |
+| Messages/Mailbox | 1,000 | 1,000 | 1,000 | 1,000 |
+| Retention | 30 days | 30 days | 30 days | 30 days |
+| Authentication | off | off | on | on |
+| Rate Limit | 100/min | 100/min | 100/min | 100/min |
+| Workers | 4 | 4 | 4 | 8 |
+
+## Security
+
+### End-to-End Encryption
+
+Messages can be encrypted client-side using NaCl box:
+
+- **Key Agreement**: X25519 (derived from Ed25519 identity keys)
+- **Cipher**: XSalsa20-Poly1305 (authenticated encryption)
+- **Wire Format**: `[24-byte nonce][ciphertext + Poly1305 tag]`
+
+The server never sees plaintext when encryption is enabled. Keys are derived from the libp2p peer identity, so no additional key exchange is needed.
+
+### Transport Security
+
+All P2P connections use the [Noise protocol framework](https://noiseprotocol.org/) for transport encryption and mutual authentication.
+
+### Identity
+
+Server and client identities are Ed25519 keypairs. Identity can be provided via:
+1. `RICOCHET_SEED_HEX` environment variable (highest priority)
+2. `--identity-file` CLI flag
+3. Auto-generated and persisted to `{data-dir}/identity.key`
+
+## Networking
+
+### Transport Stack
+
+```
+Application (Ricochet protocols)
+    |
+Yamux (stream multiplexing)
+    |
+Noise (transport encryption)
+    |
+UDX (unreliable datagram transport)
+    |
+UDP
+```
+
+### NAT Traversal
+
+When relay support is enabled in the configuration:
+
+```go
+cfg.EnableRelay = true          // Circuit Relay v2
+cfg.EnableAutoRelay = true      // Auto-discover relay peers
+cfg.EnableHolePunching = true   // DCUtR hole punching
+cfg.BootstrapPeers = []string{  // Static relay candidates
+    "/ip4/relay.example.com/udp/55223/udx/p2p/12D3KooW...",
+}
+```
+
+### Service Discovery
+
+Servers announce themselves via GossipSub on the `/sf-network/services/announce` topic. Announcements include capabilities, storage capacity, region, and uptime score.
+
+## Project Structure
+
+```
+cmd/ricochet/           CLI entry point
+internal/
+  core/                 Message types, config, mailbox addressing
+  protocol/
+    frame/              Length-prefix frame encoding
+    msa/                Mail Submission Agent (write path)
+    maa/                Mail Access Agent (read path)
+    mma/                Mailbox Management Agent (admin)
+    sda/                Store-Document Agent (documents)
+    notify/             Push notification protocol
+  storage/              Storage interface and models
+    postgres/           PostgreSQL backend
+  mda/                  Mail Delivery Agent + push notifier
+  mta/                  Mail Transfer Agent (routing)
+  p2p/                  Host, node, identity management
+  presence/             Peer presence detection + cache
+  registry/             Service discovery via GossipSub
+  server/               Server orchestration
+pkg/client/             Public client library
+  client.go             All client operations
+  options.go            Functional options
+  compression.go        LZ4 compression
+  encryption.go         NaCl box encryption
+  notifications.go      Push notification handler
+test/integration/       Integration tests (requires PostgreSQL)
+schema.sql              PostgreSQL database schema
+```
+
+## Testing
+
+```bash
+# Run unit tests
+go test ./internal/core/... ./internal/protocol/... ./internal/mta/... ./pkg/client/...
+
+# Run integration tests (requires PostgreSQL)
+RICOCHET_TEST_POSTGRES_DSN="postgresql://user:pass@localhost:5432/ricochet_test?sslmode=disable" \
+  go test ./test/integration/...
+
+# Run all tests
+go test ./...
+
+# With verbose output
+go test -v ./pkg/client/...
+```
+
+### Test Coverage
+
+- **Unit tests**: Core types, frame encoding, MTA routing, compression, encryption (46 tests)
+- **Integration tests**: Full client-server workflows, document CRUD, flag operations, mailbox management (21 tests, require PostgreSQL)
+
+## Protocol Wire Format
+
+All protocol messages use a length-prefixed JSON frame:
+
+```
++-------------------+--------------------+
+| Length (4 bytes)   | JSON Payload       |
+| big-endian uint32  | (variable length)  |
++-------------------+--------------------+
+```
+
+### Message Processing Pipeline
+
+```
+Send:    raw payload -> compress (LZ4) -> encrypt (NaCl box) -> encode frame -> send
+Receive: receive -> decode frame -> decrypt (NaCl box) -> decompress (LZ4) -> raw payload
+```
+
+## Database Schema
+
+The PostgreSQL schema (`schema.sql`) includes:
+
+| Table | Purpose |
+|-------|---------|
+| `mailboxes` | Mailbox records with owner, type, retention policy |
+| `stored_messages` | Messages with BYTEA payload, priority, flags, expiry |
+| `mailbox_acls` | Per-peer access control entries |
+| `reader_cursors` | Per-reader position tracking (public mailboxes) |
+| `documents` | Document storage with ETag versioning |
+| `document_versions` | Document version history |
+| `block_store` | CRDT block storage |
+
+## License
+
+See [LICENSE](LICENSE) for details.
