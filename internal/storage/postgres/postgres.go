@@ -295,7 +295,7 @@ func (s *PostgresStorage) GetMessageCount(ctx context.Context, mailboxID int64) 
 func (s *PostgresStorage) UpdateMessageFlags(ctx context.Context, messageID string, addFlags, removeFlags uint32) (bool, error) {
 	tag, err := s.pool.Exec(ctx, `
 		UPDATE stored_messages
-		SET flags_bitmap = (flags_bitmap | $1) & ~$2
+		SET flags_bitmap = (flags_bitmap | $1) & ~$2::integer
 		WHERE message_id = $3`,
 		addFlags, removeFlags, messageID,
 	)

@@ -755,6 +755,14 @@ func (c *Client) PutDocument(ctx context.Context, ownerPeerID peer.ID, path stri
 		return nil, err
 	}
 
+	if resp.Status >= 400 {
+		errMsg := resp.Headers["Error"]
+		if errMsg == "" {
+			errMsg = fmt.Sprintf("document put failed with status %d", resp.Status)
+		}
+		return nil, fmt.Errorf("document put: %s", errMsg)
+	}
+
 	result := &core.DocumentPutResponse{
 		Status:  resp.Status,
 		Created: resp.Status == sda.StatusCreated,

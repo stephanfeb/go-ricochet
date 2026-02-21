@@ -211,6 +211,10 @@ func (h *Handler) handleGet(ctx context.Context, s network.Stream, req *DocReque
 		h.writeResponse(s, &DocResponse{Status: StatusInternalError})
 		return
 	}
+	if doc == nil {
+		h.writeResponse(s, &DocResponse{Status: StatusNotFound})
+		return
+	}
 
 	// Conditional GET: If-None-Match
 	if ifNoneMatch, ok := req.Headers["If-None-Match"]; ok {
@@ -326,6 +330,10 @@ func (h *Handler) handleHead(ctx context.Context, s network.Stream, req *DocRequ
 		}
 		h.logger.Error("failed to get document", "error", err)
 		h.writeResponse(s, &DocResponse{Status: StatusInternalError})
+		return
+	}
+	if doc == nil {
+		h.writeResponse(s, &DocResponse{Status: StatusNotFound})
 		return
 	}
 
