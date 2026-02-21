@@ -684,6 +684,165 @@ func (s *PostgresStorage) GetDocumentAtVersion(ctx context.Context, ownerID peer
 }
 
 // =============================================================================
+// Directory Operations
+// =============================================================================
+
+func (s *PostgresStorage) UpsertDirectoryEntry(ctx context.Context, entry *storage.DirectoryEntry) error {
+	var extrasJSON []byte
+	var err error
+	if entry.Extras != nil {
+		extrasJSON, err = json.Marshal(entry.Extras)
+		if err != nil {
+			return fmt.Errorf("marshal extras: %w", err)
+		}
+	}
+
+	_, err = s.pool.Exec(ctx, `
+		INSERT INTO directory_listings (
+			owner_peer_id, display_name, bio, avatar_hash, extras
+		) VALUES ($1, $2, $3, $4, $5)
+		ON CONFLICT (owner_peer_id)
+		DO UPDATE SET
+			display_name = $2, bio = $3, avatar_hash = $4,
+			extras = $5, updated_at = NOW()`,
+		entry.OwnerPeerID, entry.DisplayName, entry.Bio, entry.AvatarHash, extrasJSON,
+	)
+	if err != nil {
+		return fmt.Errorf("upsert directory entry: %w", err)
+	}
+
+	s.logger.Debug("Upserted directory entry", "owner", entry.OwnerPeerID, "displayName", entry.DisplayName)
+	return nil
+}
+
+func (s *PostgresStorage) RemoveDirectoryEntry(ctx context.Context, ownerPeerID string) error {
+	_, err := s.pool.Exec(ctx, `DELETE FROM directory_listings WHERE owner_peer_id = $1`, ownerPeerID)
+	return err
+}
+
+func (s *PostgresStorage) GetDirectoryEntry(ctx context.Context, ownerPeerID string) (*storage.DirectoryEntry, error) {
+	var entry storage.DirectoryEntry
+	var extrasJSON []byte
+	err := s.pool.QueryRow(ctx, `
+		SELECT id, owner_peer_id, display_name, bio, avatar_hash,
+			   listed_at, updated_at, extras
+		FROM directory_listings
+		WHERE owner_peer_id = $1`,
+		ownerPeerID,
+	).Scan(&entry.ID, &entry.OwnerPeerID, &entry.DisplayName, &entry.Bio,
+		&entry.AvatarHash, &entry.ListedAt, &entry.UpdatedAt, &extrasJSON)
+
+	if err == pgx.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get directory entry: %w", err)
+	}
+
+	if extrasJSON != nil {
+		if err := json.Unmarshal(extrasJSON, &entry.Extras); err != nil {
+			s.logger.Warn("failed to unmarshal directory extras", "error", err)
+		}
+	}
+
+	return &entry, nil
+}
+
+func (s *PostgresStorage) BrowseDirectory(ctx context.Context, query string, cursor string, limit int) (*storage.DirectoryPage, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	if limit > 100 {
+		limit = 100
+	}
+
+	conditions := []string{}
+	args := []any{}
+	argIdx := 1
+
+	// Full-text search filter
+	if query != "" {
+		conditions = append(conditions, fmt.Sprintf(
+			"to_tsvector('english', display_name || ' ' || bio) @@ plainto_tsquery('english', $%d)", argIdx))
+		args = append(args, query)
+		argIdx++
+	}
+
+	// Cursor-based pagination
+	if cursor != "" {
+		// Cursor format: "{RFC3339Nano}:{peerId}"
+		sepIdx := strings.Index(cursor, ":")
+		if sepIdx > 0 {
+			cursorTime, err := time.Parse(time.RFC3339Nano, cursor[:sepIdx])
+			if err == nil {
+				cursorPeerID := cursor[sepIdx+1:]
+				conditions = append(conditions, fmt.Sprintf(
+					"(updated_at, owner_peer_id) < ($%d, $%d)", argIdx, argIdx+1))
+				args = append(args, cursorTime, cursorPeerID)
+				argIdx += 2
+			}
+		}
+	}
+
+	whereClause := ""
+	if len(conditions) > 0 {
+		whereClause = "WHERE " + strings.Join(conditions, " AND ")
+	}
+
+	// Fetch limit+1 to detect hasMore
+	sqlQuery := fmt.Sprintf(`
+		SELECT id, owner_peer_id, display_name, bio, avatar_hash,
+			   listed_at, updated_at, extras
+		FROM directory_listings
+		%s
+		ORDER BY updated_at DESC, owner_peer_id DESC
+		LIMIT $%d`, whereClause, argIdx)
+	args = append(args, limit+1)
+
+	rows, err := s.pool.Query(ctx, sqlQuery, args...)
+	if err != nil {
+		return nil, fmt.Errorf("browse directory: %w", err)
+	}
+	defer rows.Close()
+
+	var entries []*storage.DirectoryEntry
+	for rows.Next() {
+		var entry storage.DirectoryEntry
+		var extrasJSON []byte
+		if err := rows.Scan(&entry.ID, &entry.OwnerPeerID, &entry.DisplayName,
+			&entry.Bio, &entry.AvatarHash, &entry.ListedAt, &entry.UpdatedAt, &extrasJSON); err != nil {
+			return nil, fmt.Errorf("scan directory entry: %w", err)
+		}
+		if extrasJSON != nil {
+			if err := json.Unmarshal(extrasJSON, &entry.Extras); err != nil {
+				s.logger.Warn("failed to unmarshal directory extras", "error", err)
+			}
+		}
+		entries = append(entries, &entry)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	page := &storage.DirectoryPage{}
+
+	if len(entries) > limit {
+		page.HasMore = true
+		entries = entries[:limit]
+	}
+
+	page.Entries = entries
+
+	// Build next cursor from last entry
+	if page.HasMore && len(entries) > 0 {
+		last := entries[len(entries)-1]
+		page.NextCursor = last.UpdatedAt.Format(time.RFC3339Nano) + ":" + last.OwnerPeerID
+	}
+
+	return page, nil
+}
+
+// =============================================================================
 // Cleanup Operations
 // =============================================================================
 

@@ -1,0 +1,40 @@
+services:
+  # Build environment for Ricochet (Go)
+  builder:
+    # Force x86_64 platform for Apple Silicon compatibility
+    # This ensures we build Linux x86_64 binaries even on ARM Macs
+    platform: linux/amd64
+    build:
+      context: .
+      dockerfile: Dockerfile.build
+    image: go-ricochet-builder:latest
+    container_name: go-ricochet-builder
+    volumes:
+      # Mount parent directory to get local Go module dependencies
+      # (go-libp2p-udx-transport, go-udx are siblings via replace directives)
+      - ..:/workspace/IdeaProjects/agentic:ro
+      # Mount build output directory (read-write)
+      - ./build:/workspace/IdeaProjects/agentic/go-ricochet/build:rw
+      # Cache Go modules
+      - go-mod-cache:/home/builder/go/pkg/mod
+      # Cache Go build cache
+      - go-build-cache:/home/builder/.cache/go-build
+    working_dir: /workspace/IdeaProjects/agentic/go-ricochet
+    environment:
+      # Set version from environment or default
+      - VERSION=${VERSION:-1.0.0}
+      - GOPATH=/home/builder/go
+      - GOCACHE=/home/builder/.cache/go-build
+      # Pass host user ID for fixing permissions later
+      - HOST_USER_ID=${USER_ID:-1000}
+      - HOST_GROUP_ID=${GROUP_ID:-1000}
+    command: >
+      /bin/bash -c "echo 'Build container ready. Run the build script from host.'"
+
+volumes:
+  # Persistent cache for Go modules
+  go-mod-cache:
+    name: go-ricochet-mod-cache
+  # Persistent cache for Go build
+  go-build-cache:
+    name: go-ricochet-build-cache

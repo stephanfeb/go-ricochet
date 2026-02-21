@@ -1,0 +1,82 @@
+# Ricochet Store-and-Forward Server Configuration (Go)
+#
+# NOTE: The Go server currently uses CLI flags, not a YAML config file.
+# This file serves as a reference for available settings.
+# The deploy/run.sh wrapper passes these as CLI flags.
+#
+# See: ricochet_server --help
+
+# Server identity and network configuration
+server:
+  port: 55223
+  region: us-east-1
+
+  # Identity configuration (optional)
+  # If not specified, checks RICOCHET_SEED_HEX environment variable,
+  # then falls back to auto-generating identity in data_directory
+  # identity_file: /etc/ricochet/keys/peer_identity.key
+
+  # Listen addresses (multiaddrs)
+  # NOTE: On Linux, binding both IPv6 [::] and IPv4 0.0.0.0 on the same port
+  # fails because the IPv6 dual-stack socket claims both families by default.
+  listen_addresses:
+    - /ip4/0.0.0.0/udp/55223/udx
+
+  # External addresses to advertise (optional)
+  external_addresses: []
+
+  # Bootstrap peers for DHT (optional)
+  bootstrap_peers: []
+
+# Storage configuration
+storage:
+  data_directory: /var/lib/ricochet/sf_storage
+  max_storage_gb: 50
+  retention_days: 30
+  max_messages_per_mailbox: 1000
+  max_mailboxes: 100000
+
+# PostgreSQL configuration
+# These are passed via CLI flags in deploy/run.sh
+database:
+  host: localhost
+  port: 5432
+  name: ricochet
+  username: ricochet
+  # password: set via DB_PASSWORD in /etc/ricochet/env
+  sslmode: disable
+  pool_size: 10
+
+# Performance configuration
+performance:
+  max_concurrent_connections: 10000
+  connection_timeout_sec: 30
+  message_timeout_sec: 10
+  worker_threads: 4
+
+# Service intervals
+intervals:
+  service_announcement_min: 60
+  health_check_min: 5
+  cleanup_min: 5
+  presence_check_sec: 30
+  presence_heartbeat_sec: 60
+  presence_timeout_sec: 120
+
+# Feature flags
+features:
+  enable_forwarding: false
+  enable_push_delivery: true
+  enable_presence_monitoring: true
+  enable_presence_broadcast: true
+  enable_metrics: true
+  enable_authentication: false
+
+# Rate limiting
+rate_limiting:
+  window_minutes: 1
+  max_requests_per_window: 100
+
+# Logging
+logging:
+  level: INFO

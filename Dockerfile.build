@@ -1,0 +1,55 @@
+# Build environment for Ricochet Server (Go)
+# Targets Ubuntu 22.04 LTS for compatibility with Ubuntu LTS deployments
+
+FROM ubuntu:22.04
+
+# Avoid interactive prompts during build
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    curl \
+    git \
+    wget \
+    build-essential \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Go SDK
+RUN wget -q https://go.dev/dl/go1.24.12.linux-amd64.tar.gz \
+    && tar -C /usr/local -xzf go1.24.12.linux-amd64.tar.gz \
+    && rm go1.24.12.linux-amd64.tar.gz
+
+# Add Go to PATH
+ENV PATH="/usr/local/go/bin:/home/builder/go/bin:${PATH}"
+ENV GOPATH="/home/builder/go"
+
+# Install dpkg-dev for building Debian packages
+RUN apt-get update && apt-get install -y \
+    dpkg-dev \
+    fakeroot \
+    sudo \
+    rsync \
+    && rm -rf /var/lib/apt/lists/*
+
+# Allow builder to use sudo without password (for chown operations)
+RUN echo "builder ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers
+
+# Create build user (non-root for security)
+RUN useradd -m -u 1000 -s /bin/bash builder
+
+# Set up permissions for builder user
+RUN mkdir -p /home/builder/go && \
+    chown -R builder:builder /home/builder
+
+# Set working directory
+WORKDIR /workspace
+
+# Switch to builder user
+USER builder
+
+# Verify installations
+RUN go version && dpkg-deb --version
+
+# Default command
+CMD ["/bin/bash"]

@@ -1,0 +1,20 @@
+Package: ricochet-server
+Version: 1.0.0
+Section: net
+Priority: optional
+Architecture: amd64
+Depends: supervisor, postgresql-client
+Maintainer: Ricochet Team <info@ricochet.io>
+Description: Ricochet Store-and-Forward Server (Go)
+ A P2P message store-and-forward server built in Go with PostgreSQL backend.
+ Provides reliable message delivery for offline peers in P2P networks.
+ .
+ Features:
+  - PostgreSQL-backed persistent storage
+  - libp2p networking with GossipSub and DHT
+  - Support for private, shared, and public mailboxes
+  - Document store with versioning
+  - User directory with full-text search
+  - Push-based presence signaling
+  - Message prioritization and retention policies
+  - End-to-end encryption and LZ4 compression

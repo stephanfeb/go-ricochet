@@ -198,6 +198,24 @@ func (m *mockStorage) GetDocumentAtVersion(_ context.Context, _ peer.ID, _ strin
 	panic("not implemented")
 }
 
+// --- Directory operations ---
+
+func (m *mockStorage) UpsertDirectoryEntry(_ context.Context, _ *storage.DirectoryEntry) error {
+	panic("not implemented")
+}
+
+func (m *mockStorage) RemoveDirectoryEntry(_ context.Context, _ string) error {
+	panic("not implemented")
+}
+
+func (m *mockStorage) GetDirectoryEntry(_ context.Context, _ string) (*storage.DirectoryEntry, error) {
+	panic("not implemented")
+}
+
+func (m *mockStorage) BrowseDirectory(_ context.Context, _ string, _ string, _ int) (*storage.DirectoryPage, error) {
+	panic("not implemented")
+}
+
 // --- Cleanup operations ---
 
 func (m *mockStorage) DeleteExpiredMessages(_ context.Context) (int, error) {

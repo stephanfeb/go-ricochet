@@ -170,6 +170,36 @@ func WithDocServer(id peer.ID) DocOption {
 	}
 }
 
+// DirectoryBrowseOption configures BrowseDirectory behavior.
+type DirectoryBrowseOption func(*directoryBrowseConfig)
+
+type directoryBrowseConfig struct {
+	Query        string
+	Cursor       string
+	Limit        int
+	ServerPeerID *peer.ID
+}
+
+// WithDirectoryQuery sets the search query for directory browsing.
+func WithDirectoryQuery(q string) DirectoryBrowseOption {
+	return func(c *directoryBrowseConfig) { c.Query = q }
+}
+
+// WithDirectoryCursor sets the pagination cursor for directory browsing.
+func WithDirectoryCursor(cursor string) DirectoryBrowseOption {
+	return func(c *directoryBrowseConfig) { c.Cursor = cursor }
+}
+
+// WithDirectoryLimit sets the maximum number of entries per page.
+func WithDirectoryLimit(limit int) DirectoryBrowseOption {
+	return func(c *directoryBrowseConfig) { c.Limit = limit }
+}
+
+// WithDirectoryServer sets a specific server peer ID for directory operations.
+func WithDirectoryServer(id peer.ID) DirectoryBrowseOption {
+	return func(c *directoryBrowseConfig) { c.ServerPeerID = &id }
+}
+
 // MailboxOption configures CreateMailbox behavior.
 type MailboxOption func(*mailboxConfig)
 

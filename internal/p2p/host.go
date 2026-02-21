@@ -24,11 +24,22 @@ func CreateHost(cfg *core.ServerConfig, priv crypto.PrivKey, logger *slog.Logger
 		port = 55223
 	}
 
+	// Use configured listen addresses, falling back to IPv4 wildcard.
+	// NOTE: On Linux, binding IPv6 [::] with default IPV6_V6ONLY=0 claims the
+	// port for both families, causing a subsequent IPv4 0.0.0.0 bind on the
+	// same port to fail with "address already in use". Bind IPv4 only.
+	listenAddrs := cfg.ListenAddresses
+	if len(listenAddrs) == 0 {
+		listenAddrs = []string{
+			fmt.Sprintf("/ip4/0.0.0.0/udp/%d/udx", port),
+		}
+	}
+
 	opts := []libp2p.Option{
 		libp2p.Identity(priv),
 		libp2p.NoTransports,
 		libp2p.Transport(udxtransport.NewTransport),
-		libp2p.ListenAddrStrings(fmt.Sprintf("/ip4/0.0.0.0/udp/%d/udx", port)),
+		libp2p.ListenAddrStrings(listenAddrs...),
 		libp2p.Security(noise.ID, noise.New),
 		libp2p.Muxer("/yamux/1.0.0", yamux.DefaultTransport),
 		libp2p.ResourceManager(&network.NullResourceManager{}),

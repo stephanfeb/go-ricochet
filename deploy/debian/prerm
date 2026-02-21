@@ -1,0 +1,10 @@
+#!/bin/bash
+set -e
+
+echo "Stopping Ricochet server..."
+
+# Stop the service before removal
+if command -v supervisorctl >/dev/null 2>&1; then
+    supervisorctl stop ricochet 2>/dev/null || true
+    echo "Ricochet server stopped"
+fi

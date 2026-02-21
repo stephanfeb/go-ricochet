@@ -124,9 +124,29 @@ type DocumentPutResult struct {
 	UpdatedAt   time.Time `json:"updatedAt"`
 }
 
+// DirectoryEntry represents a user's listing in the public directory.
+type DirectoryEntry struct {
+	ID          int64          `json:"id"`
+	OwnerPeerID string         `json:"ownerPeerId"`
+	DisplayName string         `json:"displayName"`
+	Bio         string         `json:"bio"`
+	AvatarHash  string         `json:"avatarHash"`
+	ListedAt    time.Time      `json:"listedAt"`
+	UpdatedAt   time.Time      `json:"updatedAt"`
+	Extras      map[string]any `json:"extras,omitempty"`
+}
+
+// DirectoryPage represents a paginated directory browse result.
+type DirectoryPage struct {
+	Entries    []*DirectoryEntry `json:"entries"`
+	NextCursor string            `json:"nextCursor,omitempty"`
+	HasMore    bool              `json:"hasMore"`
+}
+
 // Storage errors.
 var (
-	ErrDocumentNotFound = fmt.Errorf("document not found")
+	ErrDocumentNotFound       = fmt.Errorf("document not found")
+	ErrDirectoryEntryNotFound = fmt.Errorf("directory entry not found")
 )
 
 // DocumentSizeExceededError indicates a document exceeds the size limit.

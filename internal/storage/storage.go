@@ -60,6 +60,12 @@ type Storage interface {
 	GetDocumentHistory(ctx context.Context, ownerID peer.ID, path string, maxVersions *int) ([]*DocumentVersionRecord, error)
 	GetDocumentAtVersion(ctx context.Context, ownerID peer.ID, path string, versionNumber int) (*DocumentVersionRecord, error)
 
+	// Directory operations
+	UpsertDirectoryEntry(ctx context.Context, entry *DirectoryEntry) error
+	RemoveDirectoryEntry(ctx context.Context, ownerPeerID string) error
+	GetDirectoryEntry(ctx context.Context, ownerPeerID string) (*DirectoryEntry, error)
+	BrowseDirectory(ctx context.Context, query string, cursor string, limit int) (*DirectoryPage, error)
+
 	// Cleanup operations
 	DeleteExpiredMessages(ctx context.Context) (int, error)
 	EnforceRetentionPolicy(ctx context.Context, mailbox *MailboxRecord) error

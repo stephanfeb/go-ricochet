@@ -42,6 +42,7 @@ type Server struct {
 	registry        *registry.Registry
 	presenceCache   *presence.Cache
 	presenceMonitor *presence.Monitor
+	presenceService *presence.Service
 
 	// State
 	isRunning bool
@@ -110,6 +111,9 @@ func (s *Server) Stop() error {
 	s.isRunning = false
 
 	// Stop services
+	if s.presenceService != nil {
+		s.presenceService.Stop()
+	}
 	if s.presenceMonitor != nil {
 		s.presenceMonitor.StopMonitoring()
 	}
@@ -158,7 +162,7 @@ func (s *Server) initializeStorage(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		if err := store.Initialize(ctx); err != nil {
+		if err := store.InitializeWithConfig(ctx, s.config.Storage.Postgres); err != nil {
 			return err
 		}
 		s.storage = store
@@ -235,6 +239,22 @@ func (s *Server) initializeServices(ctx context.Context) {
 		s.presenceMonitor = presence.NewMonitor(s.presenceCache, s.host, s.logger)
 		s.logger.Info("presence monitor initialized")
 	}
+
+	// Create presence broadcast service
+	if s.config.EnablePresenceBroadcast {
+		if s.presenceCache == nil {
+			s.presenceCache = presence.NewCache(30 * time.Second)
+		}
+		presCfg := &presence.PresenceConfig{
+			HeartbeatInterval: s.config.PresenceHeartbeatInterval,
+			TimeoutDuration:   s.config.PresenceTimeoutDuration,
+			BatchWindow:       s.config.PresenceBatchWindow,
+			MaxBatchSize:      50,
+			EnableBroadcast:   true,
+		}
+		s.presenceService = presence.NewService(s.host, s.node, s.presenceCache, presCfg, s.logger)
+		s.logger.Info("presence broadcast service initialized")
+	}
 }
 
 func (s *Server) registerProtocolHandlers() {
@@ -265,6 +285,15 @@ func (s *Server) startServices(ctx context.Context) {
 		s.logger.Warn("failed to start service registry", "error", err)
 	} else {
 		s.logger.Info("service registry started")
+	}
+
+	// Start presence broadcast service
+	if s.presenceService != nil {
+		if err := s.presenceService.Start(ctx); err != nil {
+			s.logger.Warn("failed to start presence service", "error", err)
+		} else {
+			s.logger.Info("presence broadcast service started")
+		}
 	}
 
 	// Start periodic maintenance

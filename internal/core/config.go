@@ -41,10 +41,16 @@ type ServerConfig struct {
 	EnableForwarding         bool `yaml:"enable_forwarding" json:"enableForwarding"`
 	EnablePushDelivery       bool `yaml:"enable_push_delivery" json:"enablePushDelivery"`
 	EnablePresenceMonitoring bool `yaml:"enable_presence_monitoring" json:"enablePresenceMonitoring"`
+	EnablePresenceBroadcast  bool `yaml:"enable_presence_broadcast" json:"enablePresenceBroadcast"`
 	EnableMetrics            bool `yaml:"enable_metrics" json:"enableMetrics"`
 	EnableRelay              bool `yaml:"enable_relay" json:"enableRelay"`
 	EnableAutoRelay          bool `yaml:"enable_auto_relay" json:"enableAutoRelay"`
 	EnableHolePunching       bool `yaml:"enable_hole_punching" json:"enableHolePunching"`
+
+	// Presence broadcasting
+	PresenceHeartbeatInterval time.Duration `yaml:"presence_heartbeat_interval" json:"presenceHeartbeatInterval"`
+	PresenceTimeoutDuration   time.Duration `yaml:"presence_timeout_duration" json:"presenceTimeoutDuration"`
+	PresenceBatchWindow       time.Duration `yaml:"presence_batch_window" json:"presenceBatchWindow"`
 
 	// Security
 	EnableAuthentication bool          `yaml:"enable_authentication" json:"enableAuthentication"`
@@ -125,7 +131,12 @@ func DefaultConfig() *ServerConfig {
 
 		EnablePushDelivery:       true,
 		EnablePresenceMonitoring: true,
+		EnablePresenceBroadcast:  true,
 		EnableMetrics:            true,
+
+		PresenceHeartbeatInterval: 60 * time.Second,
+		PresenceTimeoutDuration:   120 * time.Second,
+		PresenceBatchWindow:       2 * time.Second,
 
 		RateLimitWindow:      1 * time.Minute,
 		MaxRequestsPerWindow: 100,

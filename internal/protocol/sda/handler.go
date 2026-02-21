@@ -24,13 +24,14 @@ const ProtocolID = protocol.ID("/ricochet/store/doc/1.0.0")
 
 // Document operation constants.
 const (
-	OpGET     = "GET"
-	OpPUT     = "PUT"
-	OpPATCH   = "PATCH"
-	OpHEAD    = "HEAD"
-	OpDELETE  = "DELETE"
-	OpLIST    = "LIST"
-	OpHISTORY = "HISTORY"
+	OpGET       = "GET"
+	OpPUT       = "PUT"
+	OpPATCH     = "PATCH"
+	OpHEAD      = "HEAD"
+	OpDELETE    = "DELETE"
+	OpLIST      = "LIST"
+	OpHISTORY   = "HISTORY"
+	OpDIRECTORY = "DIRECTORY"
 )
 
 // Path validation constants.
@@ -69,6 +70,12 @@ type DocRequest struct {
 	// HISTORY-specific
 	MaxVersions   *int `json:"maxVersions,omitempty"`
 	VersionNumber *int `json:"versionNumber,omitempty"`
+
+	// DIRECTORY-specific
+	DirectoryAction string `json:"directoryAction,omitempty"`
+	DirectoryQuery  string `json:"directoryQuery,omitempty"`
+	DirectoryCursor string `json:"directoryCursor,omitempty"`
+	DirectoryLimit  *int   `json:"directoryLimit,omitempty"`
 }
 
 // DocResponse is the JSON response format for document operations.
@@ -135,6 +142,9 @@ func (h *Handler) HandleStream(s network.Stream) {
 
 	// Determine if this is a read or write operation and check rate limits
 	isWrite := req.Operation == OpPUT || req.Operation == OpPATCH || req.Operation == OpDELETE
+	if req.Operation == OpDIRECTORY {
+		isWrite = req.DirectoryAction == "join" || req.DirectoryAction == "leave"
+	}
 	if isWrite {
 		if !h.checkRateLimit(callerID, true) {
 			h.writeResponse(s, &DocResponse{Status: StatusTooManyRequests})
@@ -161,7 +171,7 @@ func (h *Handler) HandleStream(s network.Stream) {
 	}
 
 	// Validate path for operations that require it
-	if req.Operation != OpLIST {
+	if req.Operation != OpLIST && req.Operation != OpDIRECTORY {
 		if err := validatePath(req.Path); err != nil {
 			h.writeResponse(s, &DocResponse{Status: StatusBadRequest,
 				Headers: map[string]string{"Error": err.Error()}})
@@ -193,6 +203,8 @@ func (h *Handler) HandleStream(s network.Stream) {
 		h.handleList(ctx, s, ownerID)
 	case OpHISTORY:
 		h.handleHistory(ctx, s, &req, ownerID)
+	case OpDIRECTORY:
+		h.handleDirectory(ctx, s, &req, ownerID)
 	default:
 		h.writeResponse(s, &DocResponse{Status: StatusBadRequest,
 			Headers: map[string]string{"Error": "unknown operation: " + req.Operation}})
@@ -280,6 +292,9 @@ func (h *Handler) handlePut(ctx context.Context, s network.Stream, req *DocReque
 			"Last-Modified": result.UpdatedAt.Format(time.RFC3339),
 		},
 	})
+
+	// Materialize directory listing if applicable
+	h.maybeUpdateDirectoryListing(ctx, ownerID, req.Path)
 }
 
 // handlePatch applies a partial update to a document.
@@ -318,6 +333,9 @@ func (h *Handler) handlePatch(ctx context.Context, s network.Stream, req *DocReq
 			"Last-Modified": result.UpdatedAt.Format(time.RFC3339),
 		},
 	})
+
+	// Materialize directory listing if applicable
+	h.maybeUpdateDirectoryListing(ctx, ownerID, req.Path)
 }
 
 // handleHead returns document metadata without the body.
@@ -377,6 +395,9 @@ func (h *Handler) handleDelete(ctx context.Context, s network.Stream, req *DocRe
 	}
 
 	h.writeResponse(s, &DocResponse{Status: StatusNoContent})
+
+	// Remove directory listing if applicable
+	h.maybeRemoveDirectoryListing(ctx, ownerID, req.Path)
 }
 
 // handleList returns all documents for an owner.
@@ -497,6 +518,191 @@ func (h *Handler) handleHistory(ctx context.Context, s network.Stream, req *DocR
 		},
 		Body: base64.StdEncoding.EncodeToString(bodyBytes),
 	})
+}
+
+// directoryListingPath is the well-known document path that triggers directory materialization.
+const directoryListingPath = "directory-listing"
+
+// handleDirectory handles DIRECTORY operations (join, leave, browse, get).
+func (h *Handler) handleDirectory(ctx context.Context, s network.Stream, req *DocRequest, ownerID peer.ID) {
+	switch req.DirectoryAction {
+	case "join":
+		h.handleDirectoryJoin(ctx, s, req, ownerID)
+	case "leave":
+		h.handleDirectoryLeave(ctx, s, ownerID)
+	case "browse":
+		h.handleDirectoryBrowse(ctx, s, req)
+	case "get":
+		h.handleDirectoryGet(ctx, s, ownerID)
+	default:
+		h.writeResponse(s, &DocResponse{Status: StatusBadRequest,
+			Headers: map[string]string{"Error": "unknown directoryAction: " + req.DirectoryAction}})
+	}
+}
+
+func (h *Handler) handleDirectoryJoin(ctx context.Context, s network.Stream, req *DocRequest, ownerID peer.ID) {
+	// Decode listing from body
+	var listing struct {
+		DisplayName string         `json:"displayName"`
+		Bio         string         `json:"bio"`
+		AvatarHash  string         `json:"avatarHash"`
+		Extras      map[string]any `json:"extras"`
+	}
+
+	if req.Body != "" {
+		bodyBytes, err := base64.StdEncoding.DecodeString(req.Body)
+		if err != nil {
+			h.writeResponse(s, &DocResponse{Status: StatusBadRequest,
+				Headers: map[string]string{"Error": "invalid base64 body"}})
+			return
+		}
+		if err := json.Unmarshal(bodyBytes, &listing); err != nil {
+			h.writeResponse(s, &DocResponse{Status: StatusBadRequest,
+				Headers: map[string]string{"Error": "invalid JSON body"}})
+			return
+		}
+	}
+
+	if listing.DisplayName == "" {
+		h.writeResponse(s, &DocResponse{Status: StatusBadRequest,
+			Headers: map[string]string{"Error": "displayName is required"}})
+		return
+	}
+
+	entry := &storage.DirectoryEntry{
+		OwnerPeerID: ownerID.String(),
+		DisplayName: listing.DisplayName,
+		Bio:         listing.Bio,
+		AvatarHash:  listing.AvatarHash,
+		Extras:      listing.Extras,
+	}
+
+	if err := h.store.UpsertDirectoryEntry(ctx, entry); err != nil {
+		h.logger.Error("failed to upsert directory entry", "error", err)
+		h.writeResponse(s, &DocResponse{Status: StatusInternalError})
+		return
+	}
+
+	h.writeResponse(s, &DocResponse{Status: StatusOK})
+}
+
+func (h *Handler) handleDirectoryLeave(ctx context.Context, s network.Stream, ownerID peer.ID) {
+	if err := h.store.RemoveDirectoryEntry(ctx, ownerID.String()); err != nil {
+		h.logger.Error("failed to remove directory entry", "error", err)
+		h.writeResponse(s, &DocResponse{Status: StatusInternalError})
+		return
+	}
+	h.writeResponse(s, &DocResponse{Status: StatusNoContent})
+}
+
+func (h *Handler) handleDirectoryBrowse(ctx context.Context, s network.Stream, req *DocRequest) {
+	limit := 20
+	if req.DirectoryLimit != nil && *req.DirectoryLimit > 0 {
+		limit = *req.DirectoryLimit
+	}
+
+	page, err := h.store.BrowseDirectory(ctx, req.DirectoryQuery, req.DirectoryCursor, limit)
+	if err != nil {
+		h.logger.Error("failed to browse directory", "error", err)
+		h.writeResponse(s, &DocResponse{Status: StatusInternalError})
+		return
+	}
+
+	bodyBytes, err := json.Marshal(page)
+	if err != nil {
+		h.writeResponse(s, &DocResponse{Status: StatusInternalError})
+		return
+	}
+
+	h.writeResponse(s, &DocResponse{
+		Status: StatusOK,
+		Headers: map[string]string{
+			"Content-Type": "application/json",
+		},
+		Body: base64.StdEncoding.EncodeToString(bodyBytes),
+	})
+}
+
+func (h *Handler) handleDirectoryGet(ctx context.Context, s network.Stream, ownerID peer.ID) {
+	entry, err := h.store.GetDirectoryEntry(ctx, ownerID.String())
+	if err != nil {
+		h.logger.Error("failed to get directory entry", "error", err)
+		h.writeResponse(s, &DocResponse{Status: StatusInternalError})
+		return
+	}
+	if entry == nil {
+		h.writeResponse(s, &DocResponse{Status: StatusNotFound})
+		return
+	}
+
+	bodyBytes, err := json.Marshal(entry)
+	if err != nil {
+		h.writeResponse(s, &DocResponse{Status: StatusInternalError})
+		return
+	}
+
+	h.writeResponse(s, &DocResponse{
+		Status: StatusOK,
+		Headers: map[string]string{
+			"Content-Type": "application/json",
+		},
+		Body: base64.StdEncoding.EncodeToString(bodyBytes),
+	})
+}
+
+// maybeUpdateDirectoryListing materializes a directory-listing document into
+// the directory_listings table when a user PUTs or PATCHes the well-known path.
+func (h *Handler) maybeUpdateDirectoryListing(ctx context.Context, ownerID peer.ID, path string) {
+	if path != directoryListingPath {
+		return
+	}
+
+	doc, err := h.store.GetDocument(ctx, ownerID, path)
+	if err != nil || doc == nil {
+		return
+	}
+
+	var listing struct {
+		Listed      *bool          `json:"listed"`
+		DisplayName string         `json:"displayName"`
+		Bio         string         `json:"bio"`
+		AvatarHash  string         `json:"avatarHash"`
+		Extras      map[string]any `json:"extras"`
+	}
+	if err := json.Unmarshal(doc.Content, &listing); err != nil {
+		h.logger.Warn("invalid directory-listing document", "error", err)
+		return
+	}
+
+	// If listed is explicitly false, remove from directory
+	if listing.Listed != nil && !*listing.Listed {
+		_ = h.store.RemoveDirectoryEntry(ctx, ownerID.String())
+		return
+	}
+
+	if listing.DisplayName == "" {
+		return
+	}
+
+	entry := &storage.DirectoryEntry{
+		OwnerPeerID: ownerID.String(),
+		DisplayName: listing.DisplayName,
+		Bio:         listing.Bio,
+		AvatarHash:  listing.AvatarHash,
+		Extras:      listing.Extras,
+	}
+	if err := h.store.UpsertDirectoryEntry(ctx, entry); err != nil {
+		h.logger.Warn("failed to materialize directory listing", "error", err)
+	}
+}
+
+// maybeRemoveDirectoryListing removes a directory entry when the directory-listing
+// document is deleted.
+func (h *Handler) maybeRemoveDirectoryListing(ctx context.Context, ownerID peer.ID, path string) {
+	if path != directoryListingPath {
+		return
+	}
+	_ = h.store.RemoveDirectoryEntry(ctx, ownerID.String())
 }
 
 // handleWriteError converts storage errors to appropriate response status codes.

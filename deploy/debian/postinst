@@ -1,0 +1,45 @@
+#!/bin/bash
+set -e
+
+# Create ricochet user if it doesn't exist
+if ! id -u ricochet >/dev/null 2>&1; then
+    useradd -r -s /bin/false -d /var/lib/ricochet -c "Ricochet Server" ricochet
+    echo "Created ricochet system user"
+fi
+
+# Create and set permissions on directories
+mkdir -p /var/lib/ricochet
+mkdir -p /var/log/ricochet
+chown -R ricochet:ricochet /var/lib/ricochet
+chown -R ricochet:ricochet /var/log/ricochet
+chmod 750 /var/lib/ricochet /var/log/ricochet
+
+# Ensure config file has correct permissions
+if [ -f /etc/ricochet/config.yaml ]; then
+    chown root:ricochet /etc/ricochet/config.yaml
+    chmod 640 /etc/ricochet/config.yaml
+fi
+
+# Ensure config directory has correct permissions
+chown root:ricochet /etc/ricochet
+chmod 750 /etc/ricochet
+
+# Reload supervisor to pick up new config
+if systemctl is-active --quiet supervisor; then
+    supervisorctl reread 2>/dev/null || true
+    supervisorctl update 2>/dev/null || true
+    echo "Supervisor configuration updated"
+fi
+
+echo ""
+echo "============================================"
+echo "Ricochet Server Installation Complete"
+echo "============================================"
+echo ""
+echo "Next steps:"
+echo "  1. Create /etc/ricochet/env with DB_PASSWORD=your_password"
+echo "  2. Initialize database: psql -U ricochet -d ricochet -f /opt/ricochet/schema.sql"
+echo "  3. Start service: sudo supervisorctl start ricochet"
+echo ""
+echo "View logs with: sudo supervisorctl tail -f ricochet"
+echo ""

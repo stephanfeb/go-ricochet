@@ -151,6 +151,31 @@ CREATE TABLE IF NOT EXISTS document_versions (
 CREATE INDEX IF NOT EXISTS idx_document_versions_document_id ON document_versions(document_id);
 
 -- =============================================================================
+-- DIRECTORY LISTINGS
+-- =============================================================================
+CREATE TABLE IF NOT EXISTS directory_listings (
+    id              BIGSERIAL PRIMARY KEY,
+    owner_peer_id   TEXT NOT NULL,
+    display_name    TEXT NOT NULL DEFAULT '',
+    bio             TEXT NOT NULL DEFAULT '',
+    avatar_hash     TEXT NOT NULL DEFAULT '',
+    listed_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    extras          JSONB,
+
+    CONSTRAINT uq_directory_owner UNIQUE(owner_peer_id)
+);
+
+-- Full-text search on display_name and bio
+CREATE INDEX IF NOT EXISTS idx_directory_fts
+    ON directory_listings
+    USING GIN(to_tsvector('english', display_name || ' ' || bio));
+
+-- Cursor-based pagination: ordered by (updated_at, owner_peer_id)
+CREATE INDEX IF NOT EXISTS idx_directory_cursor
+    ON directory_listings(updated_at DESC, owner_peer_id DESC);
+
+-- =============================================================================
 -- MAINTENANCE FUNCTIONS AND TRIGGERS
 -- =============================================================================
 
@@ -213,8 +238,7 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO ricochet;
 -- Grant sequence permissions (required for BIGSERIAL auto-increment columns)
 GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO ricochet;
 
--- Grant view permissions
-GRANT SELECT ON ALL VIEWS IN SCHEMA public TO ricochet;
+-- Note: Views are covered by the GRANT ON ALL TABLES above (PostgreSQL treats views as tables for permissions)
 
 -- Set default privileges for future objects created in public schema
 -- This ensures new tables/sequences are automatically accessible

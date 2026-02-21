@@ -613,6 +613,175 @@ func (c *Client) ListMailboxes(ctx context.Context) ([]MailboxInfo, error) {
 	return infos, nil
 }
 
+// ---------------------------------------------------------------------------
+// Directory operations
+// ---------------------------------------------------------------------------
+
+// DirectoryListing contains the data for a directory listing.
+type DirectoryListing struct {
+	DisplayName string         `json:"displayName"`
+	Bio         string         `json:"bio,omitempty"`
+	AvatarHash  string         `json:"avatarHash,omitempty"`
+	Extras      map[string]any `json:"extras,omitempty"`
+}
+
+// DirectoryEntry is a single entry in directory browse results.
+type DirectoryEntry struct {
+	OwnerPeerID string         `json:"ownerPeerId"`
+	DisplayName string         `json:"displayName"`
+	Bio         string         `json:"bio"`
+	AvatarHash  string         `json:"avatarHash"`
+	ListedAt    string         `json:"listedAt"`
+	UpdatedAt   string         `json:"updatedAt"`
+	Extras      map[string]any `json:"extras,omitempty"`
+}
+
+// DirectoryBrowseResult is the result of a BrowseDirectory call.
+type DirectoryBrowseResult struct {
+	Entries    []*DirectoryEntry `json:"entries"`
+	NextCursor string            `json:"nextCursor,omitempty"`
+	HasMore    bool              `json:"hasMore"`
+}
+
+// JoinDirectory opts the client into the public directory on a server.
+func (c *Client) JoinDirectory(ctx context.Context, listing DirectoryListing, opts ...DocOption) error {
+	listingBytes, err := json.Marshal(listing)
+	if err != nil {
+		return fmt.Errorf("marshal listing: %w", err)
+	}
+
+	req := &sda.DocRequest{
+		Operation:       sda.OpDIRECTORY,
+		OwnerPeerID:     c.host.ID().String(),
+		DirectoryAction: "join",
+		Body:            base64.StdEncoding.EncodeToString(listingBytes),
+	}
+
+	resp, err := c.doDoc(ctx, req, opts)
+	if err != nil {
+		return err
+	}
+
+	if resp.Status >= 400 {
+		errMsg := resp.Headers["Error"]
+		if errMsg == "" {
+			errMsg = fmt.Sprintf("join directory failed with status %d", resp.Status)
+		}
+		return fmt.Errorf("join directory: %s", errMsg)
+	}
+
+	return nil
+}
+
+// LeaveDirectory removes the client from the public directory on a server.
+func (c *Client) LeaveDirectory(ctx context.Context, opts ...DocOption) error {
+	req := &sda.DocRequest{
+		Operation:       sda.OpDIRECTORY,
+		OwnerPeerID:     c.host.ID().String(),
+		DirectoryAction: "leave",
+	}
+
+	resp, err := c.doDoc(ctx, req, opts)
+	if err != nil {
+		return err
+	}
+
+	if resp.Status >= 400 {
+		errMsg := resp.Headers["Error"]
+		if errMsg == "" {
+			errMsg = fmt.Sprintf("leave directory failed with status %d", resp.Status)
+		}
+		return fmt.Errorf("leave directory: %s", errMsg)
+	}
+
+	return nil
+}
+
+// BrowseDirectory browses the public directory with optional search and pagination.
+func (c *Client) BrowseDirectory(ctx context.Context, opts ...DirectoryBrowseOption) (*DirectoryBrowseResult, error) {
+	cfg := directoryBrowseConfig{Limit: 20}
+	for _, o := range opts {
+		o(&cfg)
+	}
+
+	req := &sda.DocRequest{
+		Operation:       sda.OpDIRECTORY,
+		OwnerPeerID:     c.host.ID().String(),
+		DirectoryAction: "browse",
+		DirectoryQuery:  cfg.Query,
+		DirectoryCursor: cfg.Cursor,
+		DirectoryLimit:  &cfg.Limit,
+	}
+
+	var docOpts []DocOption
+	if cfg.ServerPeerID != nil {
+		docOpts = append(docOpts, WithDocServer(*cfg.ServerPeerID))
+	}
+
+	resp, err := c.doDoc(ctx, req, docOpts)
+	if err != nil {
+		return nil, err
+	}
+
+	if resp.Status != sda.StatusOK {
+		return nil, fmt.Errorf("browse directory failed with status %d", resp.Status)
+	}
+
+	if resp.Body == "" {
+		return &DirectoryBrowseResult{}, nil
+	}
+
+	bodyBytes, err := base64.StdEncoding.DecodeString(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("decode browse body: %w", err)
+	}
+
+	var result DirectoryBrowseResult
+	if err := json.Unmarshal(bodyBytes, &result); err != nil {
+		return nil, fmt.Errorf("unmarshal browse result: %w", err)
+	}
+
+	return &result, nil
+}
+
+// GetDirectoryEntry retrieves a specific peer's directory entry.
+func (c *Client) GetDirectoryEntry(ctx context.Context, peerID peer.ID, opts ...DocOption) (*DirectoryEntry, error) {
+	req := &sda.DocRequest{
+		Operation:       sda.OpDIRECTORY,
+		OwnerPeerID:     peerID.String(),
+		DirectoryAction: "get",
+	}
+
+	resp, err := c.doDoc(ctx, req, opts)
+	if err != nil {
+		return nil, err
+	}
+
+	if resp.Status == sda.StatusNotFound {
+		return nil, nil
+	}
+
+	if resp.Status != sda.StatusOK {
+		return nil, fmt.Errorf("get directory entry failed with status %d", resp.Status)
+	}
+
+	if resp.Body == "" {
+		return nil, nil
+	}
+
+	bodyBytes, err := base64.StdEncoding.DecodeString(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("decode entry body: %w", err)
+	}
+
+	var entry DirectoryEntry
+	if err := json.Unmarshal(bodyBytes, &entry); err != nil {
+		return nil, fmt.Errorf("unmarshal directory entry: %w", err)
+	}
+
+	return &entry, nil
+}
+
 // QueryCapacity returns the server's capacity metrics.
 func (c *Client) QueryCapacity(ctx context.Context) (*core.ServerCapacity, error) {
 	req := &mma.AdminRequest{

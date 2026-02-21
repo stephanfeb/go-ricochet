@@ -1,0 +1,25 @@
+#!/bin/bash
+set -e
+
+if [ "$1" = "purge" ]; then
+    echo "Purging Ricochet server data..."
+
+    # Remove user
+    if id -u ricochet >/dev/null 2>&1; then
+        userdel ricochet 2>/dev/null || true
+        echo "Removed ricochet user"
+    fi
+
+    # Remove data directories
+    rm -rf /var/lib/ricochet
+    rm -rf /var/log/ricochet
+    rm -f /etc/ricochet/config.yaml
+
+    echo "Ricochet server data purged"
+fi
+
+# Reload supervisor in any case
+if command -v supervisorctl >/dev/null 2>&1; then
+    supervisorctl reread 2>/dev/null || true
+    supervisorctl update 2>/dev/null || true
+fi
