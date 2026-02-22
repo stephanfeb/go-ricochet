@@ -800,6 +800,24 @@ func (c *Client) QueryCapacity(ctx context.Context) (*core.ServerCapacity, error
 // SDA operations
 // ---------------------------------------------------------------------------
 
+// headerToInt64 extracts an int64 from a response header value that may be
+// a float64 (from JSON unmarshal), a string, or an int.
+func headerToInt64(v any) int64 {
+	switch val := v.(type) {
+	case float64:
+		return int64(val)
+	case int:
+		return int64(val)
+	case int64:
+		return val
+	case string:
+		if n, err := strconv.ParseInt(val, 10, 64); err == nil {
+			return n
+		}
+	}
+	return 0
+}
+
 // doDoc is the shared helper for all SDA document operations.
 func (c *Client) doDoc(ctx context.Context, req *sda.DocRequest, opts []DocOption) (*sda.DocResponse, error) {
 	cfg := docConfig{}
@@ -887,15 +905,13 @@ func (c *Client) GetDocument(ctx context.Context, ownerPeerID peer.ID, path stri
 	}
 
 	if etag, ok := resp.Headers["ETag"]; ok {
-		result.ETag = etag
+		result.ETag, _ = etag.(string)
 	}
 	if ct, ok := resp.Headers["Content-Type"]; ok {
-		result.ContentType = ct
+		result.ContentType, _ = ct.(string)
 	}
 	if lm, ok := resp.Headers["Last-Modified"]; ok {
-		if t, err := time.Parse(time.RFC3339, lm); err == nil {
-			result.LastModified = t.UnixMilli()
-		}
+		result.LastModified = headerToInt64(lm)
 	}
 
 	if resp.Body != "" {
@@ -925,7 +941,7 @@ func (c *Client) PutDocument(ctx context.Context, ownerPeerID peer.ID, path stri
 	}
 
 	if resp.Status >= 400 {
-		errMsg := resp.Headers["Error"]
+		errMsg, _ := resp.Headers["Error"].(string)
 		if errMsg == "" {
 			errMsg = fmt.Sprintf("document put failed with status %d", resp.Status)
 		}
@@ -938,12 +954,10 @@ func (c *Client) PutDocument(ctx context.Context, ownerPeerID peer.ID, path stri
 	}
 
 	if etag, ok := resp.Headers["ETag"]; ok {
-		result.ETag = etag
+		result.ETag, _ = etag.(string)
 	}
 	if lm, ok := resp.Headers["Last-Modified"]; ok {
-		if t, err := time.Parse(time.RFC3339, lm); err == nil {
-			result.LastModified = t.UnixMilli()
-		}
+		result.LastModified = headerToInt64(lm)
 	}
 
 	return result, nil
@@ -976,12 +990,10 @@ func (c *Client) PatchDocument(ctx context.Context, ownerPeerID peer.ID, path st
 	}
 
 	if etag, ok := resp.Headers["ETag"]; ok {
-		result.ETag = etag
+		result.ETag, _ = etag.(string)
 	}
 	if lm, ok := resp.Headers["Last-Modified"]; ok {
-		if t, err := time.Parse(time.RFC3339, lm); err == nil {
-			result.LastModified = t.UnixMilli()
-		}
+		result.LastModified = headerToInt64(lm)
 	}
 
 	return result, nil
@@ -1007,20 +1019,16 @@ func (c *Client) HeadDocument(ctx context.Context, ownerPeerID peer.ID, path str
 	result := &core.DocumentMetadata{}
 
 	if etag, ok := resp.Headers["ETag"]; ok {
-		result.ETag = etag
+		result.ETag, _ = etag.(string)
 	}
 	if ct, ok := resp.Headers["Content-Type"]; ok {
-		result.ContentType = ct
+		result.ContentType, _ = ct.(string)
 	}
 	if lm, ok := resp.Headers["Last-Modified"]; ok {
-		if t, err := time.Parse(time.RFC3339, lm); err == nil {
-			result.LastModified = t.UnixMilli()
-		}
+		result.LastModified = headerToInt64(lm)
 	}
 	if cl, ok := resp.Headers["Content-Length"]; ok {
-		if n, err := strconv.Atoi(cl); err == nil {
-			result.ContentLength = n
-		}
+		result.ContentLength = int(headerToInt64(cl))
 	}
 
 	return result, nil

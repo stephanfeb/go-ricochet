@@ -80,9 +80,9 @@ type DocRequest struct {
 
 // DocResponse is the JSON response format for document operations.
 type DocResponse struct {
-	Status  int               `json:"status"`
-	Headers map[string]string `json:"headers,omitempty"`
-	Body    string            `json:"body,omitempty"` // base64 encoded
+	Status  int            `json:"status"`
+	Headers map[string]any `json:"headers,omitempty"`
+	Body    string         `json:"body,omitempty"` // base64 encoded
 }
 
 // Handler is the Store Document Access protocol handler.
@@ -160,13 +160,13 @@ func (h *Handler) HandleStream(s network.Stream) {
 	// Parse owner peer ID
 	if req.OwnerPeerID == "" {
 		h.writeResponse(s, &DocResponse{Status: StatusBadRequest,
-			Headers: map[string]string{"Error": "ownerPeerId is required"}})
+			Headers: map[string]any{"Error": "ownerPeerId is required"}})
 		return
 	}
 	ownerID, err := peer.Decode(req.OwnerPeerID)
 	if err != nil {
 		h.writeResponse(s, &DocResponse{Status: StatusBadRequest,
-			Headers: map[string]string{"Error": "invalid ownerPeerId"}})
+			Headers: map[string]any{"Error": "invalid ownerPeerId"}})
 		return
 	}
 
@@ -174,7 +174,7 @@ func (h *Handler) HandleStream(s network.Stream) {
 	if req.Operation != OpLIST && req.Operation != OpDIRECTORY {
 		if err := validatePath(req.Path); err != nil {
 			h.writeResponse(s, &DocResponse{Status: StatusBadRequest,
-				Headers: map[string]string{"Error": err.Error()}})
+				Headers: map[string]any{"Error": err.Error()}})
 			return
 		}
 	}
@@ -182,7 +182,7 @@ func (h *Handler) HandleStream(s network.Stream) {
 	// Enforce owner-only access for write operations
 	if isWrite && callerID != ownerID {
 		h.writeResponse(s, &DocResponse{Status: StatusForbidden,
-			Headers: map[string]string{"Error": "write operations require owner access"}})
+			Headers: map[string]any{"Error": "write operations require owner access"}})
 		return
 	}
 
@@ -207,7 +207,7 @@ func (h *Handler) HandleStream(s network.Stream) {
 		h.handleDirectory(ctx, s, &req, ownerID)
 	default:
 		h.writeResponse(s, &DocResponse{Status: StatusBadRequest,
-			Headers: map[string]string{"Error": "unknown operation: " + req.Operation}})
+			Headers: map[string]any{"Error": "unknown operation: " + req.Operation}})
 	}
 }
 
@@ -233,7 +233,7 @@ func (h *Handler) handleGet(ctx context.Context, s network.Stream, req *DocReque
 		if ifNoneMatch == doc.ContentHash {
 			h.writeResponse(s, &DocResponse{
 				Status: StatusNotModified,
-				Headers: map[string]string{
+				Headers: map[string]any{
 					"ETag": doc.ContentHash,
 				},
 			})
@@ -243,11 +243,11 @@ func (h *Handler) handleGet(ctx context.Context, s network.Stream, req *DocReque
 
 	h.writeResponse(s, &DocResponse{
 		Status: StatusOK,
-		Headers: map[string]string{
+		Headers: map[string]any{
 			"ETag":         doc.ContentHash,
 			"Content-Type": doc.ContentType,
-			"Last-Modified": doc.UpdatedAt.Format(time.RFC3339),
-			"Version":      fmt.Sprintf("%d", doc.VersionNumber),
+			"Last-Modified": doc.UpdatedAt.UnixMilli(),
+			"Version":      doc.VersionNumber,
 		},
 		Body: base64.StdEncoding.EncodeToString(doc.Content),
 	})
@@ -259,7 +259,7 @@ func (h *Handler) handlePut(ctx context.Context, s network.Stream, req *DocReque
 	content, err := base64.StdEncoding.DecodeString(req.Body)
 	if err != nil {
 		h.writeResponse(s, &DocResponse{Status: StatusBadRequest,
-			Headers: map[string]string{"Error": "invalid base64 body"}})
+			Headers: map[string]any{"Error": "invalid base64 body"}})
 		return
 	}
 
@@ -287,9 +287,9 @@ func (h *Handler) handlePut(ctx context.Context, s network.Stream, req *DocReque
 
 	h.writeResponse(s, &DocResponse{
 		Status: status,
-		Headers: map[string]string{
+		Headers: map[string]any{
 			"ETag":          result.ContentHash,
-			"Last-Modified": result.UpdatedAt.Format(time.RFC3339),
+			"Last-Modified": result.UpdatedAt.UnixMilli(),
 		},
 	})
 
@@ -303,14 +303,14 @@ func (h *Handler) handlePatch(ctx context.Context, s network.Stream, req *DocReq
 	bodyBytes, err := base64.StdEncoding.DecodeString(req.Body)
 	if err != nil {
 		h.writeResponse(s, &DocResponse{Status: StatusBadRequest,
-			Headers: map[string]string{"Error": "invalid base64 body"}})
+			Headers: map[string]any{"Error": "invalid base64 body"}})
 		return
 	}
 
 	var patch map[string]any
 	if err := json.Unmarshal(bodyBytes, &patch); err != nil {
 		h.writeResponse(s, &DocResponse{Status: StatusBadRequest,
-			Headers: map[string]string{"Error": "invalid JSON patch body"}})
+			Headers: map[string]any{"Error": "invalid JSON patch body"}})
 		return
 	}
 
@@ -328,9 +328,9 @@ func (h *Handler) handlePatch(ctx context.Context, s network.Stream, req *DocReq
 
 	h.writeResponse(s, &DocResponse{
 		Status: StatusOK,
-		Headers: map[string]string{
+		Headers: map[string]any{
 			"ETag":          result.ContentHash,
-			"Last-Modified": result.UpdatedAt.Format(time.RFC3339),
+			"Last-Modified": result.UpdatedAt.UnixMilli(),
 		},
 	})
 
@@ -360,7 +360,7 @@ func (h *Handler) handleHead(ctx context.Context, s network.Stream, req *DocRequ
 		if ifNoneMatch == doc.ContentHash {
 			h.writeResponse(s, &DocResponse{
 				Status: StatusNotModified,
-				Headers: map[string]string{
+				Headers: map[string]any{
 					"ETag": doc.ContentHash,
 				},
 			})
@@ -370,10 +370,10 @@ func (h *Handler) handleHead(ctx context.Context, s network.Stream, req *DocRequ
 
 	h.writeResponse(s, &DocResponse{
 		Status: StatusOK,
-		Headers: map[string]string{
+		Headers: map[string]any{
 			"ETag":           doc.ContentHash,
 			"Content-Type":   doc.ContentType,
-			"Content-Length": fmt.Sprintf("%d", len(doc.Content)),
+			"Content-Length": len(doc.Content),
 			"Last-Modified":  doc.UpdatedAt.Format(time.RFC3339),
 			"Version":        fmt.Sprintf("%d", doc.VersionNumber),
 		},
@@ -439,7 +439,7 @@ func (h *Handler) handleList(ctx context.Context, s network.Stream, ownerID peer
 
 	h.writeResponse(s, &DocResponse{
 		Status: StatusOK,
-		Headers: map[string]string{
+		Headers: map[string]any{
 			"Content-Type": "application/json",
 		},
 		Body: base64.StdEncoding.EncodeToString(bodyBytes),
@@ -463,11 +463,11 @@ func (h *Handler) handleHistory(ctx context.Context, s network.Stream, req *DocR
 
 		h.writeResponse(s, &DocResponse{
 			Status: StatusOK,
-			Headers: map[string]string{
+			Headers: map[string]any{
 				"ETag":         version.ContentHash,
 				"Content-Type": version.ContentType,
-				"Version":      fmt.Sprintf("%d", version.VersionNumber),
-				"Created-At":   version.CreatedAt.Format(time.RFC3339),
+				"Version":      version.VersionNumber,
+				"Created-At":   version.CreatedAt.UnixMilli(),
 			},
 			Body: base64.StdEncoding.EncodeToString(version.Content),
 		})
@@ -513,7 +513,7 @@ func (h *Handler) handleHistory(ctx context.Context, s network.Stream, req *DocR
 
 	h.writeResponse(s, &DocResponse{
 		Status: StatusOK,
-		Headers: map[string]string{
+		Headers: map[string]any{
 			"Content-Type": "application/json",
 		},
 		Body: base64.StdEncoding.EncodeToString(bodyBytes),
@@ -536,7 +536,7 @@ func (h *Handler) handleDirectory(ctx context.Context, s network.Stream, req *Do
 		h.handleDirectoryGet(ctx, s, ownerID)
 	default:
 		h.writeResponse(s, &DocResponse{Status: StatusBadRequest,
-			Headers: map[string]string{"Error": "unknown directoryAction: " + req.DirectoryAction}})
+			Headers: map[string]any{"Error": "unknown directoryAction: " + req.DirectoryAction}})
 	}
 }
 
@@ -553,19 +553,19 @@ func (h *Handler) handleDirectoryJoin(ctx context.Context, s network.Stream, req
 		bodyBytes, err := base64.StdEncoding.DecodeString(req.Body)
 		if err != nil {
 			h.writeResponse(s, &DocResponse{Status: StatusBadRequest,
-				Headers: map[string]string{"Error": "invalid base64 body"}})
+				Headers: map[string]any{"Error": "invalid base64 body"}})
 			return
 		}
 		if err := json.Unmarshal(bodyBytes, &listing); err != nil {
 			h.writeResponse(s, &DocResponse{Status: StatusBadRequest,
-				Headers: map[string]string{"Error": "invalid JSON body"}})
+				Headers: map[string]any{"Error": "invalid JSON body"}})
 			return
 		}
 	}
 
 	if listing.DisplayName == "" {
 		h.writeResponse(s, &DocResponse{Status: StatusBadRequest,
-			Headers: map[string]string{"Error": "displayName is required"}})
+			Headers: map[string]any{"Error": "displayName is required"}})
 		return
 	}
 
@@ -616,7 +616,7 @@ func (h *Handler) handleDirectoryBrowse(ctx context.Context, s network.Stream, r
 
 	h.writeResponse(s, &DocResponse{
 		Status: StatusOK,
-		Headers: map[string]string{
+		Headers: map[string]any{
 			"Content-Type": "application/json",
 		},
 		Body: base64.StdEncoding.EncodeToString(bodyBytes),
@@ -643,7 +643,7 @@ func (h *Handler) handleDirectoryGet(ctx context.Context, s network.Stream, owne
 
 	h.writeResponse(s, &DocResponse{
 		Status: StatusOK,
-		Headers: map[string]string{
+		Headers: map[string]any{
 			"Content-Type": "application/json",
 		},
 		Body: base64.StdEncoding.EncodeToString(bodyBytes),
@@ -715,10 +715,10 @@ func (h *Handler) handleWriteError(s network.Stream, err error) {
 		h.writeResponse(s, &DocResponse{Status: StatusNotFound})
 	case errors.As(err, &sizeErr):
 		h.writeResponse(s, &DocResponse{Status: StatusPayloadTooLarge,
-			Headers: map[string]string{"Error": sizeErr.Error()}})
+			Headers: map[string]any{"Error": sizeErr.Error()}})
 	case errors.As(err, &conflictErr):
 		h.writeResponse(s, &DocResponse{Status: StatusConflict,
-			Headers: map[string]string{
+			Headers: map[string]any{
 				"Error":         conflictErr.Error(),
 				"Expected-ETag": conflictErr.ExpectedHash,
 				"Actual-ETag":   conflictErr.ActualHash,
