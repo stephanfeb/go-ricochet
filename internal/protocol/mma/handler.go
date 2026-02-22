@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -22,13 +23,14 @@ const ProtocolID = protocol.ID("/sf-network/admin/1.0.0")
 
 // Operation type constants for the MMA protocol.
 const (
-	OpCreateMailbox  = "createMailbox"
-	OpDeleteMailbox  = "deleteMailbox"
-	OpGrantAccess    = "grantAccess"
-	OpRevokeAccess   = "revokeAccess"
-	OpListACL        = "listACL"
-	OpListMailboxes  = "listMailboxes"
-	OpQueryCapacity  = "queryCapacity"
+	OpCreateMailbox   = "createMailbox"
+	OpDeleteMailbox   = "deleteMailbox"
+	OpGrantAccess     = "grantAccess"
+	OpRevokeAccess    = "revokeAccess"
+	OpListACL         = "listACL"
+	OpListMailboxes   = "listMailboxes"
+	OpQueryCapacity   = "queryCapacity"
+	OpGetMailboxInfo  = "getMailboxInfo"
 )
 
 // AdminRequest is the top-level request envelope. The operationType field
@@ -40,6 +42,11 @@ type AdminRequest struct {
 	OwnerPeerID string `json:"ownerPeerId,omitempty"`
 	FolderPath  string `json:"folderPath,omitempty"`
 
+	// Dart-compatible: combined "peerId/folderPath" address string
+	Address string `json:"address,omitempty"`
+	// Dart-compatible: mailbox type as "type" field
+	Type string `json:"type,omitempty"`
+
 	// createMailbox
 	MailboxType    string `json:"mailboxType,omitempty"`
 	MaxMessages    *int   `json:"maxMessages,omitempty"`
@@ -47,8 +54,29 @@ type AdminRequest struct {
 	RetentionCount *int   `json:"retentionCount,omitempty"`
 
 	// grantAccess / revokeAccess
-	GranteePeerID string `json:"granteePeerId,omitempty"`
-	AccessMode    string `json:"accessMode,omitempty"`
+	GranteePeerID  string `json:"granteePeerId,omitempty"`
+	TargetPeerID   string `json:"targetPeerId,omitempty"` // Dart-compatible alias
+	AccessMode     string `json:"accessMode,omitempty"`
+}
+
+// normalize populates FolderPath and MailboxType from Dart-compatible fields
+// (Address, Type, TargetPeerID) when the Go-native fields are empty.
+func (r *AdminRequest) normalize() {
+	// Parse "peerId/folderPath" address into FolderPath
+	if r.FolderPath == "" && r.Address != "" {
+		parts := strings.SplitN(r.Address, "/", 2)
+		if len(parts) == 2 {
+			r.FolderPath = parts[1]
+		}
+	}
+	// Use "type" as mailbox type if "mailboxType" not set
+	if r.MailboxType == "" && r.Type != "" {
+		r.MailboxType = r.Type
+	}
+	// Use "targetPeerId" as grantee if "granteePeerId" not set
+	if r.GranteePeerID == "" && r.TargetPeerID != "" {
+		r.GranteePeerID = r.TargetPeerID
+	}
 }
 
 // AdminResponse is the generic response envelope.
@@ -126,6 +154,8 @@ func (h *Handler) HandleStream(s network.Stream) {
 		return
 	}
 
+	req.normalize()
+
 	h.logger.Debug("handling admin request",
 		"operation", req.OperationType,
 		"caller", callerID.String(),
@@ -152,6 +182,8 @@ func (h *Handler) HandleStream(s network.Stream) {
 		h.handleListACL(ctx, s, &req, callerID)
 	case OpListMailboxes:
 		h.handleListMailboxes(ctx, s, &req, callerID)
+	case OpGetMailboxInfo:
+		h.handleGetMailboxInfo(ctx, s, &req, callerID)
 	case OpQueryCapacity:
 		h.handleQueryCapacity(ctx, s)
 	default:
@@ -420,6 +452,56 @@ func (h *Handler) handleListMailboxes(ctx context.Context, s network.Stream, req
 		Success:   true,
 		Mailboxes: mailboxes,
 	})
+}
+
+// handleGetMailboxInfo returns info about a specific mailbox owned by the caller.
+func (h *Handler) handleGetMailboxInfo(ctx context.Context, s network.Stream, req *AdminRequest, callerID peer.ID) {
+	if req.FolderPath == "" {
+		h.sendError(s, "folderPath is required")
+		return
+	}
+
+	record, err := h.mda.Storage.FindMailbox(ctx, callerID, req.FolderPath)
+	if err != nil {
+		h.sendError(s, fmt.Sprintf("failed to find mailbox: %v", err))
+		return
+	}
+	if record == nil {
+		h.sendError(s, "mailbox not found")
+		return
+	}
+
+	msgCount, err := h.mda.Storage.GetMessageCount(ctx, record.ID)
+	if err != nil {
+		h.sendError(s, fmt.Sprintf("failed to get message count: %v", err))
+		return
+	}
+
+	// Return data in the format the Dart client expects (MailboxInfo)
+	data := map[string]any{
+		"address":        record.FullPath(),
+		"type":           record.Type.String(),
+		"messageCount":   msgCount,
+		"createdAt":      record.CreatedAt.UnixMilli(),
+		"lastAccessedAt": record.LastAccessAt.UnixMilli(),
+		"maxMessages":    record.MaxMessages,
+		"retentionDays":  record.RetentionDays,
+		"retentionCount": record.RetentionCount,
+	}
+
+	resp := map[string]any{
+		"success": true,
+		"data":    data,
+	}
+
+	respData, err := json.Marshal(resp)
+	if err != nil {
+		h.logger.Error("failed to marshal response", "error", err)
+		return
+	}
+	if err := frame.WriteFrame(s, respData); err != nil {
+		h.logger.Error("failed to write response", "error", err)
+	}
 }
 
 // handleQueryCapacity returns server capacity metrics. This operation does not

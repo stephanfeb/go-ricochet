@@ -57,7 +57,7 @@ echo ""
 
 # Step 4: Build the binary
 echo "[4/7] Compiling Ricochet server for linux/amd64..."
-CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o ricochet_server ./cmd/ricochet/
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -a -o ricochet_server ./cmd/ricochet/
 echo "✓ Binary compiled"
 echo ""
 

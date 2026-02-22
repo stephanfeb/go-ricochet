@@ -70,8 +70,10 @@ func NewNode(ctx context.Context, cfg *core.ServerConfig, priv interface{ Raw() 
 		}
 	}
 
-	// Create GossipSub
-	ps, err := pubsub.NewGossipSub(ctx, h)
+	// Create GossipSub with strict message signing (required by Dart client)
+	ps, err := pubsub.NewGossipSub(ctx, h,
+		pubsub.WithMessageSignaturePolicy(pubsub.StrictSign),
+	)
 	if err != nil {
 		kadDHT.Close()
 		cancel()
