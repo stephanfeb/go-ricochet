@@ -29,6 +29,7 @@ const (
 	OpRevokeAccess    = "revokeAccess"
 	OpListACL         = "listACL"
 	OpListMailboxes   = "listMailboxes"
+	OpUpdateConfig    = "updateConfig"
 	OpQueryCapacity   = "queryCapacity"
 	OpGetMailboxInfo  = "getMailboxInfo"
 )
@@ -182,6 +183,8 @@ func (h *Handler) HandleStream(s network.Stream) {
 		h.handleListACL(ctx, s, &req, callerID)
 	case OpListMailboxes:
 		h.handleListMailboxes(ctx, s, &req, callerID)
+	case OpUpdateConfig:
+		h.handleUpdateConfig(ctx, s, &req, callerID)
 	case OpGetMailboxInfo:
 		h.handleGetMailboxInfo(ctx, s, &req, callerID)
 	case OpQueryCapacity:
@@ -452,6 +455,46 @@ func (h *Handler) handleListMailboxes(ctx context.Context, s network.Stream, req
 		Success:   true,
 		Mailboxes: mailboxes,
 	})
+}
+
+// handleUpdateConfig updates the configuration of a mailbox owned by the caller.
+func (h *Handler) handleUpdateConfig(ctx context.Context, s network.Stream, req *AdminRequest, callerID peer.ID) {
+	if req.FolderPath == "" {
+		h.sendError(s, "folderPath is required")
+		return
+	}
+
+	record, err := h.mda.Storage.FindMailbox(ctx, callerID, req.FolderPath)
+	if err != nil {
+		h.sendError(s, fmt.Sprintf("failed to find mailbox: %v", err))
+		return
+	}
+	if record == nil {
+		h.sendError(s, "mailbox not found")
+		return
+	}
+
+	if req.MaxMessages != nil {
+		record.MaxMessages = *req.MaxMessages
+	}
+	if req.RetentionDays != nil {
+		record.RetentionDays = *req.RetentionDays
+	}
+	if req.RetentionCount != nil {
+		record.RetentionCount = req.RetentionCount
+	}
+
+	if err := h.mda.Storage.UpdateMailbox(ctx, record); err != nil {
+		h.sendError(s, fmt.Sprintf("failed to update mailbox: %v", err))
+		return
+	}
+
+	h.logger.Info("updated mailbox config",
+		"path", record.FullPath(),
+		"caller", callerID.String(),
+	)
+
+	h.sendResponse(s, &AdminResponse{Success: true})
 }
 
 // handleGetMailboxInfo returns info about a specific mailbox owned by the caller.
