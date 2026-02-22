@@ -175,11 +175,48 @@ type FeedEntryRecord struct {
 	EntryType       string    `json:"entryType,omitempty"`
 }
 
+// CollectionRecord represents a stored collection.
+type CollectionRecord struct {
+	ID             int64     `json:"id"`
+	OwnerPeerID    string    `json:"ownerPeerId"`
+	Path           string    `json:"path"`
+	Name           string    `json:"name,omitempty"`
+	CreatedAt      time.Time `json:"createdAt"`
+	LastModifiedAt time.Time `json:"lastModifiedAt"`
+	RecordCount    int       `json:"recordCount"`
+}
+
+// FullPath returns "ownerPeerId/collection/path".
+func (r *CollectionRecord) FullPath() string {
+	return r.OwnerPeerID + "/collection/" + r.Path
+}
+
+// CollectionItemRecord represents a single record in a collection.
+type CollectionItemRecord struct {
+	ID              int64     `json:"id"`
+	CollectionID    int64     `json:"collectionId"`
+	Key             string    `json:"key"`
+	Content         []byte    `json:"content"`
+	ContentHash     string    `json:"contentHash"`
+	Version         int       `json:"version"`
+	CreatedAt       time.Time `json:"createdAt"`
+	UpdatedAt       time.Time `json:"updatedAt"`
+	UpdatedByPeerID string    `json:"updatedByPeerId"`
+}
+
+// CollectionQueryResult wraps a paged query response.
+type CollectionQueryResult struct {
+	Items      []*CollectionItemRecord `json:"items"`
+	TotalCount int                     `json:"totalCount"`
+	HasMore    bool                    `json:"hasMore"`
+}
+
 // Storage errors.
 var (
 	ErrDocumentNotFound       = fmt.Errorf("document not found")
 	ErrDirectoryEntryNotFound = fmt.Errorf("directory entry not found")
 	ErrFeedNotFound           = fmt.Errorf("feed not found")
+	ErrCollectionNotFound     = fmt.Errorf("collection not found")
 )
 
 // DocumentSizeExceededError indicates a document exceeds the size limit.
@@ -200,4 +237,14 @@ type DocumentConflictError struct {
 
 func (e *DocumentConflictError) Error() string {
 	return fmt.Sprintf("document conflict: expected hash %s, got %s", e.ExpectedHash, e.ActualHash)
+}
+
+// CollectionItemConflictError indicates a version mismatch (optimistic locking).
+type CollectionItemConflictError struct {
+	ExpectedHash string
+	ActualHash   string
+}
+
+func (e *CollectionItemConflictError) Error() string {
+	return fmt.Sprintf("collection item conflict: expected hash %s, got %s", e.ExpectedHash, e.ActualHash)
 }

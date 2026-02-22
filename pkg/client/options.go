@@ -289,3 +289,65 @@ func WithFeedEntryServer(id peer.ID) FeedEntryOption {
 		c.ServerPeerID = &id
 	}
 }
+
+// CollectionOption configures collection operations.
+type CollectionOption func(*collectionConfig)
+
+type collectionConfig struct {
+	ServerPeerID *peer.ID
+	IfMatch      string
+}
+
+// WithCollectionServer sets a specific server peer ID for the collection operation.
+func WithCollectionServer(id peer.ID) CollectionOption {
+	return func(c *collectionConfig) {
+		c.ServerPeerID = &id
+	}
+}
+
+// WithCollectionIfMatch sets the If-Match header for optimistic locking on PUT.
+func WithCollectionIfMatch(etag string) CollectionOption {
+	return func(c *collectionConfig) {
+		c.IfMatch = etag
+	}
+}
+
+// CollectionQueryOption configures collection query and list operations.
+type CollectionQueryOption func(*collectionQueryConfig)
+
+type collectionQueryConfig struct {
+	ServerPeerID *peer.ID
+	SortField    string
+	SortAsc      *bool
+	Limit        *int
+	Offset       *int
+}
+
+// WithQuerySort sets the sort field and direction for query results.
+func WithQuerySort(field string, asc bool) CollectionQueryOption {
+	return func(c *collectionQueryConfig) {
+		c.SortField = field
+		c.SortAsc = &asc
+	}
+}
+
+// WithQueryLimit sets the maximum number of items to return.
+func WithQueryLimit(n int) CollectionQueryOption {
+	return func(c *collectionQueryConfig) {
+		c.Limit = &n
+	}
+}
+
+// WithQueryOffset sets the offset for pagination.
+func WithQueryOffset(n int) CollectionQueryOption {
+	return func(c *collectionQueryConfig) {
+		c.Offset = &n
+	}
+}
+
+// WithQueryServer sets a specific server peer ID for query operations.
+func WithQueryServer(id peer.ID) CollectionQueryOption {
+	return func(c *collectionQueryConfig) {
+		c.ServerPeerID = &id
+	}
+}

@@ -260,6 +260,44 @@ func (m *mockStorage) EnforceRetentionPolicy(_ context.Context, _ *storage.Mailb
 	panic("not implemented")
 }
 
+// --- Collection operations ---
+
+func (m *mockStorage) CreateCollection(_ context.Context, _ peer.ID, _, _ string) (*storage.CollectionRecord, error) {
+	panic("not implemented")
+}
+
+func (m *mockStorage) GetCollection(_ context.Context, _ peer.ID, _ string) (*storage.CollectionRecord, error) {
+	panic("not implemented")
+}
+
+func (m *mockStorage) DeleteCollection(_ context.Context, _ peer.ID, _ string) (bool, error) {
+	panic("not implemented")
+}
+
+func (m *mockStorage) ListCollections(_ context.Context, _ peer.ID) ([]*storage.CollectionRecord, error) {
+	panic("not implemented")
+}
+
+func (m *mockStorage) GetCollectionItem(_ context.Context, _ int64, _ string) (*storage.CollectionItemRecord, error) {
+	panic("not implemented")
+}
+
+func (m *mockStorage) PutCollectionItem(_ context.Context, _ int64, _ string, _ []byte, _ peer.ID, _ *string) (*storage.CollectionItemRecord, bool, error) {
+	panic("not implemented")
+}
+
+func (m *mockStorage) DeleteCollectionItem(_ context.Context, _ int64, _ string) (bool, error) {
+	panic("not implemented")
+}
+
+func (m *mockStorage) ListCollectionKeys(_ context.Context, _ int64, _, _ int) ([]string, int, error) {
+	panic("not implemented")
+}
+
+func (m *mockStorage) QueryCollection(_ context.Context, _ int64, _ map[string]any, _ string, _ bool, _, _ int) (*storage.CollectionQueryResult, error) {
+	panic("not implemented")
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------

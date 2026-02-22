@@ -70,6 +70,17 @@ type Storage interface {
 	GetFeedEntries(ctx context.Context, feedID int64, fromSeq, toSeq *int, entryType string, limit int) ([]*FeedEntryRecord, bool, error)
 	EnforceFeedRetention(ctx context.Context, feed *FeedRecord) (int, error)
 
+	// Collection operations
+	CreateCollection(ctx context.Context, ownerID peer.ID, path, name string) (*CollectionRecord, error)
+	GetCollection(ctx context.Context, ownerID peer.ID, path string) (*CollectionRecord, error)
+	DeleteCollection(ctx context.Context, ownerID peer.ID, path string) (bool, error)
+	ListCollections(ctx context.Context, ownerID peer.ID) ([]*CollectionRecord, error)
+	GetCollectionItem(ctx context.Context, collectionID int64, key string) (*CollectionItemRecord, error)
+	PutCollectionItem(ctx context.Context, collectionID int64, key string, content []byte, updatedBy peer.ID, ifMatch *string) (*CollectionItemRecord, bool, error)
+	DeleteCollectionItem(ctx context.Context, collectionID int64, key string) (bool, error)
+	ListCollectionKeys(ctx context.Context, collectionID int64, limit, offset int) ([]string, int, error)
+	QueryCollection(ctx context.Context, collectionID int64, filter map[string]any, sortField string, sortAsc bool, limit, offset int) (*CollectionQueryResult, error)
+
 	// Directory operations
 	UpsertDirectoryEntry(ctx context.Context, entry *DirectoryEntry) error
 	RemoveDirectoryEntry(ctx context.Context, ownerPeerID string) error

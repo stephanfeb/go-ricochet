@@ -20,6 +20,7 @@ import (
 	"github.com/twostack/go-ricochet/internal/protocol/maa"
 	"github.com/twostack/go-ricochet/internal/protocol/mma"
 	"github.com/twostack/go-ricochet/internal/protocol/msa"
+	"github.com/twostack/go-ricochet/internal/protocol/sca"
 	"github.com/twostack/go-ricochet/internal/protocol/sda"
 	"github.com/twostack/go-ricochet/internal/protocol/sfa"
 	"github.com/twostack/go-ricochet/internal/registry"
@@ -283,6 +284,11 @@ func (s *Server) registerProtocolHandlers() {
 	sfaHandler := sfa.NewHandler(s.storage, s.logger)
 	s.host.SetStreamHandler(sfa.ProtocolID, sfaHandler.HandleStream)
 	s.logger.Info("registered SFA handler", "protocol", sfa.ProtocolID)
+
+	// SCA — Store Collection Agent (collection path)
+	scaHandler := sca.NewHandler(s.storage, s.logger)
+	s.host.SetStreamHandler(sca.ProtocolID, scaHandler.HandleStream)
+	s.logger.Info("registered SCA handler", "protocol", sca.ProtocolID)
 }
 
 func (s *Server) startServices(ctx context.Context) {

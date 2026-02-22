@@ -24,7 +24,9 @@ import (
 	"github.com/twostack/go-ricochet/internal/protocol/maa"
 	"github.com/twostack/go-ricochet/internal/protocol/mma"
 	"github.com/twostack/go-ricochet/internal/protocol/msa"
+	"github.com/twostack/go-ricochet/internal/protocol/sca"
 	"github.com/twostack/go-ricochet/internal/protocol/sda"
+	"github.com/twostack/go-ricochet/internal/protocol/sfa"
 	"github.com/twostack/go-ricochet/internal/storage/postgres"
 	client "github.com/twostack/go-ricochet/pkg/client"
 )
@@ -93,6 +95,12 @@ func newTestServer(t *testing.T) *testServer {
 
 	sdaHandler := sda.NewHandler(store, logger)
 	h.SetStreamHandler(sda.ProtocolID, sdaHandler.HandleStream)
+
+	sfaHandler := sfa.NewHandler(store, logger)
+	h.SetStreamHandler(sfa.ProtocolID, sfaHandler.HandleStream)
+
+	scaHandler := sca.NewHandler(store, logger)
+	h.SetStreamHandler(sca.ProtocolID, scaHandler.HandleStream)
 
 	ts := &testServer{
 		Host:   h,

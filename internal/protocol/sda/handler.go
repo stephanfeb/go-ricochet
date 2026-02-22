@@ -115,7 +115,14 @@ func NewHandler(store storage.Storage, logger *slog.Logger) *Handler {
 // HandleStream handles an incoming document access stream.
 func (h *Handler) HandleStream(s network.Stream) {
 	callerID := s.Conn().RemotePeer()
-	defer s.CloseWrite()
+	// NOTE: Do NOT defer s.CloseWrite() here. For large responses (e.g., 88KB+
+	// banner images), CloseWrite sends a Yamux FIN frame that can arrive at the
+	// client before all data packets are delivered over UDX (UDP-based transport).
+	// This causes the client to see a closed stream mid-read, resulting in
+	// "Stream closed after reading N of M bytes" errors. The client closes
+	// the stream after reading the response, so server-side half-close is
+	// unnecessary.
+	defer s.Close()
 
 	// Read length-prefixed frame
 	data, err := frame.ReadFrame(s)
@@ -819,7 +826,11 @@ func (h *Handler) writeResponse(s network.Stream, resp *DocResponse) {
 		h.logger.Error("failed to marshal response", "error", err)
 		return
 	}
+	h.logger.Debug("writing response", "status", resp.Status, "frameSize", len(data))
+	writeStart := time.Now()
 	if err := frame.WriteFrame(s, data); err != nil {
-		h.logger.Error("failed to write response", "error", err)
+		h.logger.Error("failed to write response", "error", err, "elapsed", time.Since(writeStart))
+		return
 	}
+	h.logger.Debug("response written", "status", resp.Status, "frameSize", len(data), "elapsed", time.Since(writeStart))
 }

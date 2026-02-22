@@ -137,7 +137,7 @@ func NewHandler(mailboxServer *mda.MailboxServer, config *core.ServerConfig, log
 // HandleStream handles an incoming admin stream.
 func (h *Handler) HandleStream(s network.Stream) {
 	callerID := s.Conn().RemotePeer()
-	defer s.CloseWrite()
+	defer s.Close()
 
 	// Read length-prefixed frame
 	data, err := frame.ReadFrame(s)

@@ -42,7 +42,7 @@ func NewHandler(mailboxServer *mda.MailboxServer, logger *slog.Logger) *Handler 
 // HandleStream handles an incoming access stream.
 func (h *Handler) HandleStream(s network.Stream) {
 	callerID := s.Conn().RemotePeer()
-	defer s.CloseWrite()
+	defer s.Close()
 
 	// Read length-prefixed frame
 	data, err := frame.ReadFrame(s)

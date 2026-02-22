@@ -226,6 +226,52 @@ CREATE INDEX IF NOT EXISTS idx_feed_entries_created
     ON feed_entries(feed_id, created_at);
 
 -- =============================================================================
+-- COLLECTIONS
+-- =============================================================================
+CREATE TABLE IF NOT EXISTS collections (
+    id BIGSERIAL PRIMARY KEY,
+    owner_peer_id TEXT NOT NULL,
+    path TEXT NOT NULL,
+    name TEXT NOT NULL DEFAULT '',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    last_modified_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    record_count INT NOT NULL DEFAULT 0,
+
+    CONSTRAINT uq_collection_owner_path UNIQUE(owner_peer_id, path)
+);
+
+CREATE INDEX IF NOT EXISTS idx_collections_owner ON collections(owner_peer_id);
+
+-- =============================================================================
+-- COLLECTION ITEMS
+-- =============================================================================
+CREATE TABLE IF NOT EXISTS collection_items (
+    id BIGSERIAL PRIMARY KEY,
+    collection_id BIGINT NOT NULL REFERENCES collections(id) ON DELETE CASCADE,
+    key TEXT NOT NULL,
+    content JSONB NOT NULL,
+    content_hash TEXT NOT NULL,
+    version INT NOT NULL DEFAULT 1,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_by_peer_id TEXT NOT NULL,
+
+    CONSTRAINT uq_collection_item_key UNIQUE(collection_id, key)
+);
+
+-- GIN index for JSONB containment and key-exists queries
+CREATE INDEX IF NOT EXISTS idx_collection_items_content
+    ON collection_items USING GIN(content);
+
+-- Key listing and lookup
+CREATE INDEX IF NOT EXISTS idx_collection_items_key
+    ON collection_items(collection_id, key);
+
+-- Version tracking / recent updates
+CREATE INDEX IF NOT EXISTS idx_collection_items_updated
+    ON collection_items(collection_id, updated_at DESC);
+
+-- =============================================================================
 -- MAINTENANCE FUNCTIONS AND TRIGGERS
 -- =============================================================================
 

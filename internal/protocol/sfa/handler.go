@@ -109,7 +109,7 @@ func NewHandler(store storage.Storage, logger *slog.Logger) *Handler {
 // HandleStream handles an incoming feed access stream.
 func (h *Handler) HandleStream(s network.Stream) {
 	callerID := s.Conn().RemotePeer()
-	defer s.CloseWrite()
+	defer s.Close()
 
 	// Read length-prefixed frame
 	data, err := frame.ReadFrame(s)

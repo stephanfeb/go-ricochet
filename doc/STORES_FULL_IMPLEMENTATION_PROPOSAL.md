@@ -1,6 +1,6 @@
 # Ricochet Stores: Full Implementation Proposal
 
-**Status:** Active (Phase 1+2 Complete)
+**Status:** Active (Phases 1–4 Complete)
 **Author:** Architecture Team
 **Date:** February 2026
 **Version:** 2.0 — Go + PostgreSQL
@@ -13,10 +13,8 @@
 
 This proposal defines the complete implementation roadmap for the Ricochet Stores architecture, targeting **Go + PostgreSQL** as the canonical stack.
 
-**Phase 1+2 (Document Store) are fully implemented.** The Document Store supports GET, PUT, PATCH, DELETE, LIST, HEAD, HISTORY, and DIRECTORY operations with version history, optimistic locking, and rate limiting. The remaining phases are:
+**Phases 1–4 (Document Store + Feed Store + Collection Store) are fully implemented.** The Document Store supports GET, PUT, PATCH, DELETE, LIST, HEAD, HISTORY, and DIRECTORY operations with version history, optimistic locking, and rate limiting. The Feed Store supports CREATE, GET, APPEND, DELETE, and LIST with sequence-based pagination, entry type filtering, and retention policies. The Collection Store supports CREATE, GET, PUT, DELETE, LIST, and QUERY operations with JSONB-powered filtering, per-record versioning, and optimistic locking. The remaining phases are:
 
-3. **Feed Store** — Append-only broadcast streams for social posts, activity logs, RSS
-4. **Collection Store** — Mutable key-value records with JSONB queries
 5. **Blob Store** — Content-addressed immutable files (filesystem + PostgreSQL metadata)
 6. **Cross-cutting Features** — Subscriptions via PG LISTEN/NOTIFY + GossipSub, unified discovery
 
@@ -33,8 +31,8 @@ This proposal defines the complete implementation roadmap for the Ricochet Store
 
 1. [Architecture Overview](#1-architecture-overview)
 2. [Phase 2: Document Store — COMPLETE](#2-phase-2-document-store--complete)
-3. [Phase 3: Feed Store](#3-phase-3-feed-store)
-4. [Phase 4: Collection Store](#4-phase-4-collection-store)
+3. [Phase 3: Feed Store — COMPLETE](#3-phase-3-feed-store--complete)
+4. [Phase 4: Collection Store — COMPLETE](#4-phase-4-collection-store--complete)
 5. [Phase 5: Blob Store](#5-phase-5-blob-store)
 6. [Cross-cutting Features](#6-cross-cutting-features)
 7. [Storage Interface Refactor](#7-storage-interface-refactor)
@@ -58,14 +56,14 @@ This proposal defines the complete implementation roadmap for the Ricochet Store
 │  │                                                                           │
 │  └── Store Protocols                                                         │
 │       ├── SDA /ricochet/store/doc/1.0.0        Document Store  ✅ COMPLETE  │
-│       ├── SFA /ricochet/store/feed/1.0.0       Feed Store                   │
-│       ├── SCA /ricochet/store/collection/1.0.0 Collection Store             │
+│       ├── SFA /ricochet/store/feed/1.0.0       Feed Store      ✅ COMPLETE  │
+│       ├── SCA /ricochet/store/collection/1.0.0 Collection Store ✅ COMPLETE │
 │       └── SBA /ricochet/store/blob/1.0.0       Blob Store                   │
 ├──────────────────────────────────────────────────────────────────────────────┤
 │  Go Packages                                                                 │
 │  ├── internal/protocol/sda/   Document handler   ✅                         │
-│  ├── internal/protocol/sfa/   Feed handler                                   │
-│  ├── internal/protocol/sca/   Collection handler                             │
+│  ├── internal/protocol/sfa/   Feed handler       ✅                         │
+│  ├── internal/protocol/sca/   Collection handler  ✅                         │
 │  ├── internal/protocol/sba/   Blob handler                                   │
 │  ├── internal/storage/        Storage interface + models                      │
 │  ├── internal/storage/postgres/ PostgreSQL implementation                    │
@@ -75,8 +73,8 @@ This proposal defines the complete implementation roadmap for the Ricochet Store
 │  ├── mailboxes, stored_messages, mailbox_acls   (existing)                   │
 │  ├── documents, document_versions               ✅ COMPLETE                 │
 │  ├── directory_listings                          ✅ COMPLETE                 │
-│  ├── feeds, feed_entries                         (Phase 3)                   │
-│  ├── collections, collection_items               (Phase 4)                   │
+│  ├── feeds, feed_entries                         ✅ COMPLETE                 │
+│  ├── collections, collection_items               ✅ COMPLETE                 │
 │  └── blobs, blob_pins                            (Phase 5)                   │
 ├──────────────────────────────────────────────────────────────────────────────┤
 │  Filesystem (Phase 5 only)                                                   │
@@ -207,11 +205,23 @@ CREATE TABLE IF NOT EXISTS document_versions (
 
 ---
 
-## 3. Phase 3: Feed Store
+## 3. Phase 3: Feed Store — COMPLETE
 
-**Builds on:** Document Store (complete)
+**Status:** ✅ Fully implemented
 **Protocol ID:** `/ricochet/store/feed/1.0.0`
 **Handler package:** `internal/protocol/sfa/` (Store Feed Agent)
+
+### 3.0 Key Files
+
+| File | Purpose |
+|------|---------|
+| `internal/protocol/sfa/handler.go` | Protocol handler — stream handling, operation dispatch, rate limiting |
+| `internal/storage/storage.go` | `Storage` interface — `CreateFeed`, `AppendFeedEntry`, `GetFeedEntries`, etc. |
+| `internal/storage/models.go` | `FeedRecord`, `FeedEntryRecord`, `ErrFeedNotFound` |
+| `internal/storage/postgres/feeds.go` | PostgreSQL implementation — transactional append, range queries, retention |
+| `schema.sql` | `feeds`, `feed_entries` tables |
+| `pkg/client/feeds.go` | Public client API — `CreateFeed`, `AppendFeedEntry`, `GetFeedEntries`, etc. |
+| `pkg/client/options.go` | `FeedOption`, `FeedEntryOption` functional option types |
 
 ### 3.1 Overview
 
@@ -627,11 +637,24 @@ func (c *Client) GetFeedEntries(ctx context.Context, ownerPeerID peer.ID, path s
 
 ---
 
-## 4. Phase 4: Collection Store
+## 4. Phase 4: Collection Store — COMPLETE
 
-**Builds on:** Document Store (complete)
+**Status:** ✅ Fully implemented
 **Protocol ID:** `/ricochet/store/collection/1.0.0`
 **Handler package:** `internal/protocol/sca/` (Store Collection Agent)
+
+### 4.0 Key Files
+
+| File | Purpose |
+|------|---------|
+| `internal/protocol/sca/handler.go` | Protocol handler — stream handling, operation dispatch, rate limiting |
+| `internal/storage/storage.go` | `Storage` interface — `CreateCollection`, `PutCollectionItem`, `QueryCollection`, etc. |
+| `internal/storage/models.go` | `CollectionRecord`, `CollectionItemRecord`, `CollectionQueryResult`, `CollectionItemConflictError` |
+| `internal/storage/postgres/collections.go` | PostgreSQL implementation — CRUD, transactions, atomic record counts |
+| `internal/storage/postgres/jsonb_filter.go` | JSONB query builder — translates filter maps to parameterized SQL |
+| `schema.sql` | `collections`, `collection_items` tables with GIN index |
+| `pkg/client/collections.go` | Public client API — `CreateCollection`, `PutCollectionItem`, `QueryCollection`, etc. |
+| `pkg/client/options.go` | `CollectionOption`, `CollectionQueryOption` functional option types |
 
 ### 4.1 Overview
 
@@ -1406,8 +1429,8 @@ h.SetStreamHandler(sba.ProtocolID, sbaHandler.HandleStream)  // new
 | Phase | Focus | Status | Dependencies |
 |-------|-------|--------|--------------|
 | **1+2** | Document Store | ✅ COMPLETE | — |
-| **3** | Feed Store | Planned | Phase 2 |
-| **4** | Collection Store | Planned | Phase 2 |
+| **3** | Feed Store | ✅ COMPLETE | Phase 2 |
+| **4** | Collection Store | ✅ COMPLETE | Phase 2 |
 | **5** | Blob Store | Planned | Phase 2 |
 | **6** | Cross-cutting (Subscriptions, Discovery) | Planned | Phases 3–5 |
 
