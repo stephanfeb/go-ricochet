@@ -45,6 +45,11 @@ func CreateHost(cfg *core.ServerConfig, priv crypto.PrivKey, logger *slog.Logger
 		libp2p.ResourceManager(&network.NullResourceManager{}),
 	}
 
+	// AutoNAT v2 configuration — enables dial-back service for clients.
+	if cfg.EnableAutoNAT {
+		opts = append(opts, libp2p.EnableAutoNATv2())
+	}
+
 	// Relay configuration.
 	if cfg.EnableRelay {
 		opts = append(opts, libp2p.EnableRelay())

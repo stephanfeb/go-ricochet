@@ -46,6 +46,7 @@ type ServerConfig struct {
 	EnableRelay              bool `yaml:"enable_relay" json:"enableRelay"`
 	EnableAutoRelay          bool `yaml:"enable_auto_relay" json:"enableAutoRelay"`
 	EnableHolePunching       bool `yaml:"enable_hole_punching" json:"enableHolePunching"`
+	EnableAutoNAT            bool `yaml:"enable_autonat" json:"enableAutoNAT"`
 
 	// Presence broadcasting
 	PresenceHeartbeatInterval time.Duration `yaml:"presence_heartbeat_interval" json:"presenceHeartbeatInterval"`
@@ -133,6 +134,7 @@ func DefaultConfig() *ServerConfig {
 		EnablePresenceMonitoring: true,
 		EnablePresenceBroadcast:  true,
 		EnableMetrics:            true,
+		EnableAutoNAT:            true,
 
 		PresenceHeartbeatInterval: 60 * time.Second,
 		PresenceTimeoutDuration:   120 * time.Second,
