@@ -1,10 +1,9 @@
 # Ricochet Store-and-Forward Server Configuration (Go)
 #
-# NOTE: The Go server currently uses CLI flags, not a YAML config file.
-# This file serves as a reference for available settings.
-# The deploy/run.sh wrapper passes these as CLI flags.
+# Place this file at /etc/ricochet/config.yaml and it will be loaded
+# automatically at startup. CLI flags override values from this file.
 #
-# See: ricochet_server --help
+# Precedence: defaults → config file → CLI flags
 
 # Server identity and network configuration
 server:
@@ -22,8 +21,12 @@ server:
   listen_addresses:
     - /ip4/0.0.0.0/udp/55223/udx
 
-  # External addresses to advertise (optional)
-  external_addresses: []
+  # External addresses to advertise via Identify.
+  # IMPORTANT: Set this to the server's public IP so remote clients can
+  # reconnect after a connection drop. Without this, clients only see
+  # private IPs and lose the server's address from their peerstore.
+  external_addresses:
+    - /ip4/YOUR_PUBLIC_IP/udp/55223/udx
 
   # Bootstrap peers for DHT (optional)
   bootstrap_peers: []
@@ -37,7 +40,6 @@ storage:
   max_mailboxes: 100000
 
 # PostgreSQL configuration
-# These are passed via CLI flags in deploy/run.sh
 database:
   host: localhost
   port: 5432
@@ -71,6 +73,7 @@ features:
   enable_presence_broadcast: true
   enable_metrics: true
   enable_authentication: false
+  enable_autonat: true
 
 # Rate limiting
 rate_limiting:

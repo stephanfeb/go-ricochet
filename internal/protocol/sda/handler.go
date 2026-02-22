@@ -186,7 +186,8 @@ func (h *Handler) HandleStream(s network.Stream) {
 		return
 	}
 
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
 
 	switch req.Operation {
 	case OpGET:
@@ -601,12 +602,28 @@ func (h *Handler) handleDirectoryBrowse(ctx context.Context, s network.Stream, r
 		limit = *req.DirectoryLimit
 	}
 
+	h.logger.Info("directory browse request",
+		"query", req.DirectoryQuery,
+		"cursor", req.DirectoryCursor,
+		"limit", limit,
+	)
+
 	page, err := h.store.BrowseDirectory(ctx, req.DirectoryQuery, req.DirectoryCursor, limit)
 	if err != nil {
 		h.logger.Error("failed to browse directory", "error", err)
 		h.writeResponse(s, &DocResponse{Status: StatusInternalError})
 		return
 	}
+
+	entryCount := 0
+	if page.Entries != nil {
+		entryCount = len(page.Entries)
+	}
+	h.logger.Info("directory browse result",
+		"entries", entryCount,
+		"hasMore", page.HasMore,
+		"nextCursor", page.NextCursor,
+	)
 
 	bodyBytes, err := json.Marshal(page)
 	if err != nil {

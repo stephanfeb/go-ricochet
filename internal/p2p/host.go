@@ -45,6 +45,28 @@ func CreateHost(cfg *core.ServerConfig, priv crypto.PrivKey, logger *slog.Logger
 		libp2p.ResourceManager(&network.NullResourceManager{}),
 	}
 
+	// Advertise external (public) addresses so that Identify reports them
+	// to connecting peers. Without this, a server behind NAT only reports
+	// its private IPs, which remote clients filter out, leaving the
+	// peerstore empty and preventing reconnection.
+	if len(cfg.ExternalAddresses) > 0 {
+		extMAs := make([]multiaddr.Multiaddr, 0, len(cfg.ExternalAddresses))
+		for _, addr := range cfg.ExternalAddresses {
+			ma, err := multiaddr.NewMultiaddr(addr)
+			if err != nil {
+				logger.Warn("invalid external address, skipping", "addr", addr, "error", err)
+				continue
+			}
+			extMAs = append(extMAs, ma)
+		}
+		if len(extMAs) > 0 {
+			opts = append(opts, libp2p.AddrsFactory(func(addrs []multiaddr.Multiaddr) []multiaddr.Multiaddr {
+				return append(addrs, extMAs...)
+			}))
+			logger.Info("advertising external addresses", "count", len(extMAs))
+		}
+	}
+
 	// AutoNAT v2 configuration — enables dial-back service for clients.
 	if cfg.EnableAutoNAT {
 		opts = append(opts, libp2p.EnableAutoNATv2())

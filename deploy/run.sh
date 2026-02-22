@@ -16,6 +16,14 @@ if [ -z "$DB_PASSWORD" ]; then
     exit 1
 fi
 
+# Build external-addrs flag if EXTERNAL_IP is set.
+# This is critical: without it, Identify only reports the VM's private IP,
+# causing remote clients to lose the server's address from their peerstore.
+EXTERNAL_ADDRS_FLAG=""
+if [ -n "$EXTERNAL_IP" ]; then
+    EXTERNAL_ADDRS_FLAG="--external-addrs /ip4/${EXTERNAL_IP}/udp/${LISTEN_PORT:-55223}/udx"
+fi
+
 # Start the server with CLI flags
 exec /opt/ricochet/ricochet_server \
     --production \
@@ -25,4 +33,5 @@ exec /opt/ricochet/ricochet_server \
     --pg-database "${DB_NAME:-ricochet}" \
     --pg-username "${DB_USER:-ricochet}" \
     --pg-password "$DB_PASSWORD" \
-    --pg-sslmode "${DB_SSLMODE:-disable}"
+    --pg-sslmode "${DB_SSLMODE:-disable}" \
+    $EXTERNAL_ADDRS_FLAG

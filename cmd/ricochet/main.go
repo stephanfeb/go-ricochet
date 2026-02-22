@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"github.com/twostack/go-ricochet/internal/core"
@@ -28,10 +29,12 @@ func main() {
 	pgUsername := flag.String("pg-username", "", "PostgreSQL username")
 	pgPassword := flag.String("pg-password", "", "PostgreSQL password")
 	pgSSLMode := flag.String("pg-sslmode", "", "PostgreSQL SSL mode")
+	externalAddrs := flag.String("external-addrs", "", "Comma-separated external multiaddrs to advertise (e.g., /ip4/1.2.3.4/udp/55223/udx)")
+	configFile := flag.String("config", "", "Path to YAML config file (e.g., /etc/ricochet/config.yaml)")
 
 	flag.Parse()
 
-	// Build configuration
+	// Build configuration: preset → config file → CLI overrides
 	var cfg *core.ServerConfig
 	if *development {
 		cfg = core.DevelopmentConfig()
@@ -41,7 +44,23 @@ func main() {
 		cfg = core.DefaultConfig()
 	}
 
-	// Apply CLI overrides
+	// Load YAML config file if specified (or check default location)
+	cfgPath := *configFile
+	if cfgPath == "" {
+		// Check default location
+		if _, err := os.Stat("/etc/ricochet/config.yaml"); err == nil {
+			cfgPath = "/etc/ricochet/config.yaml"
+		}
+	}
+	if cfgPath != "" {
+		if err := core.LoadConfigFromFile(cfgPath, cfg); err != nil {
+			fmt.Fprintf(os.Stderr, "WARNING: failed to load config file %s: %v\n", cfgPath, err)
+		} else {
+			fmt.Printf("Loaded config from %s\n", cfgPath)
+		}
+	}
+
+	// Apply CLI overrides (take precedence over config file)
 	if *port > 0 {
 		cfg.Port = *port
 	}
@@ -68,6 +87,9 @@ func main() {
 	}
 	if *pgSSLMode != "" {
 		cfg.Storage.Postgres.SSLMode = *pgSSLMode
+	}
+	if *externalAddrs != "" {
+		cfg.ExternalAddresses = strings.Split(*externalAddrs, ",")
 	}
 
 	// Setup logger

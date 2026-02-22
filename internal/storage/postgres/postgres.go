@@ -760,10 +760,10 @@ func (s *PostgresStorage) BrowseDirectory(ctx context.Context, query string, cur
 	args := []any{}
 	argIdx := 1
 
-	// Full-text search filter
+	// Full-text search filter (COALESCE handles NULL bio/display_name)
 	if query != "" {
 		conditions = append(conditions, fmt.Sprintf(
-			"to_tsvector('english', display_name || ' ' || bio) @@ plainto_tsquery('english', $%d)", argIdx))
+			"to_tsvector('english', coalesce(display_name, '') || ' ' || coalesce(bio, '')) @@ plainto_tsquery('english', $%d)", argIdx))
 		args = append(args, query)
 		argIdx++
 	}
@@ -798,6 +798,8 @@ func (s *PostgresStorage) BrowseDirectory(ctx context.Context, query string, cur
 		ORDER BY updated_at DESC, owner_peer_id DESC
 		LIMIT $%d`, whereClause, argIdx)
 	args = append(args, limit+1)
+
+	s.logger.Info("browse directory SQL", "query", sqlQuery, "args", args)
 
 	rows, err := s.pool.Query(ctx, sqlQuery, args...)
 	if err != nil {

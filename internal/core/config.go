@@ -2,7 +2,10 @@ package core
 
 import (
 	"fmt"
+	"os"
 	"time"
+
+	"gopkg.in/yaml.v3"
 )
 
 // ServerConfig holds all server configuration.
@@ -211,4 +214,204 @@ func (c *ServerConfig) MaxStorageHuman() string {
 	}
 	mb := float64(c.MaxStorageBytes) / (1024 * 1024)
 	return fmt.Sprintf("%.0fMB", mb)
+}
+
+// yamlFileConfig mirrors the nested YAML config file structure.
+type yamlFileConfig struct {
+	Server struct {
+		Port              int      `yaml:"port"`
+		Region            string   `yaml:"region"`
+		IdentityFile      string   `yaml:"identity_file"`
+		ListenAddresses   []string `yaml:"listen_addresses"`
+		ExternalAddresses []string `yaml:"external_addresses"`
+		BootstrapPeers    []string `yaml:"bootstrap_peers"`
+	} `yaml:"server"`
+
+	Storage struct {
+		DataDirectory string `yaml:"data_directory"`
+		MaxStorageGB  int    `yaml:"max_storage_gb"`
+		RetentionDays int    `yaml:"retention_days"`
+		MaxMessages   int    `yaml:"max_messages_per_mailbox"`
+		MaxMailboxes  int    `yaml:"max_mailboxes"`
+	} `yaml:"storage"`
+
+	Database struct {
+		Host     string `yaml:"host"`
+		Port     int    `yaml:"port"`
+		Name     string `yaml:"name"`
+		Username string `yaml:"username"`
+		Password string `yaml:"password"`
+		SSLMode  string `yaml:"sslmode"`
+		PoolSize int    `yaml:"pool_size"`
+	} `yaml:"database"`
+
+	Performance struct {
+		MaxConcurrentConnections int `yaml:"max_concurrent_connections"`
+		ConnectionTimeoutSec     int `yaml:"connection_timeout_sec"`
+		MessageTimeoutSec        int `yaml:"message_timeout_sec"`
+		WorkerThreads            int `yaml:"worker_threads"`
+	} `yaml:"performance"`
+
+	Intervals struct {
+		ServiceAnnouncementMin int `yaml:"service_announcement_min"`
+		HealthCheckMin         int `yaml:"health_check_min"`
+		CleanupMin             int `yaml:"cleanup_min"`
+		PresenceCheckSec       int `yaml:"presence_check_sec"`
+		PresenceHeartbeatSec   int `yaml:"presence_heartbeat_sec"`
+		PresenceTimeoutSec     int `yaml:"presence_timeout_sec"`
+	} `yaml:"intervals"`
+
+	Features struct {
+		EnableForwarding         bool `yaml:"enable_forwarding"`
+		EnablePushDelivery       bool `yaml:"enable_push_delivery"`
+		EnablePresenceMonitoring bool `yaml:"enable_presence_monitoring"`
+		EnablePresenceBroadcast  bool `yaml:"enable_presence_broadcast"`
+		EnableMetrics            bool `yaml:"enable_metrics"`
+		EnableAuthentication     bool `yaml:"enable_authentication"`
+		EnableRelay              bool `yaml:"enable_relay"`
+		EnableAutoRelay          bool `yaml:"enable_auto_relay"`
+		EnableHolePunching       bool `yaml:"enable_hole_punching"`
+		EnableAutoNAT            bool `yaml:"enable_autonat"`
+	} `yaml:"features"`
+
+	RateLimiting struct {
+		WindowMinutes        int `yaml:"window_minutes"`
+		MaxRequestsPerWindow int `yaml:"max_requests_per_window"`
+	} `yaml:"rate_limiting"`
+}
+
+// LoadConfigFromFile reads a YAML config file and applies its values on top of
+// the provided base config. Only non-zero/non-empty values from the file
+// override the base.
+func LoadConfigFromFile(path string, base *ServerConfig) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("read config file: %w", err)
+	}
+
+	var yc yamlFileConfig
+	if err := yaml.Unmarshal(data, &yc); err != nil {
+		return fmt.Errorf("parse config file: %w", err)
+	}
+
+	// Server section
+	if yc.Server.Port > 0 {
+		base.Port = yc.Server.Port
+	}
+	if yc.Server.Region != "" {
+		base.ServerRegion = yc.Server.Region
+	}
+	if yc.Server.IdentityFile != "" {
+		base.IdentityFile = yc.Server.IdentityFile
+	}
+	if len(yc.Server.ListenAddresses) > 0 {
+		base.ListenAddresses = yc.Server.ListenAddresses
+	}
+	if len(yc.Server.ExternalAddresses) > 0 {
+		base.ExternalAddresses = yc.Server.ExternalAddresses
+	}
+	if len(yc.Server.BootstrapPeers) > 0 {
+		base.BootstrapPeers = yc.Server.BootstrapPeers
+	}
+
+	// Storage section
+	if yc.Storage.DataDirectory != "" {
+		base.DataDirectory = yc.Storage.DataDirectory
+	}
+	if yc.Storage.MaxStorageGB > 0 {
+		base.MaxStorageBytes = int64(yc.Storage.MaxStorageGB) * 1024 * 1024 * 1024
+	}
+	if yc.Storage.RetentionDays > 0 {
+		base.RetentionPolicy = time.Duration(yc.Storage.RetentionDays) * 24 * time.Hour
+	}
+	if yc.Storage.MaxMessages > 0 {
+		base.MaxMessagesPerMailbox = yc.Storage.MaxMessages
+	}
+	if yc.Storage.MaxMailboxes > 0 {
+		base.MaxMailboxes = yc.Storage.MaxMailboxes
+	}
+
+	// Database section
+	if base.Storage.Postgres == nil {
+		base.Storage.Postgres = &PostgresConfig{}
+	}
+	if yc.Database.Host != "" {
+		base.Storage.Postgres.Host = yc.Database.Host
+	}
+	if yc.Database.Port > 0 {
+		base.Storage.Postgres.Port = yc.Database.Port
+	}
+	if yc.Database.Name != "" {
+		base.Storage.Postgres.Database = yc.Database.Name
+	}
+	if yc.Database.Username != "" {
+		base.Storage.Postgres.Username = yc.Database.Username
+	}
+	if yc.Database.Password != "" {
+		base.Storage.Postgres.Password = yc.Database.Password
+	}
+	if yc.Database.SSLMode != "" {
+		base.Storage.Postgres.SSLMode = yc.Database.SSLMode
+	}
+	if yc.Database.PoolSize > 0 {
+		base.Storage.Postgres.PoolSize = yc.Database.PoolSize
+	}
+
+	// Performance section
+	if yc.Performance.MaxConcurrentConnections > 0 {
+		base.MaxConcurrentConnections = yc.Performance.MaxConcurrentConnections
+	}
+	if yc.Performance.ConnectionTimeoutSec > 0 {
+		base.ConnectionTimeout = time.Duration(yc.Performance.ConnectionTimeoutSec) * time.Second
+	}
+	if yc.Performance.MessageTimeoutSec > 0 {
+		base.MessageTimeout = time.Duration(yc.Performance.MessageTimeoutSec) * time.Second
+	}
+	if yc.Performance.WorkerThreads > 0 {
+		base.WorkerThreads = yc.Performance.WorkerThreads
+	}
+
+	// Intervals section
+	if yc.Intervals.ServiceAnnouncementMin > 0 {
+		base.ServiceAnnouncementInterval = time.Duration(yc.Intervals.ServiceAnnouncementMin) * time.Minute
+	}
+	if yc.Intervals.HealthCheckMin > 0 {
+		base.HealthCheckInterval = time.Duration(yc.Intervals.HealthCheckMin) * time.Minute
+	}
+	if yc.Intervals.CleanupMin > 0 {
+		base.CleanupInterval = time.Duration(yc.Intervals.CleanupMin) * time.Minute
+	}
+	if yc.Intervals.PresenceCheckSec > 0 {
+		base.PresenceCheckInterval = time.Duration(yc.Intervals.PresenceCheckSec) * time.Second
+	}
+	if yc.Intervals.PresenceHeartbeatSec > 0 {
+		base.PresenceHeartbeatInterval = time.Duration(yc.Intervals.PresenceHeartbeatSec) * time.Second
+	}
+	if yc.Intervals.PresenceTimeoutSec > 0 {
+		base.PresenceTimeoutDuration = time.Duration(yc.Intervals.PresenceTimeoutSec) * time.Second
+	}
+
+	// Features section — booleans are applied unconditionally since we can't
+	// distinguish "not set" from "set to false" in YAML. The file should only
+	// contain values the operator intends.
+	base.EnableForwarding = yc.Features.EnableForwarding
+	base.EnablePushDelivery = yc.Features.EnablePushDelivery
+	base.EnablePresenceMonitoring = yc.Features.EnablePresenceMonitoring
+	base.EnablePresenceBroadcast = yc.Features.EnablePresenceBroadcast
+	base.EnableMetrics = yc.Features.EnableMetrics
+	base.EnableAuthentication = yc.Features.EnableAuthentication
+	base.EnableRelay = yc.Features.EnableRelay
+	base.EnableAutoRelay = yc.Features.EnableAutoRelay
+	base.EnableHolePunching = yc.Features.EnableHolePunching
+	base.EnableAutoNAT = yc.Features.EnableAutoNAT
+
+	// Rate limiting section
+	if yc.RateLimiting.WindowMinutes > 0 {
+		base.RateLimitWindow = time.Duration(yc.RateLimiting.WindowMinutes) * time.Minute
+	}
+	if yc.RateLimiting.MaxRequestsPerWindow > 0 {
+		base.MaxRequestsPerWindow = yc.RateLimiting.MaxRequestsPerWindow
+	}
+
+	return nil
 }
