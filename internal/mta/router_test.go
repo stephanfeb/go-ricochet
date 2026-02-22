@@ -216,6 +216,40 @@ func (m *mockStorage) BrowseDirectory(_ context.Context, _ string, _ string, _ i
 	panic("not implemented")
 }
 
+// --- Feed operations ---
+
+func (m *mockStorage) CreateFeed(_ context.Context, _ peer.ID, _, _, _ string) (*storage.FeedRecord, error) {
+	panic("not implemented")
+}
+
+func (m *mockStorage) GetFeed(_ context.Context, _ peer.ID, _ string) (*storage.FeedRecord, error) {
+	panic("not implemented")
+}
+
+func (m *mockStorage) DeleteFeed(_ context.Context, _ peer.ID, _ string) (bool, error) {
+	panic("not implemented")
+}
+
+func (m *mockStorage) ListFeeds(_ context.Context, _ peer.ID) ([]*storage.FeedRecord, error) {
+	panic("not implemented")
+}
+
+func (m *mockStorage) AppendFeedEntry(_ context.Context, _ int64, _ []byte, _ peer.ID, _ string) (*storage.FeedEntryRecord, error) {
+	panic("not implemented")
+}
+
+func (m *mockStorage) GetFeedEntry(_ context.Context, _ int64, _ int) (*storage.FeedEntryRecord, error) {
+	panic("not implemented")
+}
+
+func (m *mockStorage) GetFeedEntries(_ context.Context, _ int64, _, _ *int, _ string, _ int) ([]*storage.FeedEntryRecord, bool, error) {
+	panic("not implemented")
+}
+
+func (m *mockStorage) EnforceFeedRetention(_ context.Context, _ *storage.FeedRecord) (int, error) {
+	panic("not implemented")
+}
+
 // --- Cleanup operations ---
 
 func (m *mockStorage) DeleteExpiredMessages(_ context.Context) (int, error) {

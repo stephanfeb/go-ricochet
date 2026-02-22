@@ -169,11 +169,61 @@ CREATE TABLE IF NOT EXISTS directory_listings (
 -- Full-text search on display_name and bio
 CREATE INDEX IF NOT EXISTS idx_directory_fts
     ON directory_listings
-    USING GIN(to_tsvector('english', display_name || ' ' || bio));
+    USING GIN(to_tsvector('english', coalesce(display_name, '') || ' ' || coalesce(bio, '')));
 
 -- Cursor-based pagination: ordered by (updated_at, owner_peer_id)
 CREATE INDEX IF NOT EXISTS idx_directory_cursor
     ON directory_listings(updated_at DESC, owner_peer_id DESC);
+
+-- =============================================================================
+-- FEEDS
+-- =============================================================================
+CREATE TABLE IF NOT EXISTS feeds (
+    id BIGSERIAL PRIMARY KEY,
+    owner_peer_id TEXT NOT NULL,
+    path TEXT NOT NULL,
+    title TEXT NOT NULL DEFAULT '',
+    description TEXT NOT NULL DEFAULT '',
+    entry_content_type TEXT NOT NULL DEFAULT 'application/json',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    last_entry_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    current_sequence INT NOT NULL DEFAULT 0,
+    max_entries INT,
+    max_age_days INT,
+
+    CONSTRAINT uq_feed_owner_path UNIQUE(owner_peer_id, path)
+);
+
+CREATE INDEX IF NOT EXISTS idx_feeds_owner ON feeds(owner_peer_id);
+
+-- =============================================================================
+-- FEED ENTRIES
+-- =============================================================================
+CREATE TABLE IF NOT EXISTS feed_entries (
+    id BIGSERIAL PRIMARY KEY,
+    feed_id BIGINT NOT NULL REFERENCES feeds(id) ON DELETE CASCADE,
+    sequence_number INT NOT NULL,
+    content BYTEA NOT NULL,
+    content_hash TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    created_by_peer_id TEXT NOT NULL,
+    entry_type TEXT NOT NULL DEFAULT '',
+
+    CONSTRAINT uq_feed_entry_seq UNIQUE(feed_id, sequence_number)
+);
+
+-- Range queries: entries by feed, ordered by sequence
+CREATE INDEX IF NOT EXISTS idx_feed_entries_feed_seq
+    ON feed_entries(feed_id, sequence_number);
+
+-- Entry type filtering
+CREATE INDEX IF NOT EXISTS idx_feed_entries_type
+    ON feed_entries(feed_id, entry_type)
+    WHERE entry_type != '';
+
+-- Retention cleanup by timestamp
+CREATE INDEX IF NOT EXISTS idx_feed_entries_created
+    ON feed_entries(feed_id, created_at);
 
 -- =============================================================================
 -- MAINTENANCE FUNCTIONS AND TRIGGERS

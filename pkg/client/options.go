@@ -229,3 +229,63 @@ func WithRetentionCount(cnt int) MailboxOption {
 		c.RetentionCount = &cnt
 	}
 }
+
+// FeedOption configures feed operations.
+type FeedOption func(*feedConfig)
+
+type feedConfig struct {
+	ServerPeerID *peer.ID
+}
+
+// WithFeedServer sets a specific server peer ID for the feed operation.
+func WithFeedServer(id peer.ID) FeedOption {
+	return func(c *feedConfig) {
+		c.ServerPeerID = &id
+	}
+}
+
+// FeedEntryOption configures feed entry retrieval.
+type FeedEntryOption func(*feedEntryConfig)
+
+type feedEntryConfig struct {
+	ServerPeerID *peer.ID
+	FromSequence *int
+	ToSequence   *int
+	Limit        *int
+	EntryType    string
+}
+
+// WithFeedEntryFrom sets the starting sequence number.
+func WithFeedEntryFrom(seq int) FeedEntryOption {
+	return func(c *feedEntryConfig) {
+		c.FromSequence = &seq
+	}
+}
+
+// WithFeedEntryTo sets the ending sequence number.
+func WithFeedEntryTo(seq int) FeedEntryOption {
+	return func(c *feedEntryConfig) {
+		c.ToSequence = &seq
+	}
+}
+
+// WithFeedEntryLimit sets the maximum number of entries to return.
+func WithFeedEntryLimit(n int) FeedEntryOption {
+	return func(c *feedEntryConfig) {
+		c.Limit = &n
+	}
+}
+
+// WithFeedEntryType filters entries by type.
+func WithFeedEntryType(t string) FeedEntryOption {
+	return func(c *feedEntryConfig) {
+		c.EntryType = t
+	}
+}
+
+// WithFeedEntryServer sets a specific server peer ID for entry retrieval.
+func WithFeedEntryServer(id peer.ID) FeedEntryOption {
+	return func(c *feedEntryConfig) {
+		c.ServerPeerID = &id
+	}
+}

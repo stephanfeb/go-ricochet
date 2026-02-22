@@ -143,10 +143,43 @@ type DirectoryPage struct {
 	HasMore    bool              `json:"hasMore"`
 }
 
+// FeedRecord represents a stored feed.
+type FeedRecord struct {
+	ID               int64     `json:"id"`
+	OwnerPeerID      string    `json:"ownerPeerId"`
+	Path             string    `json:"path"`
+	Title            string    `json:"title"`
+	Description      string    `json:"description"`
+	EntryContentType string    `json:"entryContentType"`
+	CreatedAt        time.Time `json:"createdAt"`
+	LastEntryAt      time.Time `json:"lastEntryAt"`
+	CurrentSequence  int       `json:"currentSequence"`
+	MaxEntries       *int      `json:"maxEntries,omitempty"`
+	MaxAgeDays       *int      `json:"maxAgeDays,omitempty"`
+}
+
+// FullPath returns "ownerPeerId/feed/path".
+func (r *FeedRecord) FullPath() string {
+	return r.OwnerPeerID + "/feed/" + r.Path
+}
+
+// FeedEntryRecord represents a single entry in a feed.
+type FeedEntryRecord struct {
+	ID              int64     `json:"id"`
+	FeedID          int64     `json:"feedId"`
+	SequenceNumber  int       `json:"sequenceNumber"`
+	Content         []byte    `json:"content"`
+	ContentHash     string    `json:"contentHash"`
+	CreatedAt       time.Time `json:"createdAt"`
+	CreatedByPeerID string    `json:"createdByPeerId"`
+	EntryType       string    `json:"entryType,omitempty"`
+}
+
 // Storage errors.
 var (
 	ErrDocumentNotFound       = fmt.Errorf("document not found")
 	ErrDirectoryEntryNotFound = fmt.Errorf("directory entry not found")
+	ErrFeedNotFound           = fmt.Errorf("feed not found")
 )
 
 // DocumentSizeExceededError indicates a document exceeds the size limit.

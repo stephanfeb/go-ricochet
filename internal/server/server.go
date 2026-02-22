@@ -21,6 +21,7 @@ import (
 	"github.com/twostack/go-ricochet/internal/protocol/mma"
 	"github.com/twostack/go-ricochet/internal/protocol/msa"
 	"github.com/twostack/go-ricochet/internal/protocol/sda"
+	"github.com/twostack/go-ricochet/internal/protocol/sfa"
 	"github.com/twostack/go-ricochet/internal/registry"
 	"github.com/twostack/go-ricochet/internal/storage"
 	"github.com/twostack/go-ricochet/internal/storage/postgres"
@@ -277,6 +278,11 @@ func (s *Server) registerProtocolHandlers() {
 	sdaHandler := sda.NewHandler(s.storage, s.logger)
 	s.host.SetStreamHandler(sda.ProtocolID, sdaHandler.HandleStream)
 	s.logger.Info("registered SDA handler", "protocol", sda.ProtocolID)
+
+	// SFA — Store Feed Agent (feed path)
+	sfaHandler := sfa.NewHandler(s.storage, s.logger)
+	s.host.SetStreamHandler(sfa.ProtocolID, sfaHandler.HandleStream)
+	s.logger.Info("registered SFA handler", "protocol", sfa.ProtocolID)
 }
 
 func (s *Server) startServices(ctx context.Context) {

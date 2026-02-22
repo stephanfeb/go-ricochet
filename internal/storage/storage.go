@@ -60,6 +60,16 @@ type Storage interface {
 	GetDocumentHistory(ctx context.Context, ownerID peer.ID, path string, maxVersions *int) ([]*DocumentVersionRecord, error)
 	GetDocumentAtVersion(ctx context.Context, ownerID peer.ID, path string, versionNumber int) (*DocumentVersionRecord, error)
 
+	// Feed operations
+	CreateFeed(ctx context.Context, ownerID peer.ID, path, title, description string) (*FeedRecord, error)
+	GetFeed(ctx context.Context, ownerID peer.ID, path string) (*FeedRecord, error)
+	DeleteFeed(ctx context.Context, ownerID peer.ID, path string) (bool, error)
+	ListFeeds(ctx context.Context, ownerID peer.ID) ([]*FeedRecord, error)
+	AppendFeedEntry(ctx context.Context, feedID int64, content []byte, createdBy peer.ID, entryType string) (*FeedEntryRecord, error)
+	GetFeedEntry(ctx context.Context, feedID int64, sequenceNumber int) (*FeedEntryRecord, error)
+	GetFeedEntries(ctx context.Context, feedID int64, fromSeq, toSeq *int, entryType string, limit int) ([]*FeedEntryRecord, bool, error)
+	EnforceFeedRetention(ctx context.Context, feed *FeedRecord) (int, error)
+
 	// Directory operations
 	UpsertDirectoryEntry(ctx context.Context, entry *DirectoryEntry) error
 	RemoveDirectoryEntry(ctx context.Context, ownerPeerID string) error
