@@ -1,0 +1,110 @@
+# Docker Compose for store integration testing (Go server + Dart clients)
+#
+# Architecture:
+#   postgres (10.20.0.10) ← go-server (10.20.0.20) ← dart-client-a (10.20.0.100)
+#                                                    ← dart-client-b (10.20.0.101)
+#
+# No NAT simulation — direct UDX connectivity on a flat bridge network.
+# Two Dart clients exercise all store protocols (SDA, SCA, SFA, MSA/MAA/MMA)
+# and verify cross-client data visibility.
+#
+# Usage:
+#   docker compose up --build --abort-on-container-exit
+
+networks:
+  store_test_net:
+    driver: bridge
+    name: store_test_net
+    ipam:
+      config:
+        - subnet: 10.20.0.0/24
+          gateway: 10.20.0.1
+
+volumes:
+  shared_data:
+  client_shared:
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: store-test-postgres
+    networks:
+      store_test_net:
+        ipv4_address: 10.20.0.10
+    environment:
+      POSTGRES_USER: ricochet
+      POSTGRES_PASSWORD: ricochet_test
+      POSTGRES_DB: ricochet_test
+    volumes:
+      - ../../../../../go-ricochet/schema.sql:/docker-entrypoint-initdb.d/schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ricochet -d ricochet_test"]
+      interval: 2s
+      timeout: 5s
+      retries: 10
+
+  go-server:
+    platform: linux/amd64  # .deb is amd64-only; QEMU emulates on Apple Silicon
+    build:
+      context: ../../../../../          # agentic/ root directory
+      dockerfile: go-ricochet/test/integration/docker/containers/go-server/Dockerfile
+    container_name: store-test-server
+    networks:
+      store_test_net:
+        ipv4_address: 10.20.0.20
+    environment:
+      - LISTEN_PORT=55223
+      - EXTERNAL_IP=10.20.0.20
+      - PG_HOST=10.20.0.10
+      - PG_PORT=5432
+      - PG_DB=ricochet_test
+      - PG_USER=ricochet
+      - PG_PASS=ricochet_test
+    volumes:
+      - shared_data:/shared
+    healthcheck:
+      test: ["CMD", "test", "-f", "/shared/peer_id"]
+      interval: 1s
+      timeout: 2s
+      retries: 60
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  dart-client-a:
+    build:
+      context: ../../../../../          # agentic/ root directory
+      dockerfile: go-ricochet/test/integration/docker/containers/dart-client/Dockerfile
+    container_name: store-test-client-a
+    networks:
+      store_test_net:
+        ipv4_address: 10.20.0.100
+    environment:
+      - GO_SERVER_ADDR=10.20.0.20
+      - GO_SERVER_PORT=55223
+      - CLIENT_ROLE=primary
+    volumes:
+      - shared_data:/shared:ro
+      - client_shared:/client_shared
+    depends_on:
+      go-server:
+        condition: service_healthy
+
+  dart-client-b:
+    build:
+      context: ../../../../../          # agentic/ root directory
+      dockerfile: go-ricochet/test/integration/docker/containers/dart-client/Dockerfile
+    container_name: store-test-client-b
+    networks:
+      store_test_net:
+        ipv4_address: 10.20.0.101
+    environment:
+      - GO_SERVER_ADDR=10.20.0.20
+      - GO_SERVER_PORT=55223
+      - CLIENT_ROLE=secondary
+    volumes:
+      - shared_data:/shared:ro
+      - client_shared:/client_shared
+    depends_on:
+      go-server:
+        condition: service_healthy
