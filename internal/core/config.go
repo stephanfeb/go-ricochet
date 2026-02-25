@@ -47,6 +47,7 @@ type ServerConfig struct {
 	EnablePresenceBroadcast  bool `yaml:"enable_presence_broadcast" json:"enablePresenceBroadcast"`
 	EnableMetrics            bool `yaml:"enable_metrics" json:"enableMetrics"`
 	EnableRelay              bool `yaml:"enable_relay" json:"enableRelay"`
+	EnableRelayService       bool `yaml:"enable_relay_service" json:"enableRelayService"`
 	EnableAutoRelay          bool `yaml:"enable_auto_relay" json:"enableAutoRelay"`
 	EnableHolePunching       bool `yaml:"enable_hole_punching" json:"enableHolePunching"`
 	EnableAutoNAT            bool `yaml:"enable_autonat" json:"enableAutoNAT"`
@@ -62,8 +63,25 @@ type ServerConfig struct {
 	RateLimitWindow      time.Duration `yaml:"rate_limit_window" json:"rateLimitWindow"`
 	MaxRequestsPerWindow int           `yaml:"max_requests_per_window" json:"maxRequestsPerWindow"`
 
+	// Relay limits
+	RelayLimits RelayLimits `yaml:"relay_limits" json:"relayLimits"`
+
 	// Identity
 	IdentityFile string `yaml:"identity_file" json:"identityFile,omitempty"`
+}
+
+// RelayLimits configures circuit relay v2 service resource limits.
+// Zero values mean "use go-libp2p defaults".
+type RelayLimits struct {
+	MaxReservations       int           `yaml:"max_reservations" json:"maxReservations"`
+	MaxCircuits           int           `yaml:"max_circuits" json:"maxCircuits"`
+	BufferSize            int           `yaml:"buffer_size" json:"bufferSize"`
+	MaxReservationsPerPeer int          `yaml:"max_reservations_per_peer" json:"maxReservationsPerPeer"`
+	MaxReservationsPerIP  int           `yaml:"max_reservations_per_ip" json:"maxReservationsPerIP"`
+	MaxReservationsPerASN int           `yaml:"max_reservations_per_asn" json:"maxReservationsPerASN"`
+	ReservationTTL        time.Duration `yaml:"reservation_ttl" json:"reservationTTL"`
+	ConnectionDuration    time.Duration `yaml:"connection_duration" json:"connectionDuration"`
+	ConnectionData        int64         `yaml:"connection_data" json:"connectionData"`
 }
 
 // StorageBackendConfig configures the storage backend.
@@ -143,6 +161,9 @@ func DefaultConfig() *ServerConfig {
 		PresenceTimeoutDuration:   120 * time.Second,
 		PresenceBatchWindow:       2 * time.Second,
 
+		EnableRelay:        true,
+		EnableRelayService: true,
+
 		RateLimitWindow:      1 * time.Minute,
 		MaxRequestsPerWindow: 100,
 	}
@@ -202,6 +223,9 @@ func (c *ServerConfig) Validate() error {
 	}
 	if c.EnableHolePunching && !c.EnableRelay {
 		return fmt.Errorf("enable_hole_punching requires enable_relay")
+	}
+	if c.EnableRelayService && !c.EnableRelay {
+		return fmt.Errorf("enable_relay_service requires enable_relay")
 	}
 	return nil
 }
@@ -269,10 +293,23 @@ type yamlFileConfig struct {
 		EnableMetrics            bool `yaml:"enable_metrics"`
 		EnableAuthentication     bool `yaml:"enable_authentication"`
 		EnableRelay              bool `yaml:"enable_relay"`
+		EnableRelayService       bool `yaml:"enable_relay_service"`
 		EnableAutoRelay          bool `yaml:"enable_auto_relay"`
 		EnableHolePunching       bool `yaml:"enable_hole_punching"`
 		EnableAutoNAT            bool `yaml:"enable_autonat"`
 	} `yaml:"features"`
+
+	RelayLimits struct {
+		MaxReservations       int    `yaml:"max_reservations"`
+		MaxCircuits           int    `yaml:"max_circuits"`
+		BufferSize            int    `yaml:"buffer_size"`
+		MaxReservationsPerPeer int   `yaml:"max_reservations_per_peer"`
+		MaxReservationsPerIP  int    `yaml:"max_reservations_per_ip"`
+		MaxReservationsPerASN int    `yaml:"max_reservations_per_asn"`
+		ReservationTTLMin     int    `yaml:"reservation_ttl_min"`
+		ConnectionDurationSec int    `yaml:"connection_duration_sec"`
+		ConnectionData        int64  `yaml:"connection_data"`
+	} `yaml:"relay_limits"`
 
 	RateLimiting struct {
 		WindowMinutes        int `yaml:"window_minutes"`
@@ -401,9 +438,39 @@ func LoadConfigFromFile(path string, base *ServerConfig) error {
 	base.EnableMetrics = yc.Features.EnableMetrics
 	base.EnableAuthentication = yc.Features.EnableAuthentication
 	base.EnableRelay = yc.Features.EnableRelay
+	base.EnableRelayService = yc.Features.EnableRelayService
 	base.EnableAutoRelay = yc.Features.EnableAutoRelay
 	base.EnableHolePunching = yc.Features.EnableHolePunching
 	base.EnableAutoNAT = yc.Features.EnableAutoNAT
+
+	// Relay limits section
+	if yc.RelayLimits.MaxReservations > 0 {
+		base.RelayLimits.MaxReservations = yc.RelayLimits.MaxReservations
+	}
+	if yc.RelayLimits.MaxCircuits > 0 {
+		base.RelayLimits.MaxCircuits = yc.RelayLimits.MaxCircuits
+	}
+	if yc.RelayLimits.BufferSize > 0 {
+		base.RelayLimits.BufferSize = yc.RelayLimits.BufferSize
+	}
+	if yc.RelayLimits.MaxReservationsPerPeer > 0 {
+		base.RelayLimits.MaxReservationsPerPeer = yc.RelayLimits.MaxReservationsPerPeer
+	}
+	if yc.RelayLimits.MaxReservationsPerIP > 0 {
+		base.RelayLimits.MaxReservationsPerIP = yc.RelayLimits.MaxReservationsPerIP
+	}
+	if yc.RelayLimits.MaxReservationsPerASN > 0 {
+		base.RelayLimits.MaxReservationsPerASN = yc.RelayLimits.MaxReservationsPerASN
+	}
+	if yc.RelayLimits.ReservationTTLMin > 0 {
+		base.RelayLimits.ReservationTTL = time.Duration(yc.RelayLimits.ReservationTTLMin) * time.Minute
+	}
+	if yc.RelayLimits.ConnectionDurationSec > 0 {
+		base.RelayLimits.ConnectionDuration = time.Duration(yc.RelayLimits.ConnectionDurationSec) * time.Second
+	}
+	if yc.RelayLimits.ConnectionData > 0 {
+		base.RelayLimits.ConnectionData = yc.RelayLimits.ConnectionData
+	}
 
 	// Rate limiting section
 	if yc.RateLimiting.WindowMinutes > 0 {

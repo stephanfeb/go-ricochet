@@ -10,9 +10,18 @@ import (
 	"strings"
 	"syscall"
 
+	logging "github.com/ipfs/go-log/v2"
+	"github.com/libp2p/go-libp2p/gologshim"
+
 	"github.com/twostack/go-ricochet/internal/core"
 	"github.com/twostack/go-ricochet/internal/server"
 )
+
+func init() {
+	// Bridge go-libp2p's gologshim to go-log/v2 so that SetLogLevel()
+	// controls all libp2p subsystems (relay, swarm, etc.).
+	gologshim.SetDefaultHandler(logging.SlogHandler())
+}
 
 func main() {
 	// Flags
@@ -31,6 +40,7 @@ func main() {
 	pgSSLMode := flag.String("pg-sslmode", "", "PostgreSQL SSL mode")
 	externalAddrs := flag.String("external-addrs", "", "Comma-separated external multiaddrs to advertise (e.g., /ip4/1.2.3.4/udp/55223/udx)")
 	configFile := flag.String("config", "", "Path to YAML config file (e.g., /etc/ricochet/config.yaml)")
+	debugDHT := flag.Bool("debug-dht", false, "Enable verbose DHT debug logging")
 
 	flag.Parse()
 
@@ -92,12 +102,34 @@ func main() {
 		cfg.ExternalAddresses = strings.Split(*externalAddrs, ",")
 	}
 
+	// Enable DHT debug logging if requested
+	if *debugDHT {
+		logging.SetLogLevel("dht", "debug")
+		logging.SetLogLevel("dht/RtRefreshManager", "debug")
+		logging.SetLogLevel("basichost", "info")
+		logging.SetLogLevel("relay", "debug")
+		logging.SetLogLevel("relaysvc", "debug")
+	}
+
 	// Setup logger
 	level := slog.LevelInfo
 	if *development {
 		level = slog.LevelDebug
 	}
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: level}))
+
+	// Startup banner
+	fmt.Print(`
+ ███████████   █████   █████████     ███████      █████████  █████   █████ ██████████ ███████████
+░░███░░░░░███ ░░███   ███░░░░░███  ███░░░░░███   ███░░░░░███░░███   ░░███ ░░███░░░░░█░█░░░███░░░█
+ ░███    ░███  ░███  ███     ░░░  ███     ░░███ ███     ░░░  ░███    ░███  ░███  █ ░ ░   ░███  ░
+ ░██████████   ░███ ░███         ░███      ░███░███          ░███████████  ░██████       ░███
+ ░███░░░░░███  ░███ ░███         ░███      ░███░███          ░███░░░░░███  ░███░░█       ░███
+ ░███    ░███  ░███ ░░███     ███░░███     ███ ░░███     ███ ░███    ░███  ░███ ░   █    ░███
+ █████   █████ █████ ░░█████████  ░░░███████░   ░░█████████  █████   █████ ██████████    █████
+░░░░░   ░░░░░ ░░░░░   ░░░░░░░░░     ░░░░░░░      ░░░░░░░░░  ░░░░░   ░░░░░ ░░░░░░░░░░    ░░░░░
+
+`)
 
 	// Create and start server
 	srv := server.NewServer(cfg, logger)

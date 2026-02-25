@@ -308,6 +308,10 @@ func (s *Server) startServices(ctx context.Context) {
 		}
 	}
 
+	// Log host advertised addresses (confirms relay service)
+	addrs := s.host.Addrs()
+	s.logger.Info("host advertised addresses", "addrs", fmt.Sprintf("%v", addrs))
+
 	// Start periodic maintenance
 	go s.maintenanceLoop(ctx)
 }
@@ -326,6 +330,9 @@ func (s *Server) maintenanceLoop(ctx context.Context) {
 			}
 			if err := s.mdaSrv.PerformMaintenance(ctx); err != nil {
 				s.logger.Warn("maintenance error", "error", err)
+			}
+			if s.node != nil {
+				s.node.LogDHTStatus()
 			}
 		}
 	}

@@ -6,10 +6,10 @@ import (
 	"log/slog"
 	"sync"
 
-	"github.com/libp2p/go-libp2p/core/host"
-	"github.com/libp2p/go-libp2p/core/peer"
 	dht "github.com/libp2p/go-libp2p-kad-dht"
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
+	"github.com/libp2p/go-libp2p/core/host"
+	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/multiformats/go-multiaddr"
 
 	"github.com/twostack/go-ricochet/internal/core"
@@ -69,6 +69,18 @@ func NewNode(ctx context.Context, cfg *core.ServerConfig, priv interface{ Raw() 
 			logger.Info("connected to bootstrap peer", "peer", info.ID)
 		}
 	}
+
+	// Log DHT routing table state after bootstrap
+	rt := kadDHT.RoutingTable()
+	rtPeers := rt.ListPeers()
+	peerIDs := make([]string, len(rtPeers))
+	for i, p := range rtPeers {
+		peerIDs[i] = p.String()
+	}
+	logger.Info("DHT routing table after bootstrap",
+		"size", rt.Size(),
+		"peers", peerIDs,
+	)
 
 	// Create GossipSub with strict message signing (required by Dart client)
 	ps, err := pubsub.NewGossipSub(ctx, h,
@@ -163,6 +175,44 @@ func (n *Node) Subscribe(topic string) *pubsub.Subscription {
 	n.mu.RLock()
 	defer n.mu.RUnlock()
 	return n.subs[topic]
+}
+
+// LogDHTStatus logs the current DHT routing table and connection state.
+func (n *Node) LogDHTStatus() {
+	rt := n.dht.RoutingTable()
+	rtPeers := rt.ListPeers()
+	peerIDs := make([]string, len(rtPeers))
+	for i, p := range rtPeers {
+		peerIDs[i] = p.String()
+	}
+
+	connectedPeers := n.host.Network().Peers()
+	connPeerIDs := make([]string, len(connectedPeers))
+	for i, p := range connectedPeers {
+		connPeerIDs[i] = p.String()
+	}
+
+	n.logger.Info("DHT status",
+		"routing_table_size", rt.Size(),
+		"routing_table_peers", peerIDs,
+		"connected_peers", len(connectedPeers),
+		"connected_peer_ids", connPeerIDs,
+		"peerstore_peers", len(n.host.Peerstore().Peers()),
+	)
+
+	// Dump peerstore addresses for all connected peers to diagnose
+	// whether relay addresses are available for NATted clients.
+	for _, p := range connectedPeers {
+		addrs := n.host.Peerstore().Addrs(p)
+		addrStrs := make([]string, len(addrs))
+		for j, a := range addrs {
+			addrStrs[j] = a.String()
+		}
+		n.logger.Info("peerstore addresses",
+			"peer", p.String(),
+			"addrs", addrStrs,
+		)
+	}
 }
 
 // Close shuts down the P2P node.

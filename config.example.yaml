@@ -73,6 +73,8 @@ features:
   enable_presence_broadcast: true
   enable_metrics: true
   enable_authentication: false
+  enable_relay: true
+  enable_relay_service: true
   enable_autonat: true
 
 # Rate limiting
