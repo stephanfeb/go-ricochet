@@ -760,12 +760,13 @@ func (s *PostgresStorage) BrowseDirectory(ctx context.Context, query string, cur
 	args := []any{}
 	argIdx := 1
 
-	// Full-text search filter (COALESCE handles NULL bio/display_name)
+	// Case-insensitive substring search on display_name and bio
 	if query != "" {
 		conditions = append(conditions, fmt.Sprintf(
-			"to_tsvector('english', coalesce(display_name, '') || ' ' || coalesce(bio, '')) @@ plainto_tsquery('english', $%d)", argIdx))
-		args = append(args, query)
-		argIdx++
+			"(coalesce(display_name, '') ILIKE $%d OR coalesce(bio, '') ILIKE $%d)", argIdx, argIdx+1))
+		likePattern := "%" + query + "%"
+		args = append(args, likePattern, likePattern)
+		argIdx += 2
 	}
 
 	// Cursor-based pagination
