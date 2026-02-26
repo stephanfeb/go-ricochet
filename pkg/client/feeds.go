@@ -29,6 +29,7 @@ type FeedEntry struct {
 	Content   []byte `json:"content"`
 	Hash      string `json:"hash"`
 	CreatedAt int64  `json:"createdAt"`
+	CreatedBy string `json:"createdBy,omitempty"`
 }
 
 // ---------------------------------------------------------------------------
@@ -82,12 +83,18 @@ func (c *Client) doFeed(ctx context.Context, req *sfa.FeedRequest, opts []FeedOp
 
 // CreateFeed creates a new feed on the server.
 func (c *Client) CreateFeed(ctx context.Context, path, title, description string, opts ...FeedOption) error {
+	cfg := feedConfig{}
+	for _, o := range opts {
+		o(&cfg)
+	}
+
 	req := &sfa.FeedRequest{
-		Operation:   sfa.OpCREATE,
-		OwnerPeerID: c.host.ID().String(),
-		Path:        path,
-		Title:       title,
-		Description: description,
+		Operation:     sfa.OpCREATE,
+		OwnerPeerID:   c.host.ID().String(),
+		Path:          path,
+		Title:         title,
+		Description:   description,
+		Collaborative: cfg.Collaborative,
 	}
 
 	resp, err := c.doFeed(ctx, req, opts)
@@ -127,6 +134,33 @@ func (c *Client) AppendFeedEntry(ctx context.Context, path string, content []byt
 			errMsg = fmt.Sprintf("append feed entry failed with status %d", resp.Status)
 		}
 		return 0, fmt.Errorf("append feed entry: %s", errMsg)
+	}
+
+	seq := int(headerToInt64(resp.Headers["X-Sequence"]))
+	return seq, nil
+}
+
+// AppendToFeed appends an entry to another peer's collaborative feed. Returns the sequence number.
+func (c *Client) AppendToFeed(ctx context.Context, ownerPeerID peer.ID, path string, content []byte, entryType string, opts ...FeedOption) (int, error) {
+	req := &sfa.FeedRequest{
+		Operation:   sfa.OpAPPEND,
+		OwnerPeerID: ownerPeerID.String(),
+		Path:        path,
+		EntryType:   entryType,
+		Body:        base64.StdEncoding.EncodeToString(content),
+	}
+
+	resp, err := c.doFeed(ctx, req, opts)
+	if err != nil {
+		return 0, err
+	}
+
+	if resp.Status >= 400 {
+		errMsg, _ := resp.Headers["Error"].(string)
+		if errMsg == "" {
+			errMsg = fmt.Sprintf("append to feed failed with status %d", resp.Status)
+		}
+		return 0, fmt.Errorf("append to feed: %s", errMsg)
 	}
 
 	seq := int(headerToInt64(resp.Headers["X-Sequence"]))
@@ -283,6 +317,7 @@ func (c *Client) GetFeedEntries(ctx context.Context, ownerPeerID peer.ID, path s
 			Content   string `json:"content"` // base64
 			Hash      string `json:"hash"`
 			CreatedAt int64  `json:"createdAt"`
+			CreatedBy string `json:"createdBy"`
 		} `json:"entries"`
 	}
 	if err := json.Unmarshal(bodyBytes, &raw); err != nil {
@@ -301,6 +336,7 @@ func (c *Client) GetFeedEntries(ctx context.Context, ownerPeerID peer.ID, path s
 			Content:   content,
 			Hash:      e.Hash,
 			CreatedAt: e.CreatedAt,
+			CreatedBy: e.CreatedBy,
 		})
 	}
 

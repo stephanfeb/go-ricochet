@@ -234,13 +234,21 @@ func WithRetentionCount(cnt int) MailboxOption {
 type FeedOption func(*feedConfig)
 
 type feedConfig struct {
-	ServerPeerID *peer.ID
+	ServerPeerID  *peer.ID
+	Collaborative bool
 }
 
 // WithFeedServer sets a specific server peer ID for the feed operation.
 func WithFeedServer(id peer.ID) FeedOption {
 	return func(c *feedConfig) {
 		c.ServerPeerID = &id
+	}
+}
+
+// WithCollaborative sets the feed as collaborative, allowing non-owner appends.
+func WithCollaborative() FeedOption {
+	return func(c *feedConfig) {
+		c.Collaborative = true
 	}
 }
 

@@ -61,7 +61,7 @@ type Storage interface {
 	GetDocumentAtVersion(ctx context.Context, ownerID peer.ID, path string, versionNumber int) (*DocumentVersionRecord, error)
 
 	// Feed operations
-	CreateFeed(ctx context.Context, ownerID peer.ID, path, title, description string) (*FeedRecord, error)
+	CreateFeed(ctx context.Context, ownerID peer.ID, path, title, description string, collaborative bool) (*FeedRecord, error)
 	GetFeed(ctx context.Context, ownerID peer.ID, path string) (*FeedRecord, error)
 	DeleteFeed(ctx context.Context, ownerID peer.ID, path string) (bool, error)
 	ListFeeds(ctx context.Context, ownerID peer.ID) ([]*FeedRecord, error)

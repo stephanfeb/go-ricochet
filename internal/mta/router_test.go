@@ -218,7 +218,7 @@ func (m *mockStorage) BrowseDirectory(_ context.Context, _ string, _ string, _ i
 
 // --- Feed operations ---
 
-func (m *mockStorage) CreateFeed(_ context.Context, _ peer.ID, _, _, _ string) (*storage.FeedRecord, error) {
+func (m *mockStorage) CreateFeed(_ context.Context, _ peer.ID, _, _, _ string, _ bool) (*storage.FeedRecord, error) {
 	panic("not implemented")
 }
 

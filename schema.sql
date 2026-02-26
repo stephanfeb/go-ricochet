@@ -190,6 +190,7 @@ CREATE TABLE IF NOT EXISTS feeds (
     current_sequence INT NOT NULL DEFAULT 0,
     max_entries INT,
     max_age_days INT,
+    collaborative_mode BOOLEAN NOT NULL DEFAULT FALSE,
 
     CONSTRAINT uq_feed_owner_path UNIQUE(owner_peer_id, path)
 );

@@ -57,8 +57,9 @@ type FeedRequest struct {
 	Body        string            `json:"body,omitempty"` // base64 encoded
 
 	// CREATE parameters
-	Title       string `json:"title,omitempty"`
-	Description string `json:"description,omitempty"`
+	Title         string `json:"title,omitempty"`
+	Description   string `json:"description,omitempty"`
+	Collaborative bool   `json:"collaborative,omitempty"`
 
 	// APPEND parameters
 	EntryType string `json:"entryType,omitempty"`
@@ -170,11 +171,26 @@ func (h *Handler) HandleStream(s network.Stream) {
 		}
 	}
 
-	// Enforce owner-only access for write operations
+	// Enforce owner-only access for write operations.
+	// Exception: APPEND is allowed on collaborative feeds.
 	if isWrite && callerID != ownerID {
-		h.writeResponse(s, &FeedResponse{Status: StatusForbidden,
-			Headers: map[string]any{"Error": "write operations require owner access"}})
-		return
+		if req.Operation == OpAPPEND {
+			// Check if feed is collaborative before rejecting
+			ctx := context.Background()
+			feed, err := h.store.GetFeed(ctx, ownerID, req.Path)
+			if err != nil || feed == nil || !feed.CollaborativeMode {
+				h.writeResponse(s, &FeedResponse{Status: StatusForbidden,
+					Headers: map[string]any{"Error": "write operations require owner access"}})
+				return
+			}
+			// Collaborative feed — allow the append
+			h.logger.Debug("allowing collaborative append",
+				"feed", req.Path, "owner", ownerID, "contributor", callerID)
+		} else {
+			h.writeResponse(s, &FeedResponse{Status: StatusForbidden,
+				Headers: map[string]any{"Error": "write operations require owner access"}})
+			return
+		}
 	}
 
 	ctx := context.Background()
@@ -198,7 +214,7 @@ func (h *Handler) HandleStream(s network.Stream) {
 
 // handleCreate creates a new feed.
 func (h *Handler) handleCreate(ctx context.Context, s network.Stream, req *FeedRequest, ownerID peer.ID) {
-	feed, err := h.store.CreateFeed(ctx, ownerID, req.Path, req.Title, req.Description)
+	feed, err := h.store.CreateFeed(ctx, ownerID, req.Path, req.Title, req.Description, req.Collaborative)
 	if err != nil {
 		h.logger.Error("failed to create feed", "error", err)
 		h.writeResponse(s, &FeedResponse{Status: StatusInternalError})
@@ -206,11 +222,12 @@ func (h *Handler) handleCreate(ctx context.Context, s network.Stream, req *FeedR
 	}
 
 	bodyBytes, err := json.Marshal(map[string]any{
-		"id":              feed.ID,
-		"path":            feed.Path,
-		"title":           feed.Title,
-		"description":     feed.Description,
-		"currentSequence": feed.CurrentSequence,
+		"id":                feed.ID,
+		"path":              feed.Path,
+		"title":             feed.Title,
+		"description":       feed.Description,
+		"currentSequence":   feed.CurrentSequence,
+		"collaborativeMode": feed.CollaborativeMode,
 	})
 	if err != nil {
 		h.writeResponse(s, &FeedResponse{Status: StatusInternalError})
@@ -296,6 +313,7 @@ func (h *Handler) handleGetEntry(ctx context.Context, s network.Stream, feed *st
 			"ETag":           entry.ContentHash,
 			"X-Sequence":     entry.SequenceNumber,
 			"X-Entry-Type":   entry.EntryType,
+			"X-Created-By":   entry.CreatedByPeerID,
 			"Content-Type":   feed.EntryContentType,
 			"Created-At":     entry.CreatedAt.UnixMilli(),
 		},
@@ -323,6 +341,7 @@ func (h *Handler) handleGetEntries(ctx context.Context, s network.Stream, feed *
 		Content   string `json:"content"`          // base64
 		Hash      string `json:"hash"`
 		CreatedAt int64  `json:"createdAt"`
+		CreatedBy string `json:"createdBy,omitempty"`
 	}
 
 	result := make([]entryJSON, 0, len(entries))
@@ -333,6 +352,7 @@ func (h *Handler) handleGetEntries(ctx context.Context, s network.Stream, feed *
 			Content:   base64.StdEncoding.EncodeToString(e.Content),
 			Hash:      e.ContentHash,
 			CreatedAt: e.CreatedAt.UnixMilli(),
+			CreatedBy: e.CreatedByPeerID,
 		})
 	}
 

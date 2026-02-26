@@ -17,17 +17,18 @@ import (
 // Feed Operations
 // =============================================================================
 
-func (s *PostgresStorage) CreateFeed(ctx context.Context, ownerID peer.ID, path, title, description string) (*storage.FeedRecord, error) {
+func (s *PostgresStorage) CreateFeed(ctx context.Context, ownerID peer.ID, path, title, description string, collaborative bool) (*storage.FeedRecord, error) {
 	var r storage.FeedRecord
 	err := s.pool.QueryRow(ctx, `
-		INSERT INTO feeds (owner_peer_id, path, title, description)
-		VALUES ($1, $2, $3, $4)
+		INSERT INTO feeds (owner_peer_id, path, title, description, collaborative_mode)
+		VALUES ($1, $2, $3, $4, $5)
 		RETURNING id, owner_peer_id, path, title, description, entry_content_type,
-				  created_at, last_entry_at, current_sequence, max_entries, max_age_days`,
-		ownerID.String(), path, title, description,
+				  created_at, last_entry_at, current_sequence, max_entries, max_age_days,
+				  collaborative_mode`,
+		ownerID.String(), path, title, description, collaborative,
 	).Scan(&r.ID, &r.OwnerPeerID, &r.Path, &r.Title, &r.Description,
 		&r.EntryContentType, &r.CreatedAt, &r.LastEntryAt, &r.CurrentSequence,
-		&r.MaxEntries, &r.MaxAgeDays)
+		&r.MaxEntries, &r.MaxAgeDays, &r.CollaborativeMode)
 	if err != nil {
 		return nil, fmt.Errorf("create feed: %w", err)
 	}
@@ -40,13 +41,14 @@ func (s *PostgresStorage) GetFeed(ctx context.Context, ownerID peer.ID, path str
 	var r storage.FeedRecord
 	err := s.pool.QueryRow(ctx, `
 		SELECT id, owner_peer_id, path, title, description, entry_content_type,
-			   created_at, last_entry_at, current_sequence, max_entries, max_age_days
+			   created_at, last_entry_at, current_sequence, max_entries, max_age_days,
+			   collaborative_mode
 		FROM feeds
 		WHERE owner_peer_id = $1 AND path = $2`,
 		ownerID.String(), path,
 	).Scan(&r.ID, &r.OwnerPeerID, &r.Path, &r.Title, &r.Description,
 		&r.EntryContentType, &r.CreatedAt, &r.LastEntryAt, &r.CurrentSequence,
-		&r.MaxEntries, &r.MaxAgeDays)
+		&r.MaxEntries, &r.MaxAgeDays, &r.CollaborativeMode)
 
 	if err == pgx.ErrNoRows {
 		return nil, nil
@@ -71,7 +73,8 @@ func (s *PostgresStorage) DeleteFeed(ctx context.Context, ownerID peer.ID, path 
 func (s *PostgresStorage) ListFeeds(ctx context.Context, ownerID peer.ID) ([]*storage.FeedRecord, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT id, owner_peer_id, path, title, description, entry_content_type,
-			   created_at, last_entry_at, current_sequence, max_entries, max_age_days
+			   created_at, last_entry_at, current_sequence, max_entries, max_age_days,
+			   collaborative_mode
 		FROM feeds WHERE owner_peer_id = $1
 		ORDER BY path`,
 		ownerID.String(),
@@ -283,7 +286,7 @@ func scanFeedRecord(rows pgx.Rows) (*storage.FeedRecord, error) {
 	var r storage.FeedRecord
 	err := rows.Scan(&r.ID, &r.OwnerPeerID, &r.Path, &r.Title, &r.Description,
 		&r.EntryContentType, &r.CreatedAt, &r.LastEntryAt, &r.CurrentSequence,
-		&r.MaxEntries, &r.MaxAgeDays)
+		&r.MaxEntries, &r.MaxAgeDays, &r.CollaborativeMode)
 	if err != nil {
 		return nil, fmt.Errorf("scan feed record: %w", err)
 	}

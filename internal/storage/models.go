@@ -145,17 +145,18 @@ type DirectoryPage struct {
 
 // FeedRecord represents a stored feed.
 type FeedRecord struct {
-	ID               int64     `json:"id"`
-	OwnerPeerID      string    `json:"ownerPeerId"`
-	Path             string    `json:"path"`
-	Title            string    `json:"title"`
-	Description      string    `json:"description"`
-	EntryContentType string    `json:"entryContentType"`
-	CreatedAt        time.Time `json:"createdAt"`
-	LastEntryAt      time.Time `json:"lastEntryAt"`
-	CurrentSequence  int       `json:"currentSequence"`
-	MaxEntries       *int      `json:"maxEntries,omitempty"`
-	MaxAgeDays       *int      `json:"maxAgeDays,omitempty"`
+	ID                int64     `json:"id"`
+	OwnerPeerID       string    `json:"ownerPeerId"`
+	Path              string    `json:"path"`
+	Title             string    `json:"title"`
+	Description       string    `json:"description"`
+	EntryContentType  string    `json:"entryContentType"`
+	CreatedAt         time.Time `json:"createdAt"`
+	LastEntryAt       time.Time `json:"lastEntryAt"`
+	CurrentSequence   int       `json:"currentSequence"`
+	MaxEntries        *int      `json:"maxEntries,omitempty"`
+	MaxAgeDays        *int      `json:"maxAgeDays,omitempty"`
+	CollaborativeMode bool      `json:"collaborativeMode"`
 }
 
 // FullPath returns "ownerPeerId/feed/path".
