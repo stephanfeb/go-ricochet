@@ -321,7 +321,8 @@ Servers announce themselves via GossipSub on the `/sf-network/services/announce`
 ## Project Structure
 
 ```
-cmd/ricochet/           CLI entry point
+cmd/ricochet/           Server CLI entry point
+cmd/ricochet-bench/     Stress test / load testing tool
 internal/
   core/                 Message types, config, mailbox addressing
   protocol/
@@ -348,6 +349,90 @@ pkg/client/             Public client library
 test/integration/       Integration tests (requires PostgreSQL)
 schema.sql              PostgreSQL database schema
 ```
+
+## Stress Testing
+
+`ricochet-bench` is an Apache Bench-style load testing tool for Ricochet servers. It measures throughput, latency percentiles, and error rates across all protocol handlers.
+
+### Build
+
+```bash
+go build -o ricochet-bench ./cmd/ricochet-bench
+```
+
+### Usage
+
+```
+ricochet-bench [flags] <server-multiaddr> <server-peer-id>
+```
+
+**Flags:**
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `-n` | 1000 | Total number of requests |
+| `-c` | 10 | Number of concurrent workers |
+| `-protocol` | `msa` | Protocol to benchmark (see below) |
+| `-payload-size` | 1024 | Payload size in bytes |
+| `-duration` | — | Run for a duration instead of fixed count (e.g. `30s`, `1m`) |
+| `-warmup` | 10 | Warmup requests before measuring |
+
+**Protocols:**
+
+| Protocol | Operation | Description |
+|----------|-----------|-------------|
+| `msa` | `SendMessage` | Message submission throughput |
+| `maa` | `RetrieveMessages` | Message retrieval (pre-seeds mailbox data) |
+| `sda` | `PutDocument` + `GetDocument` | Document store round-trip |
+| `sfa` | `AppendFeedEntry` + `GetFeedEntry` | Feed append and read cycle |
+| `sca` | `PutCollectionItem` + `QueryCollection` | Collection write and query cycle |
+| `mixed` | Random mix of all protocols | Combined workload |
+
+### Examples
+
+```bash
+# Basic message submission benchmark
+ricochet-bench -n 1000 -c 10 -protocol msa \
+  /ip4/127.0.0.1/udp/55223/udx 12D3KooW...
+
+# Document store with larger payloads
+ricochet-bench -n 5000 -c 20 -protocol sda -payload-size 4096 \
+  /ip4/127.0.0.1/udp/55223/udx 12D3KooW...
+
+# Duration-based mixed workload
+ricochet-bench -duration 60s -c 50 -protocol mixed \
+  /ip4/127.0.0.1/udp/55223/udx 12D3KooW...
+```
+
+### Sample Output
+
+```
+Ricochet Bench - Protocol: MSA (Message Submission)
+Server: /ip4/127.0.0.1/udp/55223/udx/p2p/12D3KooW...
+
+Concurrency Level:      10
+Total Requests:         1000
+Payload Size:           1024 bytes
+
+Results:
+  Completed:            985
+  Failed:               15
+  Total time:           12.345s
+  Requests/sec:         81.00
+
+Latency Distribution:
+  min:    2.1ms
+  p50:    8.3ms
+  p75:    12.1ms
+  p90:    18.7ms
+  p95:    25.4ms
+  p99:    45.2ms
+  max:    120.5ms
+```
+
+### Architecture Notes
+
+Each concurrent worker creates its own libp2p host and client connection, avoiding yamux stream multiplexing contention. For protocols that require pre-existing data (MAA, SFA, SCA), the tool automatically creates the necessary resources during the warmup phase.
 
 ## Testing
 

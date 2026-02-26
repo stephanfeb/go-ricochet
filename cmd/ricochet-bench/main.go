@@ -1,0 +1,710 @@
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"flag"
+	"fmt"
+	"io"
+	"log"
+	"log/slog"
+	"math/rand/v2"
+	"os"
+	"os/signal"
+	"sort"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"github.com/libp2p/go-libp2p"
+	"github.com/libp2p/go-libp2p/core/crypto"
+	"github.com/libp2p/go-libp2p/core/host"
+	"github.com/libp2p/go-libp2p/core/network"
+	"github.com/libp2p/go-libp2p/core/peer"
+	"github.com/libp2p/go-libp2p/p2p/muxer/yamux"
+	"github.com/libp2p/go-libp2p/p2p/security/noise"
+	"github.com/multiformats/go-multiaddr"
+	udxtransport "github.com/stephanfeb/go-libp2p-udx-transport"
+
+	client "github.com/twostack/go-ricochet/pkg/client"
+)
+
+// benchConfig holds CLI-parsed configuration.
+type benchConfig struct {
+	ServerAddr   multiaddr.Multiaddr
+	ServerPeerID peer.ID
+	TotalReqs    int
+	Concurrency  int
+	Protocol     string
+	PayloadSize  int
+	Duration     time.Duration
+	WarmupCount  int
+	Verbose      bool
+}
+
+// requestResult captures the outcome of a single benchmarked operation.
+type requestResult struct {
+	Latency time.Duration
+	Err     error
+}
+
+// benchResults holds aggregated benchmark output.
+type benchResults struct {
+	Protocol  string
+	Completed int
+	Failed    int
+	TotalTime time.Duration
+	Latencies []time.Duration
+	Errors    map[string]int
+}
+
+// benchFunc is the signature for a single benchmark operation.
+type benchFunc func(ctx context.Context, c *client.Client, workerID, reqID int) error
+
+// workerState holds per-worker resources created during warmup.
+type workerState struct {
+	client      *client.Client
+	host        host.Host
+	recipientID peer.ID // for MSA benchmarks
+}
+
+var validProtocols = map[string]string{
+	"msa":   "MSA (Message Submission)",
+	"maa":   "MAA (Message Retrieval)",
+	"sda":   "SDA (Document Store)",
+	"sfa":   "SFA (Feed Store)",
+	"sca":   "SCA (Collection Store)",
+	"mixed": "Mixed (All Protocols)",
+}
+
+func main() {
+	n := flag.Int("n", 1000, "Total number of requests")
+	c := flag.Int("c", 10, "Number of concurrent workers")
+	proto := flag.String("protocol", "msa", "Protocol to benchmark: msa, maa, sda, sfa, sca, mixed")
+	payloadSize := flag.Int("payload-size", 1024, "Payload size in bytes")
+	duration := flag.Duration("duration", 0, "Run for duration instead of fixed count (e.g. 30s, 1m)")
+	warmup := flag.Int("warmup", 10, "Warmup requests before measuring")
+	verbose := flag.Bool("v", false, "Verbose output (show libp2p/UDX diagnostic logs)")
+	flag.Usage = func() {
+		fmt.Fprintf(os.Stderr, "Usage: ricochet-bench [flags] <server-multiaddr> <server-peer-id>\n\n")
+		fmt.Fprintf(os.Stderr, "Stress test tool for Ricochet servers (like Apache Bench for libp2p).\n\n")
+		fmt.Fprintf(os.Stderr, "Example:\n")
+		fmt.Fprintf(os.Stderr, "  ricochet-bench -n 5000 -c 20 -protocol sda /ip4/127.0.0.1/udp/55223/udx 12D3KooW...\n\n")
+		fmt.Fprintf(os.Stderr, "Protocols: msa, maa, sda, sfa, sca, mixed\n\n")
+		fmt.Fprintf(os.Stderr, "Flags:\n")
+		flag.PrintDefaults()
+	}
+	flag.Parse()
+
+	// Suppress UDX/libp2p diagnostic logging unless verbose mode is on.
+	if !*verbose {
+		log.SetOutput(io.Discard)
+		slog.SetDefault(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	}
+
+	args := flag.Args()
+	if len(args) != 2 {
+		flag.Usage()
+		os.Exit(1)
+	}
+
+	if _, ok := validProtocols[*proto]; !ok {
+		fmt.Fprintf(os.Stderr, "Error: unknown protocol %q. Valid: msa, maa, sda, sfa, sca, mixed\n", *proto)
+		os.Exit(1)
+	}
+
+	serverMA, err := multiaddr.NewMultiaddr(args[0])
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: invalid server multiaddr: %v\n", err)
+		os.Exit(1)
+	}
+
+	serverPeerID, err := peer.Decode(args[1])
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: invalid server peer ID: %v\n", err)
+		os.Exit(1)
+	}
+
+	if *c > *n && *duration == 0 {
+		*c = *n
+	}
+
+	cfg := &benchConfig{
+		ServerAddr:   serverMA,
+		ServerPeerID: serverPeerID,
+		TotalReqs:    *n,
+		Concurrency:  *c,
+		Protocol:     *proto,
+		PayloadSize:  *payloadSize,
+		Duration:     *duration,
+		WarmupCount:  *warmup,
+		Verbose:      *verbose,
+	}
+
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer cancel()
+
+	// Second Ctrl+C force-exits immediately.
+	go func() {
+		sigCh := make(chan os.Signal, 1)
+		signal.Notify(sigCh, os.Interrupt)
+		<-sigCh // first one is consumed by NotifyContext
+		<-sigCh // second one = force exit
+		fmt.Fprintf(os.Stderr, "\nForce exit.\n")
+		os.Exit(1)
+	}()
+
+	if err := run(ctx, cfg); err != nil {
+		fmt.Fprintf(os.Stderr, "\nError: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+func run(ctx context.Context, cfg *benchConfig) error {
+	fmt.Println("========================================")
+	fmt.Printf("  Ricochet Bench - %s\n", validProtocols[cfg.Protocol])
+	fmt.Println("========================================")
+	fmt.Printf("Server: %s/p2p/%s\n\n", cfg.ServerAddr, shortPeerID(cfg.ServerPeerID))
+
+	// Create workers (each with own libp2p host and client).
+	fmt.Printf("[1/4] Creating %d workers...", cfg.Concurrency)
+	workers := make([]*workerState, cfg.Concurrency)
+	for i := 0; i < cfg.Concurrency; i++ {
+		ws, err := createWorker(cfg)
+		if err != nil {
+			// Clean up already-created workers.
+			closeWorkers(workers[:i])
+			return fmt.Errorf("create worker %d: %w", i, err)
+		}
+		workers[i] = ws
+	}
+	fmt.Println(" done")
+
+	// Verify connectivity with the first worker.
+	fmt.Printf("[2/4] Connecting to server...")
+	testCtx, testCancel := context.WithTimeout(ctx, 15*time.Second)
+	err := verifyConnection(testCtx, workers[0])
+	testCancel()
+	if err != nil {
+		closeWorkers(workers)
+		return fmt.Errorf("server unreachable: %w", err)
+	}
+	fmt.Println(" connected")
+
+	// Build the bench function and run warmup.
+	payload := make([]byte, cfg.PayloadSize)
+	for i := range payload {
+		payload[i] = byte(rand.IntN(256))
+	}
+
+	benchFn, err := setupBench(ctx, cfg, workers, payload)
+	if err != nil {
+		closeWorkers(workers)
+		return fmt.Errorf("setup benchmark: %w", err)
+	}
+
+	// Warmup phase.
+	if cfg.WarmupCount > 0 {
+		fmt.Printf("[3/4] Warming up (%d requests)...", cfg.WarmupCount)
+		warmupFailed := 0
+		for i := 0; i < cfg.WarmupCount; i++ {
+			wIdx := i % cfg.Concurrency
+			if err := benchFn(ctx, workers[wIdx].client, wIdx, -(i + 1)); err != nil {
+				warmupFailed++
+			}
+		}
+		if warmupFailed > 0 {
+			fmt.Printf(" done (%d/%d failed)\n", warmupFailed, cfg.WarmupCount)
+		} else {
+			fmt.Println(" done")
+		}
+	} else {
+		fmt.Println("[3/4] Skipping warmup")
+	}
+
+	// Run benchmark.
+	if cfg.Duration > 0 {
+		fmt.Printf("[4/4] Benchmarking for %s with %d workers...\n", cfg.Duration, cfg.Concurrency)
+	} else {
+		fmt.Printf("[4/4] Benchmarking %d requests with %d workers...\n", cfg.TotalReqs, cfg.Concurrency)
+	}
+
+	results := runBench(ctx, cfg, workers, benchFn)
+
+	// Print results BEFORE closing workers to avoid UDX noise mixing in.
+	fmt.Println()
+	printResults(cfg, results)
+
+	// Close workers with a timeout — host.Close() can hang due to UDX
+	// readLoop blocking on ReadFrom(). If it doesn't finish quickly,
+	// just exit since we already have our results.
+	closeDone := make(chan struct{})
+	go func() {
+		closeWorkers(workers)
+		close(closeDone)
+	}()
+	select {
+	case <-closeDone:
+		// Clean shutdown.
+	case <-time.After(3 * time.Second):
+		// UDX close is hanging — force exit since results are already printed.
+	}
+
+	return nil
+}
+
+// closeWorkers shuts down all worker hosts, ignoring errors.
+func closeWorkers(workers []*workerState) {
+	for _, ws := range workers {
+		if ws != nil {
+			ws.host.Close()
+		}
+	}
+}
+
+func createWorker(cfg *benchConfig) (*workerState, error) {
+	priv, _, err := crypto.GenerateEd25519Key(nil)
+	if err != nil {
+		return nil, fmt.Errorf("generate key: %w", err)
+	}
+
+	h, err := libp2p.New(
+		libp2p.Identity(priv),
+		libp2p.NoTransports,
+		libp2p.Transport(udxtransport.NewTransport),
+		libp2p.ListenAddrStrings("/ip4/0.0.0.0/udp/0/udx"),
+		libp2p.Security(noise.ID, noise.New),
+		libp2p.Muxer("/yamux/1.0.0", yamux.DefaultTransport),
+		libp2p.ResourceManager(&network.NullResourceManager{}),
+		libp2p.DisableRelay(),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("create host: %w", err)
+	}
+
+	h.Peerstore().AddAddrs(cfg.ServerPeerID, []multiaddr.Multiaddr{cfg.ServerAddr}, time.Hour)
+
+	cl := client.New(h, client.Config{
+		PreferredServers: []client.ServerPreference{
+			{PeerID: cfg.ServerPeerID, Priority: 1, Weight: 1},
+		},
+		ConnectionTimeout: 15 * time.Second,
+		MessageTimeout:    30 * time.Second,
+	})
+
+	// Generate a random recipient peer ID for MSA benchmarks.
+	recipientPriv, _, err := crypto.GenerateEd25519Key(nil)
+	if err != nil {
+		h.Close()
+		return nil, fmt.Errorf("generate recipient key: %w", err)
+	}
+	recipientID, err := peer.IDFromPrivateKey(recipientPriv)
+	if err != nil {
+		h.Close()
+		return nil, fmt.Errorf("recipient peer id: %w", err)
+	}
+
+	return &workerState{
+		client:      cl,
+		host:        h,
+		recipientID: recipientID,
+	}, nil
+}
+
+// verifyConnection tries to send a small test message to confirm the server is reachable.
+func verifyConnection(ctx context.Context, ws *workerState) error {
+	// Send a tiny message to a random peer to verify the MSA path works.
+	// This is more reliable than QueryCapacity which may not be registered.
+	testPayload := []byte("bench-ping")
+	result, err := ws.client.SendMessage(ctx, ws.recipientID, testPayload)
+	if err != nil {
+		return fmt.Errorf("test send failed: %w", err)
+	}
+	if !result.Success {
+		return fmt.Errorf("test send rejected: %s", result.ErrorMessage)
+	}
+	return nil
+}
+
+// setupBench creates per-protocol resources and returns the benchmark function.
+func setupBench(ctx context.Context, cfg *benchConfig, workers []*workerState, payload []byte) (benchFunc, error) {
+	switch cfg.Protocol {
+	case "msa":
+		return benchMSA(workers, payload), nil
+
+	case "maa":
+		// Seed messages into each worker's own mailbox so there's data to retrieve.
+		fmt.Printf("     Seeding messages for MAA benchmark...")
+		for i, ws := range workers {
+			for j := 0; j < 100; j++ {
+				_, err := ws.client.SendMessage(ctx, ws.host.ID(), payload)
+				if err != nil {
+					return nil, fmt.Errorf("seed message for worker %d: %w", i, err)
+				}
+			}
+		}
+		fmt.Println(" done")
+		return benchMAA(), nil
+
+	case "sda":
+		return benchSDA(payload), nil
+
+	case "sfa":
+		// Create a feed per worker.
+		fmt.Printf("     Creating feeds for SFA benchmark...")
+		for i, ws := range workers {
+			feedPath := fmt.Sprintf("/bench/feed-w%d", i)
+			if err := ws.client.CreateFeed(ctx, feedPath, "Bench Feed", "stress test"); err != nil {
+				return nil, fmt.Errorf("create feed for worker %d: %w", i, err)
+			}
+		}
+		fmt.Println(" done")
+		return benchSFA(payload), nil
+
+	case "sca":
+		// Create a collection per worker.
+		fmt.Printf("     Creating collections for SCA benchmark...")
+		for i, ws := range workers {
+			collPath := fmt.Sprintf("/bench/coll-w%d", i)
+			if err := ws.client.CreateCollection(ctx, collPath, "Bench Collection"); err != nil {
+				return nil, fmt.Errorf("create collection for worker %d: %w", i, err)
+			}
+		}
+		fmt.Println(" done")
+		return benchSCA(payload), nil
+
+	case "mixed":
+		// Setup for all protocols.
+		fmt.Printf("     Setting up mixed benchmark resources...")
+		for i, ws := range workers {
+			for j := 0; j < 50; j++ {
+				if _, err := ws.client.SendMessage(ctx, ws.host.ID(), payload); err != nil {
+					return nil, fmt.Errorf("seed message for worker %d: %w", i, err)
+				}
+			}
+			feedPath := fmt.Sprintf("/bench/feed-w%d", i)
+			if err := ws.client.CreateFeed(ctx, feedPath, "Bench Feed", "stress test"); err != nil {
+				return nil, fmt.Errorf("create feed for worker %d: %w", i, err)
+			}
+			collPath := fmt.Sprintf("/bench/coll-w%d", i)
+			if err := ws.client.CreateCollection(ctx, collPath, "Bench Collection"); err != nil {
+				return nil, fmt.Errorf("create collection for worker %d: %w", i, err)
+			}
+		}
+		fmt.Println(" done")
+		return benchMixed(workers, payload), nil
+
+	default:
+		return nil, fmt.Errorf("unknown protocol: %s", cfg.Protocol)
+	}
+}
+
+// --- Protocol benchmark functions ---
+
+func benchMSA(workers []*workerState, payload []byte) benchFunc {
+	return func(ctx context.Context, c *client.Client, workerID, reqID int) error {
+		recipient := workers[workerID].recipientID
+		result, err := c.SendMessage(ctx, recipient, payload)
+		if err != nil {
+			return err
+		}
+		if !result.Success {
+			return fmt.Errorf("send failed: %s", result.ErrorMessage)
+		}
+		return nil
+	}
+}
+
+func benchMAA() benchFunc {
+	return func(ctx context.Context, c *client.Client, workerID, reqID int) error {
+		_, err := c.RetrieveMessages(ctx, client.WithMaxMessages(10))
+		return err
+	}
+}
+
+func benchSDA(payload []byte) benchFunc {
+	return func(ctx context.Context, c *client.Client, workerID, reqID int) error {
+		path := fmt.Sprintf("/bench/w%d/doc-%d", workerID, reqID)
+		ownerID := c.PeerID()
+		if _, err := c.PutDocument(ctx, ownerID, path, payload); err != nil {
+			return fmt.Errorf("put: %w", err)
+		}
+		if _, err := c.GetDocument(ctx, ownerID, path); err != nil {
+			return fmt.Errorf("get: %w", err)
+		}
+		return nil
+	}
+}
+
+func benchSFA(payload []byte) benchFunc {
+	return func(ctx context.Context, c *client.Client, workerID, reqID int) error {
+		feedPath := fmt.Sprintf("/bench/feed-w%d", workerID)
+		seq, err := c.AppendFeedEntry(ctx, feedPath, payload, "bench")
+		if err != nil {
+			return fmt.Errorf("append: %w", err)
+		}
+		_, err = c.GetFeedEntry(ctx, c.PeerID(), feedPath, seq)
+		if err != nil {
+			return fmt.Errorf("get entry: %w", err)
+		}
+		return nil
+	}
+}
+
+func benchSCA(payload []byte) benchFunc {
+	jsonPayload, _ := json.Marshal(map[string]string{"data": string(payload)})
+
+	return func(ctx context.Context, c *client.Client, workerID, reqID int) error {
+		collPath := fmt.Sprintf("/bench/coll-w%d", workerID)
+		key := fmt.Sprintf("item-%d", reqID)
+		if _, err := c.PutCollectionItem(ctx, collPath, key, jsonPayload); err != nil {
+			return fmt.Errorf("put item: %w", err)
+		}
+		_, err := c.QueryCollection(ctx, c.PeerID(), collPath, map[string]any{})
+		if err != nil {
+			return fmt.Errorf("query: %w", err)
+		}
+		return nil
+	}
+}
+
+func benchMixed(workers []*workerState, payload []byte) benchFunc {
+	msaFn := benchMSA(workers, payload)
+	maaFn := benchMAA()
+	sdaFn := benchSDA(payload)
+	sfaFn := benchSFA(payload)
+
+	return func(ctx context.Context, c *client.Client, workerID, reqID int) error {
+		switch rand.IntN(4) {
+		case 0:
+			return msaFn(ctx, c, workerID, reqID)
+		case 1:
+			return maaFn(ctx, c, workerID, reqID)
+		case 2:
+			return sdaFn(ctx, c, workerID, reqID)
+		default:
+			return sfaFn(ctx, c, workerID, reqID)
+		}
+	}
+}
+
+// --- Benchmark runner ---
+
+func runBench(ctx context.Context, cfg *benchConfig, workers []*workerState, fn benchFunc) *benchResults {
+	var wg sync.WaitGroup
+	workerResults := make([][]requestResult, cfg.Concurrency)
+
+	var counter atomic.Int64
+	counter.Store(int64(cfg.TotalReqs))
+
+	// Progress tracking.
+	var completed atomic.Int64
+	var failed atomic.Int64
+
+	var benchCtx context.Context
+	var benchCancel context.CancelFunc
+	if cfg.Duration > 0 {
+		benchCtx, benchCancel = context.WithTimeout(ctx, cfg.Duration)
+	} else {
+		benchCtx, benchCancel = context.WithCancel(ctx)
+	}
+	defer benchCancel()
+
+	// Progress reporter goroutine.
+	progressDone := make(chan struct{})
+	go func() {
+		defer close(progressDone)
+		ticker := time.NewTicker(time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-benchCtx.Done():
+				return
+			case <-ticker.C:
+				c := completed.Load()
+				f := failed.Load()
+				total := c + f
+				if cfg.Duration == 0 {
+					fmt.Fprintf(os.Stderr, "\r     Progress: %d/%d requests (%d ok, %d failed)",
+						total, cfg.TotalReqs, c, f)
+				} else {
+					fmt.Fprintf(os.Stderr, "\r     Progress: %d requests (%d ok, %d failed)",
+						total, c, f)
+				}
+			}
+		}
+	}()
+
+	start := time.Now()
+
+	for i := 0; i < cfg.Concurrency; i++ {
+		wg.Add(1)
+		go func(workerID int) {
+			defer wg.Done()
+			var results []requestResult
+
+			for {
+				select {
+				case <-benchCtx.Done():
+					workerResults[workerID] = results
+					return
+				default:
+				}
+
+				if cfg.Duration == 0 {
+					remaining := counter.Add(-1)
+					if remaining < 0 {
+						workerResults[workerID] = results
+						return
+					}
+				}
+
+				reqCtx, reqCancel := context.WithTimeout(benchCtx, 10*time.Second)
+				reqStart := time.Now()
+				err := fn(reqCtx, workers[workerID].client, workerID, len(results))
+				elapsed := time.Since(reqStart)
+				reqCancel()
+
+				results = append(results, requestResult{Latency: elapsed, Err: err})
+
+				if err != nil {
+					failed.Add(1)
+				} else {
+					completed.Add(1)
+				}
+			}
+		}(i)
+	}
+
+	wg.Wait()
+	totalTime := time.Since(start)
+	benchCancel() // stop progress reporter
+	<-progressDone
+	fmt.Fprintf(os.Stderr, "\r%80s\r", "") // clear progress line
+
+	// Aggregate results.
+	res := &benchResults{
+		Protocol:  cfg.Protocol,
+		TotalTime: totalTime,
+		Errors:    make(map[string]int),
+	}
+
+	for _, wr := range workerResults {
+		for _, r := range wr {
+			if r.Err != nil {
+				res.Failed++
+				errMsg := r.Err.Error()
+				if len(errMsg) > 100 {
+					errMsg = errMsg[:100] + "..."
+				}
+				res.Errors[errMsg]++
+			} else {
+				res.Completed++
+				res.Latencies = append(res.Latencies, r.Latency)
+			}
+		}
+	}
+
+	sort.Slice(res.Latencies, func(i, j int) bool {
+		return res.Latencies[i] < res.Latencies[j]
+	})
+
+	return res
+}
+
+// --- Output ---
+
+func percentile(sorted []time.Duration, p float64) time.Duration {
+	if len(sorted) == 0 {
+		return 0
+	}
+	idx := int(float64(len(sorted)-1) * p)
+	return sorted[idx]
+}
+
+func formatDuration(d time.Duration) string {
+	if d < time.Millisecond {
+		return fmt.Sprintf("%.1fus", float64(d.Microseconds()))
+	}
+	if d < time.Second {
+		return fmt.Sprintf("%.1fms", float64(d.Microseconds())/1000.0)
+	}
+	return fmt.Sprintf("%.2fs", d.Seconds())
+}
+
+func shortPeerID(id peer.ID) string {
+	s := id.String()
+	if len(s) > 16 {
+		return s[:8] + "..." + s[len(s)-8:]
+	}
+	return s
+}
+
+func printResults(cfg *benchConfig, res *benchResults) {
+	total := res.Completed + res.Failed
+
+	fmt.Println("========================================")
+	fmt.Println("  RESULTS")
+	fmt.Println("========================================")
+	fmt.Printf("Concurrency Level:      %d\n", cfg.Concurrency)
+	fmt.Printf("Total Requests:         %d\n", total)
+	fmt.Printf("Payload Size:           %d bytes\n", cfg.PayloadSize)
+	fmt.Println()
+	fmt.Printf("  Completed:            %d\n", res.Completed)
+	fmt.Printf("  Failed:               %d\n", res.Failed)
+	fmt.Printf("  Total time:           %.3fs\n", res.TotalTime.Seconds())
+
+	if res.TotalTime > 0 && res.Completed > 0 {
+		rps := float64(res.Completed) / res.TotalTime.Seconds()
+		fmt.Printf("  Requests/sec:         %.2f\n", rps)
+	}
+
+	if len(res.Latencies) > 0 {
+		fmt.Println()
+		fmt.Println("Latency Distribution:")
+		fmt.Printf("  min:    %-12s\n", formatDuration(res.Latencies[0]))
+		fmt.Printf("  p50:    %-12s\n", formatDuration(percentile(res.Latencies, 0.50)))
+		fmt.Printf("  p75:    %-12s\n", formatDuration(percentile(res.Latencies, 0.75)))
+		fmt.Printf("  p90:    %-12s\n", formatDuration(percentile(res.Latencies, 0.90)))
+		fmt.Printf("  p95:    %-12s\n", formatDuration(percentile(res.Latencies, 0.95)))
+		fmt.Printf("  p99:    %-12s\n", formatDuration(percentile(res.Latencies, 0.99)))
+		fmt.Printf("  max:    %-12s\n", formatDuration(res.Latencies[len(res.Latencies)-1]))
+	}
+
+	if len(res.Errors) > 0 {
+		fmt.Println()
+		fmt.Println("Errors:")
+		type errEntry struct {
+			Msg   string
+			Count int
+		}
+		entries := make([]errEntry, 0, len(res.Errors))
+		for msg, count := range res.Errors {
+			entries = append(entries, errEntry{msg, count})
+		}
+		sort.Slice(entries, func(i, j int) bool {
+			return entries[i].Count > entries[j].Count
+		})
+		limit := 5
+		if len(entries) < limit {
+			limit = len(entries)
+		}
+		for _, e := range entries[:limit] {
+			fmt.Printf("  [%d] %s\n", e.Count, e.Msg)
+		}
+		if len(entries) > 5 {
+			remaining := 0
+			for _, e := range entries[5:] {
+				remaining += e.Count
+			}
+			fmt.Printf("  ... and %d more errors (%d types)\n", remaining, len(entries)-5)
+		}
+	}
+
+	if res.Failed > 0 && total > 0 {
+		rate := float64(res.Failed) / float64(total) * 100
+		fmt.Printf("\nError rate: %.1f%%\n", rate)
+	}
+
+	fmt.Println("========================================")
+}
