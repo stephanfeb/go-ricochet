@@ -134,10 +134,7 @@ func main() {
 	// Create and start server
 	srv := server.NewServer(cfg, logger)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	if err := srv.Start(ctx); err != nil {
+	if err := srv.Start(context.Background()); err != nil {
 		logger.Error("failed to start server", "error", err)
 		os.Exit(1)
 	}

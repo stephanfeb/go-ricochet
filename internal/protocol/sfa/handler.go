@@ -172,18 +172,33 @@ func (h *Handler) HandleStream(s network.Stream) {
 	}
 
 	// Enforce owner-only access for write operations.
-	// Exception: APPEND is allowed on collaborative feeds.
+	// Exception: APPEND is allowed on collaborative feeds (auto-created if needed).
 	if isWrite && callerID != ownerID {
 		if req.Operation == OpAPPEND {
-			// Check if feed is collaborative before rejecting
 			ctx := context.Background()
 			feed, err := h.store.GetFeed(ctx, ownerID, req.Path)
-			if err != nil || feed == nil || !feed.CollaborativeMode {
+			if err != nil {
+				h.writeResponse(s, &FeedResponse{Status: StatusInternalError,
+					Headers: map[string]any{"Error": "failed to check feed"}})
+				return
+			}
+			if feed == nil {
+				// Auto-create as collaborative feed for non-owner appends
+				feed, err = h.store.CreateFeed(ctx, ownerID, req.Path, "", "", true)
+				if err != nil {
+					h.logger.Error("failed to auto-create collaborative feed",
+						"path", req.Path, "owner", ownerID, "error", err)
+					h.writeResponse(s, &FeedResponse{Status: StatusInternalError,
+						Headers: map[string]any{"Error": "failed to create feed"}})
+					return
+				}
+				h.logger.Info("auto-created collaborative feed for non-owner append",
+					"path", req.Path, "owner", ownerID, "contributor", callerID)
+			} else if !feed.CollaborativeMode {
 				h.writeResponse(s, &FeedResponse{Status: StatusForbidden,
 					Headers: map[string]any{"Error": "write operations require owner access"}})
 				return
 			}
-			// Collaborative feed — allow the append
 			h.logger.Debug("allowing collaborative append",
 				"feed", req.Path, "owner", ownerID, "contributor", callerID)
 		} else {

@@ -47,6 +47,8 @@ type Server struct {
 	presenceService *presence.Service
 
 	// State
+	ctx       context.Context
+	cancel    context.CancelFunc
 	isRunning bool
 	startTime time.Time
 }
@@ -60,10 +62,12 @@ func NewServer(cfg *core.ServerConfig, logger *slog.Logger) *Server {
 }
 
 // Start starts the server.
-func (s *Server) Start(ctx context.Context) error {
+func (s *Server) Start(parentCtx context.Context) error {
 	if s.isRunning {
 		return fmt.Errorf("server already running")
 	}
+
+	s.ctx, s.cancel = context.WithCancel(parentCtx)
 
 	s.logger.Info("starting Ricochet store-and-forward server")
 	s.startTime = time.Now()
@@ -73,23 +77,23 @@ func (s *Server) Start(ctx context.Context) error {
 	}
 
 	// Initialize storage
-	if err := s.initializeStorage(ctx); err != nil {
+	if err := s.initializeStorage(s.ctx); err != nil {
 		return fmt.Errorf("initialize storage: %w", err)
 	}
 
 	// Initialize P2P
-	if err := s.initializeP2P(ctx); err != nil {
+	if err := s.initializeP2P(s.ctx); err != nil {
 		return fmt.Errorf("initialize p2p: %w", err)
 	}
 
 	// Initialize services (MDA, MTA, registry, presence)
-	s.initializeServices(ctx)
+	s.initializeServices(s.ctx)
 
 	// Register protocol handlers
 	s.registerProtocolHandlers()
 
 	// Start background services
-	s.startServices(ctx)
+	s.startServices(s.ctx)
 
 	s.isRunning = true
 
@@ -111,6 +115,11 @@ func (s *Server) Stop() error {
 
 	s.logger.Info("stopping server")
 	s.isRunning = false
+
+	// Cancel context first so background goroutines (maintenanceLoop, etc.) exit promptly
+	if s.cancel != nil {
+		s.cancel()
+	}
 
 	// Stop services
 	if s.presenceService != nil {
