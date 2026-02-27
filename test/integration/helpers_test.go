@@ -18,6 +18,9 @@ import (
 	"github.com/libp2p/go-libp2p/p2p/security/noise"
 	udxtransport "github.com/stephanfeb/go-libp2p-udx-transport"
 
+	forge "github.com/twostack/go-p2p-forge"
+	"github.com/twostack/go-p2p-forge/codec"
+
 	"github.com/twostack/go-ricochet/internal/core"
 	"github.com/twostack/go-ricochet/internal/mda"
 	"github.com/twostack/go-ricochet/internal/mta"
@@ -27,6 +30,7 @@ import (
 	"github.com/twostack/go-ricochet/internal/protocol/sca"
 	"github.com/twostack/go-ricochet/internal/protocol/sda"
 	"github.com/twostack/go-ricochet/internal/protocol/sfa"
+	"github.com/twostack/go-ricochet/internal/storage"
 	"github.com/twostack/go-ricochet/internal/storage/postgres"
 	client "github.com/twostack/go-ricochet/pkg/client"
 )
@@ -84,23 +88,30 @@ func newTestServer(t *testing.T) *testServer {
 	mtaRtr := mta.NewRouter(mdaSrv, cfg.RateLimitWindow, cfg.MaxRequestsPerWindow, logger)
 
 	// Register protocol handlers — mirrors server.go registerProtocolHandlers.
-	msaHandler := msa.NewHandler(mtaRtr, logger)
-	h.SetStreamHandler(msa.ProtocolID, msaHandler.HandleStream)
+	reg := forge.NewRegistry()
+	reg.Provide("storage", storage.Storage(store))
+	reg.Provide("mta", mtaRtr)
+	reg.Provide("mda", mdaSrv)
+	reg.Provide("config", cfg)
+	pool := codec.NewBufferPool()
 
-	maaHandler := maa.NewHandler(mdaSrv, logger)
-	h.SetStreamHandler(maa.ProtocolID, maaHandler.HandleStream)
+	msaPipeline := msa.NewPipeline(logger, pool, reg)
+	h.SetStreamHandler(msa.ProtocolID, msaPipeline.StreamHandler())
 
-	mmaHandler := mma.NewHandler(mdaSrv, cfg, logger)
-	h.SetStreamHandler(mma.ProtocolID, mmaHandler.HandleStream)
+	maaPipeline := maa.NewPipeline(logger, pool, reg)
+	h.SetStreamHandler(maa.ProtocolID, maaPipeline.StreamHandler())
 
-	sdaHandler := sda.NewHandler(store, logger)
-	h.SetStreamHandler(sda.ProtocolID, sdaHandler.HandleStream)
+	mmaPipeline := mma.NewPipeline(logger, pool, reg)
+	h.SetStreamHandler(mma.ProtocolID, mmaPipeline.StreamHandler())
 
-	sfaHandler := sfa.NewHandler(store, logger)
-	h.SetStreamHandler(sfa.ProtocolID, sfaHandler.HandleStream)
+	sdaPipeline := sda.NewPipeline(logger, pool, reg)
+	h.SetStreamHandler(sda.ProtocolID, sdaPipeline.StreamHandler())
 
-	scaHandler := sca.NewHandler(store, logger)
-	h.SetStreamHandler(sca.ProtocolID, scaHandler.HandleStream)
+	sfaPipeline := sfa.NewPipeline(logger, pool, reg)
+	h.SetStreamHandler(sfa.ProtocolID, sfaPipeline.StreamHandler())
+
+	scaPipeline := sca.NewPipeline(logger, pool, reg)
+	h.SetStreamHandler(sca.ProtocolID, scaPipeline.StreamHandler())
 
 	ts := &testServer{
 		Host:   h,

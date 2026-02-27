@@ -3,19 +3,21 @@ package mma
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
-	"sync"
 	"time"
 
-	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/core/protocol"
 
+	forge "github.com/twostack/go-p2p-forge"
+	"github.com/twostack/go-p2p-forge/codec"
+	"github.com/twostack/go-p2p-forge/middleware"
+
 	"github.com/twostack/go-ricochet/internal/core"
 	"github.com/twostack/go-ricochet/internal/mda"
-	"github.com/twostack/go-ricochet/internal/protocol/frame"
 )
 
 // ProtocolID is the MMA protocol identifier.
@@ -23,15 +25,15 @@ const ProtocolID = protocol.ID("/sf-network/admin/1.0.0")
 
 // Operation type constants for the MMA protocol.
 const (
-	OpCreateMailbox   = "createMailbox"
-	OpDeleteMailbox   = "deleteMailbox"
-	OpGrantAccess     = "grantAccess"
-	OpRevokeAccess    = "revokeAccess"
-	OpListACL         = "listACL"
-	OpListMailboxes   = "listMailboxes"
-	OpUpdateConfig    = "updateConfig"
-	OpQueryCapacity   = "queryCapacity"
-	OpGetMailboxInfo  = "getMailboxInfo"
+	OpCreateMailbox  = "createMailbox"
+	OpDeleteMailbox  = "deleteMailbox"
+	OpGrantAccess    = "grantAccess"
+	OpRevokeAccess   = "revokeAccess"
+	OpListACL        = "listACL"
+	OpListMailboxes  = "listMailboxes"
+	OpUpdateConfig   = "updateConfig"
+	OpQueryCapacity  = "queryCapacity"
+	OpGetMailboxInfo = "getMailboxInfo"
 )
 
 // AdminRequest is the top-level request envelope. The operationType field
@@ -55,9 +57,9 @@ type AdminRequest struct {
 	RetentionCount *int   `json:"retentionCount,omitempty"`
 
 	// grantAccess / revokeAccess
-	GranteePeerID  string `json:"granteePeerId,omitempty"`
-	TargetPeerID   string `json:"targetPeerId,omitempty"` // Dart-compatible alias
-	AccessMode     string `json:"accessMode,omitempty"`
+	GranteePeerID string `json:"granteePeerId,omitempty"`
+	TargetPeerID  string `json:"targetPeerId,omitempty"` // Dart-compatible alias
+	AccessMode    string `json:"accessMode,omitempty"`
 }
 
 // normalize populates FolderPath and MailboxType from Dart-compatible fields
@@ -111,94 +113,112 @@ type ACLEntry struct {
 	GrantedAt  int64  `json:"grantedAt"`
 }
 
-// Handler is the Mailbox Management Agent protocol handler.
-type Handler struct {
-	mda            *mda.MailboxServer
-	config         *core.ServerConfig
-	logger         *slog.Logger
-	rateLimitMu    sync.Mutex
-	requestHistory map[string][]time.Time
-	rateLimitWindow time.Duration
-	maxRequests    int
+// NewPipeline creates a forge pipeline for the Mailbox Management Agent.
+func NewPipeline(logger *slog.Logger, pool *codec.BufferPool, reg *forge.Registry) *forge.Pipeline {
+	limiter := middleware.NewSingleBucket(time.Minute, 50)
+
+	routes := map[string]forge.Middleware{
+		OpCreateMailbox:  middleware.Chain(forge.JSONDeserialize[AdminRequest](), handleCreateMailbox),
+		OpDeleteMailbox:  middleware.Chain(forge.JSONDeserialize[AdminRequest](), handleDeleteMailbox),
+		OpGrantAccess:    middleware.Chain(forge.JSONDeserialize[AdminRequest](), handleGrantAccess),
+		OpRevokeAccess:   middleware.Chain(forge.JSONDeserialize[AdminRequest](), handleRevokeAccess),
+		OpListACL:        middleware.Chain(forge.JSONDeserialize[AdminRequest](), handleListACL),
+		OpListMailboxes:  middleware.Chain(forge.JSONDeserialize[AdminRequest](), handleListMailboxes),
+		OpUpdateConfig:   middleware.Chain(forge.JSONDeserialize[AdminRequest](), handleUpdateConfig),
+		OpQueryCapacity:  middleware.Chain(forge.JSONDeserialize[AdminRequest](), handleQueryCapacity),
+		OpGetMailboxInfo: middleware.Chain(forge.JSONDeserialize[AdminRequest](), handleGetMailboxInfo),
+	}
+
+	return forge.NewPipeline(logger,
+		middleware.Recovery(),
+		adminResponseWriter(),
+		forge.FrameDecodeMiddleware(pool),
+		middleware.RateLimitMiddleware(limiter),
+		dartNormalize(),
+		middleware.OperationRouter("operationType", routes),
+	).WithRegistry(reg)
 }
 
-// NewHandler creates a new MMA handler.
-func NewHandler(mailboxServer *mda.MailboxServer, config *core.ServerConfig, logger *slog.Logger) *Handler {
-	return &Handler{
-		mda:             mailboxServer,
-		config:          config,
-		logger:          logger,
-		requestHistory:  make(map[string][]time.Time),
-		rateLimitWindow: time.Minute,
-		maxRequests:     50,
+// adminResponseWriter writes an AdminResponse as a JSON frame. On pipeline
+// error, it converts the error into an error response so the client always
+// gets a response.
+func adminResponseWriter() forge.Middleware {
+	return func(sc *forge.StreamContext, next func()) {
+		next()
+
+		// Convert pipeline errors into error responses.
+		if sc.Err != nil && sc.Response == nil {
+			errMsg := sc.Err.Error()
+			if errors.Is(sc.Err, forge.ErrRateLimited) {
+				errMsg = "rate limit exceeded"
+			}
+			sc.Response = &AdminResponse{
+				Success:      false,
+				ErrorMessage: errMsg,
+			}
+		}
+
+		if sc.Response == nil {
+			return
+		}
+
+		data, err := json.Marshal(sc.Response)
+		if err != nil {
+			sc.Logger.Error("failed to marshal response", "error", err)
+			return
+		}
+		if err := codec.WriteFrame(sc.Stream, data); err != nil {
+			sc.Logger.Error("failed to write response", "error", err)
+		}
 	}
 }
 
-// HandleStream handles an incoming admin stream.
-func (h *Handler) HandleStream(s network.Stream) {
-	callerID := s.Conn().RemotePeer()
-	defer s.Close()
+// dartNormalize is a middleware that normalizes Dart client field names before
+// deserialization. It applies the normalize() transformation by unmarshalling
+// the raw bytes, normalizing, and re-marshalling back into sc.RawBytes.
+func dartNormalize() forge.Middleware {
+	return func(sc *forge.StreamContext, next func()) {
+		var req AdminRequest
+		if err := json.Unmarshal(sc.RawBytes, &req); err != nil {
+			sc.Err = fmt.Errorf("invalid request format: %w", err)
+			return
+		}
 
-	// Read length-prefixed frame
-	data, err := frame.ReadFrame(s)
-	if err != nil {
-		h.logger.Error("failed to read frame", "error", err)
-		h.sendError(s, "failed to read request")
-		return
+		req.normalize()
+
+		normalized, err := json.Marshal(&req)
+		if err != nil {
+			sc.Err = fmt.Errorf("failed to re-marshal normalized request: %w", err)
+			return
+		}
+		sc.RawBytes = normalized
+
+		next()
 	}
+}
 
-	// Parse request
-	var req AdminRequest
-	if err := json.Unmarshal(data, &req); err != nil {
-		h.logger.Error("failed to parse request", "error", err)
-		h.sendError(s, "invalid request format")
-		return
+// verifyOwner checks that the caller peer ID matches the claimed owner peer ID.
+func verifyOwner(ownerPeerIDStr string, callerID peer.ID) error {
+	if ownerPeerIDStr == "" {
+		// If no ownerPeerId provided, the caller is assumed to be the owner.
+		return nil
 	}
-
-	req.normalize()
-
-	h.logger.Debug("handling admin request",
-		"operation", req.OperationType,
-		"caller", callerID.String(),
-	)
-
-	// Check rate limit
-	if !h.checkRateLimit(callerID) {
-		h.sendError(s, "rate limit exceeded")
-		return
+	if ownerPeerIDStr != callerID.String() {
+		return fmt.Errorf("unauthorized: caller %s is not the mailbox owner %s", callerID.String(), ownerPeerIDStr)
 	}
-
-	ctx := context.Background()
-
-	switch req.OperationType {
-	case OpCreateMailbox:
-		h.handleCreateMailbox(ctx, s, &req, callerID)
-	case OpDeleteMailbox:
-		h.handleDeleteMailbox(ctx, s, &req, callerID)
-	case OpGrantAccess:
-		h.handleGrantAccess(ctx, s, &req, callerID)
-	case OpRevokeAccess:
-		h.handleRevokeAccess(ctx, s, &req, callerID)
-	case OpListACL:
-		h.handleListACL(ctx, s, &req, callerID)
-	case OpListMailboxes:
-		h.handleListMailboxes(ctx, s, &req, callerID)
-	case OpUpdateConfig:
-		h.handleUpdateConfig(ctx, s, &req, callerID)
-	case OpGetMailboxInfo:
-		h.handleGetMailboxInfo(ctx, s, &req, callerID)
-	case OpQueryCapacity:
-		h.handleQueryCapacity(ctx, s)
-	default:
-		h.sendError(s, "unknown operation type: "+req.OperationType)
-	}
+	return nil
 }
 
 // handleCreateMailbox creates a new mailbox for the caller.
-func (h *Handler) handleCreateMailbox(ctx context.Context, s network.Stream, req *AdminRequest, callerID peer.ID) {
+func handleCreateMailbox(sc *forge.StreamContext, next func()) {
+	req := sc.Request.(*AdminRequest)
+	mailboxServer, _ := forge.ServiceFrom[*mda.MailboxServer](sc, "mda")
+	config, _ := forge.ServiceFrom[*core.ServerConfig](sc, "config")
+	callerID := sc.PeerID
+
 	// Verify caller is the owner
-	if err := h.verifyOwner(req.OwnerPeerID, callerID); err != nil {
-		h.sendError(s, err.Error())
+	if err := verifyOwner(req.OwnerPeerID, callerID); err != nil {
+		sc.Response = &AdminResponse{Success: false, ErrorMessage: err.Error()}
 		return
 	}
 
@@ -208,24 +228,24 @@ func (h *Handler) handleCreateMailbox(ctx context.Context, s network.Stream, req
 		var err error
 		mbType, err = core.MailboxTypeFromString(req.MailboxType)
 		if err != nil {
-			h.sendError(s, fmt.Sprintf("invalid mailbox type: %s", req.MailboxType))
+			sc.Response = &AdminResponse{Success: false, ErrorMessage: fmt.Sprintf("invalid mailbox type: %s", req.MailboxType)}
 			return
 		}
 	}
 
 	folderPath := req.FolderPath
 	if folderPath == "" {
-		h.sendError(s, "folderPath is required")
+		sc.Response = &AdminResponse{Success: false, ErrorMessage: "folderPath is required"}
 		return
 	}
 
 	addr, err := core.NewMailboxAddress(callerID, folderPath, mbType)
 	if err != nil {
-		h.sendError(s, fmt.Sprintf("invalid mailbox address: %v", err))
+		sc.Response = &AdminResponse{Success: false, ErrorMessage: fmt.Sprintf("invalid mailbox address: %v", err)}
 		return
 	}
 
-	maxMessages := h.config.MaxMessagesPerMailbox
+	maxMessages := config.MaxMessagesPerMailbox
 	if req.MaxMessages != nil {
 		maxMessages = *req.MaxMessages
 	}
@@ -235,29 +255,34 @@ func (h *Handler) handleCreateMailbox(ctx context.Context, s network.Stream, req
 		retentionDays = *req.RetentionDays
 	}
 
-	if err := h.mda.CreateMailbox(ctx, addr, maxMessages, retentionDays, req.RetentionCount); err != nil {
-		h.sendError(s, fmt.Sprintf("failed to create mailbox: %v", err))
+	ctx := context.Background()
+	if err := mailboxServer.CreateMailbox(ctx, addr, maxMessages, retentionDays, req.RetentionCount); err != nil {
+		sc.Response = &AdminResponse{Success: false, ErrorMessage: fmt.Sprintf("failed to create mailbox: %v", err)}
 		return
 	}
 
-	h.logger.Info("created mailbox",
+	sc.Logger.Info("created mailbox",
 		"path", addr.FullPath(),
 		"type", mbType.String(),
 		"caller", callerID.String(),
 	)
 
-	h.sendResponse(s, &AdminResponse{Success: true})
+	sc.Response = &AdminResponse{Success: true}
 }
 
 // handleDeleteMailbox deletes a mailbox owned by the caller.
-func (h *Handler) handleDeleteMailbox(ctx context.Context, s network.Stream, req *AdminRequest, callerID peer.ID) {
-	if err := h.verifyOwner(req.OwnerPeerID, callerID); err != nil {
-		h.sendError(s, err.Error())
+func handleDeleteMailbox(sc *forge.StreamContext, next func()) {
+	req := sc.Request.(*AdminRequest)
+	mailboxServer, _ := forge.ServiceFrom[*mda.MailboxServer](sc, "mda")
+	callerID := sc.PeerID
+
+	if err := verifyOwner(req.OwnerPeerID, callerID); err != nil {
+		sc.Response = &AdminResponse{Success: false, ErrorMessage: err.Error()}
 		return
 	}
 
 	if req.FolderPath == "" {
-		h.sendError(s, "folderPath is required")
+		sc.Response = &AdminResponse{Success: false, ErrorMessage: "folderPath is required"}
 		return
 	}
 
@@ -266,39 +291,44 @@ func (h *Handler) handleDeleteMailbox(ctx context.Context, s network.Stream, req
 		FolderPath: req.FolderPath,
 	}
 
-	if err := h.mda.DeleteMailbox(ctx, addr); err != nil {
-		h.sendError(s, fmt.Sprintf("failed to delete mailbox: %v", err))
+	ctx := context.Background()
+	if err := mailboxServer.DeleteMailbox(ctx, addr); err != nil {
+		sc.Response = &AdminResponse{Success: false, ErrorMessage: fmt.Sprintf("failed to delete mailbox: %v", err)}
 		return
 	}
 
-	h.logger.Info("deleted mailbox",
+	sc.Logger.Info("deleted mailbox",
 		"path", addr.FullPath(),
 		"caller", callerID.String(),
 	)
 
-	h.sendResponse(s, &AdminResponse{Success: true})
+	sc.Response = &AdminResponse{Success: true}
 }
 
 // handleGrantAccess grants access to a peer on a mailbox owned by the caller.
-func (h *Handler) handleGrantAccess(ctx context.Context, s network.Stream, req *AdminRequest, callerID peer.ID) {
-	if err := h.verifyOwner(req.OwnerPeerID, callerID); err != nil {
-		h.sendError(s, err.Error())
+func handleGrantAccess(sc *forge.StreamContext, next func()) {
+	req := sc.Request.(*AdminRequest)
+	mailboxServer, _ := forge.ServiceFrom[*mda.MailboxServer](sc, "mda")
+	callerID := sc.PeerID
+
+	if err := verifyOwner(req.OwnerPeerID, callerID); err != nil {
+		sc.Response = &AdminResponse{Success: false, ErrorMessage: err.Error()}
 		return
 	}
 
 	if req.FolderPath == "" {
-		h.sendError(s, "folderPath is required")
+		sc.Response = &AdminResponse{Success: false, ErrorMessage: "folderPath is required"}
 		return
 	}
 
 	if req.GranteePeerID == "" {
-		h.sendError(s, "granteePeerId is required")
+		sc.Response = &AdminResponse{Success: false, ErrorMessage: "granteePeerId is required"}
 		return
 	}
 
 	granteePeerID, err := peer.Decode(req.GranteePeerID)
 	if err != nil {
-		h.sendError(s, fmt.Sprintf("invalid grantee peer ID: %v", err))
+		sc.Response = &AdminResponse{Success: false, ErrorMessage: fmt.Sprintf("invalid grantee peer ID: %v", err)}
 		return
 	}
 
@@ -306,109 +336,123 @@ func (h *Handler) handleGrantAccess(ctx context.Context, s network.Stream, req *
 	if req.AccessMode != "" {
 		accessMode, err = core.AccessModeFromString(req.AccessMode)
 		if err != nil {
-			h.sendError(s, fmt.Sprintf("invalid access mode: %v", err))
+			sc.Response = &AdminResponse{Success: false, ErrorMessage: fmt.Sprintf("invalid access mode: %v", err)}
 			return
 		}
 	}
 
+	ctx := context.Background()
+
 	// Find the mailbox
-	record, err := h.mda.Storage.FindMailbox(ctx, callerID, req.FolderPath)
+	record, err := mailboxServer.Storage.FindMailbox(ctx, callerID, req.FolderPath)
 	if err != nil {
-		h.sendError(s, fmt.Sprintf("failed to find mailbox: %v", err))
+		sc.Response = &AdminResponse{Success: false, ErrorMessage: fmt.Sprintf("failed to find mailbox: %v", err)}
 		return
 	}
 	if record == nil {
-		h.sendError(s, "mailbox not found")
+		sc.Response = &AdminResponse{Success: false, ErrorMessage: "mailbox not found"}
 		return
 	}
 
-	if err := h.mda.Storage.GrantAccess(ctx, record.ID, granteePeerID, accessMode); err != nil {
-		h.sendError(s, fmt.Sprintf("failed to grant access: %v", err))
+	if err := mailboxServer.Storage.GrantAccess(ctx, record.ID, granteePeerID, accessMode); err != nil {
+		sc.Response = &AdminResponse{Success: false, ErrorMessage: fmt.Sprintf("failed to grant access: %v", err)}
 		return
 	}
 
-	h.logger.Info("granted access",
+	sc.Logger.Info("granted access",
 		"mailbox", record.FullPath(),
 		"grantee", granteePeerID.String(),
 		"mode", accessMode.String(),
 	)
 
-	h.sendResponse(s, &AdminResponse{Success: true})
+	sc.Response = &AdminResponse{Success: true}
 }
 
 // handleRevokeAccess revokes a peer's access to a mailbox owned by the caller.
-func (h *Handler) handleRevokeAccess(ctx context.Context, s network.Stream, req *AdminRequest, callerID peer.ID) {
-	if err := h.verifyOwner(req.OwnerPeerID, callerID); err != nil {
-		h.sendError(s, err.Error())
+func handleRevokeAccess(sc *forge.StreamContext, next func()) {
+	req := sc.Request.(*AdminRequest)
+	mailboxServer, _ := forge.ServiceFrom[*mda.MailboxServer](sc, "mda")
+	callerID := sc.PeerID
+
+	if err := verifyOwner(req.OwnerPeerID, callerID); err != nil {
+		sc.Response = &AdminResponse{Success: false, ErrorMessage: err.Error()}
 		return
 	}
 
 	if req.FolderPath == "" {
-		h.sendError(s, "folderPath is required")
+		sc.Response = &AdminResponse{Success: false, ErrorMessage: "folderPath is required"}
 		return
 	}
 
 	if req.GranteePeerID == "" {
-		h.sendError(s, "granteePeerId is required")
+		sc.Response = &AdminResponse{Success: false, ErrorMessage: "granteePeerId is required"}
 		return
 	}
 
 	granteePeerID, err := peer.Decode(req.GranteePeerID)
 	if err != nil {
-		h.sendError(s, fmt.Sprintf("invalid grantee peer ID: %v", err))
+		sc.Response = &AdminResponse{Success: false, ErrorMessage: fmt.Sprintf("invalid grantee peer ID: %v", err)}
 		return
 	}
 
+	ctx := context.Background()
+
 	// Find the mailbox
-	record, err := h.mda.Storage.FindMailbox(ctx, callerID, req.FolderPath)
+	record, err := mailboxServer.Storage.FindMailbox(ctx, callerID, req.FolderPath)
 	if err != nil {
-		h.sendError(s, fmt.Sprintf("failed to find mailbox: %v", err))
+		sc.Response = &AdminResponse{Success: false, ErrorMessage: fmt.Sprintf("failed to find mailbox: %v", err)}
 		return
 	}
 	if record == nil {
-		h.sendError(s, "mailbox not found")
+		sc.Response = &AdminResponse{Success: false, ErrorMessage: "mailbox not found"}
 		return
 	}
 
-	if err := h.mda.Storage.RevokeAccess(ctx, record.ID, granteePeerID); err != nil {
-		h.sendError(s, fmt.Sprintf("failed to revoke access: %v", err))
+	if err := mailboxServer.Storage.RevokeAccess(ctx, record.ID, granteePeerID); err != nil {
+		sc.Response = &AdminResponse{Success: false, ErrorMessage: fmt.Sprintf("failed to revoke access: %v", err)}
 		return
 	}
 
-	h.logger.Info("revoked access",
+	sc.Logger.Info("revoked access",
 		"mailbox", record.FullPath(),
 		"grantee", granteePeerID.String(),
 	)
 
-	h.sendResponse(s, &AdminResponse{Success: true})
+	sc.Response = &AdminResponse{Success: true}
 }
 
 // handleListACL lists the ACL entries for a mailbox owned by the caller.
-func (h *Handler) handleListACL(ctx context.Context, s network.Stream, req *AdminRequest, callerID peer.ID) {
-	if err := h.verifyOwner(req.OwnerPeerID, callerID); err != nil {
-		h.sendError(s, err.Error())
+func handleListACL(sc *forge.StreamContext, next func()) {
+	req := sc.Request.(*AdminRequest)
+	mailboxServer, _ := forge.ServiceFrom[*mda.MailboxServer](sc, "mda")
+	callerID := sc.PeerID
+
+	if err := verifyOwner(req.OwnerPeerID, callerID); err != nil {
+		sc.Response = &AdminResponse{Success: false, ErrorMessage: err.Error()}
 		return
 	}
 
 	if req.FolderPath == "" {
-		h.sendError(s, "folderPath is required")
+		sc.Response = &AdminResponse{Success: false, ErrorMessage: "folderPath is required"}
 		return
 	}
 
+	ctx := context.Background()
+
 	// Find the mailbox
-	record, err := h.mda.Storage.FindMailbox(ctx, callerID, req.FolderPath)
+	record, err := mailboxServer.Storage.FindMailbox(ctx, callerID, req.FolderPath)
 	if err != nil {
-		h.sendError(s, fmt.Sprintf("failed to find mailbox: %v", err))
+		sc.Response = &AdminResponse{Success: false, ErrorMessage: fmt.Sprintf("failed to find mailbox: %v", err)}
 		return
 	}
 	if record == nil {
-		h.sendError(s, "mailbox not found")
+		sc.Response = &AdminResponse{Success: false, ErrorMessage: "mailbox not found"}
 		return
 	}
 
-	aclRecords, err := h.mda.Storage.ListACL(ctx, record.ID)
+	aclRecords, err := mailboxServer.Storage.ListACL(ctx, record.ID)
 	if err != nil {
-		h.sendError(s, fmt.Sprintf("failed to list ACL: %v", err))
+		sc.Response = &AdminResponse{Success: false, ErrorMessage: fmt.Sprintf("failed to list ACL: %v", err)}
 		return
 	}
 
@@ -421,22 +465,27 @@ func (h *Handler) handleListACL(ctx context.Context, s network.Stream, req *Admi
 		})
 	}
 
-	h.sendResponse(s, &AdminResponse{
+	sc.Response = &AdminResponse{
 		Success: true,
 		ACL:     entries,
-	})
+	}
 }
 
 // handleListMailboxes lists all mailboxes owned by the caller.
-func (h *Handler) handleListMailboxes(ctx context.Context, s network.Stream, req *AdminRequest, callerID peer.ID) {
-	if err := h.verifyOwner(req.OwnerPeerID, callerID); err != nil {
-		h.sendError(s, err.Error())
+func handleListMailboxes(sc *forge.StreamContext, next func()) {
+	req := sc.Request.(*AdminRequest)
+	mailboxServer, _ := forge.ServiceFrom[*mda.MailboxServer](sc, "mda")
+	callerID := sc.PeerID
+
+	if err := verifyOwner(req.OwnerPeerID, callerID); err != nil {
+		sc.Response = &AdminResponse{Success: false, ErrorMessage: err.Error()}
 		return
 	}
 
-	records, err := h.mda.ListMailboxes(ctx, callerID)
+	ctx := context.Background()
+	records, err := mailboxServer.ListMailboxes(ctx, callerID)
 	if err != nil {
-		h.sendError(s, fmt.Sprintf("failed to list mailboxes: %v", err))
+		sc.Response = &AdminResponse{Success: false, ErrorMessage: fmt.Sprintf("failed to list mailboxes: %v", err)}
 		return
 	}
 
@@ -451,26 +500,32 @@ func (h *Handler) handleListMailboxes(ctx context.Context, s network.Stream, req
 		})
 	}
 
-	h.sendResponse(s, &AdminResponse{
+	sc.Response = &AdminResponse{
 		Success:   true,
 		Mailboxes: mailboxes,
-	})
+	}
 }
 
 // handleUpdateConfig updates the configuration of a mailbox owned by the caller.
-func (h *Handler) handleUpdateConfig(ctx context.Context, s network.Stream, req *AdminRequest, callerID peer.ID) {
+func handleUpdateConfig(sc *forge.StreamContext, next func()) {
+	req := sc.Request.(*AdminRequest)
+	mailboxServer, _ := forge.ServiceFrom[*mda.MailboxServer](sc, "mda")
+	callerID := sc.PeerID
+
 	if req.FolderPath == "" {
-		h.sendError(s, "folderPath is required")
+		sc.Response = &AdminResponse{Success: false, ErrorMessage: "folderPath is required"}
 		return
 	}
 
-	record, err := h.mda.Storage.FindMailbox(ctx, callerID, req.FolderPath)
+	ctx := context.Background()
+
+	record, err := mailboxServer.Storage.FindMailbox(ctx, callerID, req.FolderPath)
 	if err != nil {
-		h.sendError(s, fmt.Sprintf("failed to find mailbox: %v", err))
+		sc.Response = &AdminResponse{Success: false, ErrorMessage: fmt.Sprintf("failed to find mailbox: %v", err)}
 		return
 	}
 	if record == nil {
-		h.sendError(s, "mailbox not found")
+		sc.Response = &AdminResponse{Success: false, ErrorMessage: "mailbox not found"}
 		return
 	}
 
@@ -484,137 +539,77 @@ func (h *Handler) handleUpdateConfig(ctx context.Context, s network.Stream, req 
 		record.RetentionCount = req.RetentionCount
 	}
 
-	if err := h.mda.Storage.UpdateMailbox(ctx, record); err != nil {
-		h.sendError(s, fmt.Sprintf("failed to update mailbox: %v", err))
+	if err := mailboxServer.Storage.UpdateMailbox(ctx, record); err != nil {
+		sc.Response = &AdminResponse{Success: false, ErrorMessage: fmt.Sprintf("failed to update mailbox: %v", err)}
 		return
 	}
 
-	h.logger.Info("updated mailbox config",
+	sc.Logger.Info("updated mailbox config",
 		"path", record.FullPath(),
 		"caller", callerID.String(),
 	)
 
-	h.sendResponse(s, &AdminResponse{Success: true})
+	sc.Response = &AdminResponse{Success: true}
 }
 
 // handleGetMailboxInfo returns info about a specific mailbox owned by the caller.
-func (h *Handler) handleGetMailboxInfo(ctx context.Context, s network.Stream, req *AdminRequest, callerID peer.ID) {
+func handleGetMailboxInfo(sc *forge.StreamContext, next func()) {
+	req := sc.Request.(*AdminRequest)
+	mailboxServer, _ := forge.ServiceFrom[*mda.MailboxServer](sc, "mda")
+	callerID := sc.PeerID
+
 	if req.FolderPath == "" {
-		h.sendError(s, "folderPath is required")
+		sc.Response = &AdminResponse{Success: false, ErrorMessage: "folderPath is required"}
 		return
 	}
 
-	record, err := h.mda.Storage.FindMailbox(ctx, callerID, req.FolderPath)
+	ctx := context.Background()
+
+	record, err := mailboxServer.Storage.FindMailbox(ctx, callerID, req.FolderPath)
 	if err != nil {
-		h.sendError(s, fmt.Sprintf("failed to find mailbox: %v", err))
+		sc.Response = &AdminResponse{Success: false, ErrorMessage: fmt.Sprintf("failed to find mailbox: %v", err)}
 		return
 	}
 	if record == nil {
-		h.sendError(s, "mailbox not found")
+		sc.Response = &AdminResponse{Success: false, ErrorMessage: "mailbox not found"}
 		return
 	}
 
-	msgCount, err := h.mda.Storage.GetMessageCount(ctx, record.ID)
+	msgCount, err := mailboxServer.Storage.GetMessageCount(ctx, record.ID)
 	if err != nil {
-		h.sendError(s, fmt.Sprintf("failed to get message count: %v", err))
+		sc.Response = &AdminResponse{Success: false, ErrorMessage: fmt.Sprintf("failed to get message count: %v", err)}
 		return
 	}
 
-	// Return data in the format the Dart client expects (MailboxInfo)
-	data := map[string]any{
-		"address":        record.FullPath(),
-		"type":           record.Type.String(),
-		"messageCount":   msgCount,
-		"createdAt":      record.CreatedAt.UnixMilli(),
-		"lastAccessedAt": record.LastAccessAt.UnixMilli(),
-		"maxMessages":    record.MaxMessages,
-		"retentionDays":  record.RetentionDays,
-		"retentionCount": record.RetentionCount,
-	}
-
-	resp := map[string]any{
+	// Return data in the format the Dart client expects (MailboxInfo).
+	// This uses a map[string]any to match the original response shape.
+	sc.Response = map[string]any{
 		"success": true,
-		"data":    data,
-	}
-
-	respData, err := json.Marshal(resp)
-	if err != nil {
-		h.logger.Error("failed to marshal response", "error", err)
-		return
-	}
-	if err := frame.WriteFrame(s, respData); err != nil {
-		h.logger.Error("failed to write response", "error", err)
+		"data": map[string]any{
+			"address":        record.FullPath(),
+			"type":           record.Type.String(),
+			"messageCount":   msgCount,
+			"createdAt":      record.CreatedAt.UnixMilli(),
+			"lastAccessedAt": record.LastAccessAt.UnixMilli(),
+			"maxMessages":    record.MaxMessages,
+			"retentionDays":  record.RetentionDays,
+			"retentionCount": record.RetentionCount,
+		},
 	}
 }
 
 // handleQueryCapacity returns server capacity metrics. This operation does not
 // require owner verification -- any authenticated peer can query capacity.
-func (h *Handler) handleQueryCapacity(_ context.Context, s network.Stream) {
+func handleQueryCapacity(sc *forge.StreamContext, next func()) {
+	config, _ := forge.ServiceFrom[*core.ServerConfig](sc, "config")
+
 	capacity := &core.ServerCapacity{
-		TotalStorageBytes:     h.config.MaxStorageBytes,
-		AvailableStorageBytes: h.config.MaxStorageBytes, // TODO: compute actual usage
+		TotalStorageBytes:     config.MaxStorageBytes,
+		AvailableStorageBytes: config.MaxStorageBytes, // TODO: compute actual usage
 	}
 
-	h.sendResponse(s, &AdminResponse{
+	sc.Response = &AdminResponse{
 		Success:  true,
 		Capacity: capacity,
-	})
-}
-
-// verifyOwner checks that the caller peer ID matches the claimed owner peer ID.
-func (h *Handler) verifyOwner(ownerPeerIDStr string, callerID peer.ID) error {
-	if ownerPeerIDStr == "" {
-		// If no ownerPeerId provided, the caller is assumed to be the owner.
-		return nil
 	}
-	if ownerPeerIDStr != callerID.String() {
-		return fmt.Errorf("unauthorized: caller %s is not the mailbox owner %s", callerID.String(), ownerPeerIDStr)
-	}
-	return nil
-}
-
-// checkRateLimit enforces per-peer rate limiting.
-func (h *Handler) checkRateLimit(peerID peer.ID) bool {
-	h.rateLimitMu.Lock()
-	defer h.rateLimitMu.Unlock()
-
-	now := time.Now()
-	key := peerID.String()
-	cutoff := now.Add(-h.rateLimitWindow)
-
-	history := h.requestHistory[key]
-	filtered := history[:0]
-	for _, ts := range history {
-		if ts.After(cutoff) {
-			filtered = append(filtered, ts)
-		}
-	}
-
-	if len(filtered) >= h.maxRequests {
-		h.requestHistory[key] = filtered
-		return false
-	}
-
-	h.requestHistory[key] = append(filtered, now)
-	return true
-}
-
-// sendResponse marshals and writes an AdminResponse.
-func (h *Handler) sendResponse(s network.Stream, resp *AdminResponse) {
-	data, err := json.Marshal(resp)
-	if err != nil {
-		h.logger.Error("failed to marshal response", "error", err)
-		return
-	}
-	if err := frame.WriteFrame(s, data); err != nil {
-		h.logger.Error("failed to write response", "error", err)
-	}
-}
-
-// sendError writes an error response.
-func (h *Handler) sendError(s network.Stream, message string) {
-	h.sendResponse(s, &AdminResponse{
-		Success:      false,
-		ErrorMessage: message,
-	})
 }

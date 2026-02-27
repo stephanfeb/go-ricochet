@@ -7,14 +7,15 @@ import (
 	"fmt"
 	"log/slog"
 	"regexp"
-	"sync"
 	"time"
 
-	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/core/protocol"
 
-	"github.com/twostack/go-ricochet/internal/protocol/frame"
+	forge "github.com/twostack/go-p2p-forge"
+	"github.com/twostack/go-p2p-forge/codec"
+	"github.com/twostack/go-p2p-forge/middleware"
+
 	"github.com/twostack/go-ricochet/internal/storage"
 )
 
@@ -76,149 +77,161 @@ type CollectionResponse struct {
 	Body    string         `json:"body,omitempty"` // base64 encoded
 }
 
-// Handler is the Store Collection Access protocol handler.
-type Handler struct {
-	store  storage.Storage
-	logger *slog.Logger
+// NewPipeline creates a forge pipeline for the Store Collection Agent.
+func NewPipeline(logger *slog.Logger, pool *codec.BufferPool, reg *forge.Registry) *forge.Pipeline {
+	limiter := middleware.NewDualBucket(time.Minute, 100, 20)
 
-	// Rate limiting: separate buckets for read and write operations.
-	rateLimitMu      sync.Mutex
-	readHistory      map[string][]time.Time
-	writeHistory     map[string][]time.Time
-	rateLimitWindow  time.Duration
-	maxReadRequests  int
-	maxWriteRequests int
+	return forge.NewPipeline(logger,
+		middleware.Recovery(),
+		collectionResponseWriter(),
+		forge.FrameDecodeMiddleware(pool),
+		middleware.DualRateLimitMiddleware(limiter, isWriteClassifier),
+		forge.JSONDeserialize[CollectionRequest](),
+		commonValidation(),
+		middleware.OperationRouter("operation", map[string]forge.Middleware{
+			OpCREATE: handleCreate,
+			OpGET:    handleGet,
+			OpPUT:    handlePut,
+			OpDELETE: handleDelete,
+			OpLIST:   handleList,
+			OpQUERY:  handleQuery,
+		}),
+	).WithRegistry(reg)
 }
 
-// NewHandler creates a new SCA handler.
-func NewHandler(store storage.Storage, logger *slog.Logger) *Handler {
-	return &Handler{
-		store:            store,
-		logger:           logger,
-		readHistory:      make(map[string][]time.Time),
-		writeHistory:     make(map[string][]time.Time),
-		rateLimitWindow:  time.Minute,
-		maxReadRequests:  100,
-		maxWriteRequests: 20,
+// isWriteClassifier inspects the raw JSON bytes to determine if a request is
+// a write operation (CREATE, PUT, DELETE) for dual rate limiting.
+func isWriteClassifier(raw []byte) bool {
+	// Quick scan for the "operation" field value.
+	type opOnly struct {
+		Operation string `json:"operation"`
+	}
+	var op opOnly
+	if err := json.Unmarshal(raw, &op); err != nil {
+		return false
+	}
+	switch op.Operation {
+	case OpCREATE, OpPUT, OpDELETE:
+		return true
+	default:
+		return false
 	}
 }
 
-// HandleStream handles an incoming collection access stream.
-func (h *Handler) HandleStream(s network.Stream) {
-	callerID := s.Conn().RemotePeer()
-	defer s.Close()
+// collectionResponseWriter writes a CollectionResponse as a JSON frame.
+// On pipeline error, it converts the error into an error response so the
+// client always gets a response.
+func collectionResponseWriter() forge.Middleware {
+	return func(sc *forge.StreamContext, next func()) {
+		next()
 
-	data, err := frame.ReadFrame(s)
-	if err != nil {
-		h.logger.Error("failed to read frame", "error", err)
-		h.writeResponse(s, &CollectionResponse{Status: StatusBadRequest})
-		return
-	}
+		// Convert pipeline errors into error responses.
+		if sc.Err != nil && sc.Response == nil {
+			status := StatusInternalError
+			errMsg := sc.Err.Error()
 
-	var req CollectionRequest
-	if err := json.Unmarshal(data, &req); err != nil {
-		h.logger.Error("failed to parse request", "error", err)
-		h.writeResponse(s, &CollectionResponse{Status: StatusBadRequest})
-		return
-	}
+			if sc.Err == forge.ErrRateLimited {
+				status = StatusTooManyRequests
+				errMsg = ""
+			}
 
-	h.logger.Debug("handling collection request",
-		"operation", req.Operation,
-		"owner", req.OwnerPeerID,
-		"path", req.Path,
-		"key", req.Key,
-		"caller", callerID.String(),
-	)
+			resp := &CollectionResponse{Status: status}
+			if errMsg != "" {
+				resp.Headers = map[string]any{"Error": errMsg}
+			}
+			sc.Response = resp
+		}
 
-	// Determine if this is a read or write operation and check rate limits
-	isWrite := req.Operation == OpCREATE || req.Operation == OpPUT || req.Operation == OpDELETE
-	if isWrite {
-		if !h.checkRateLimit(callerID, true) {
-			h.writeResponse(s, &CollectionResponse{Status: StatusTooManyRequests})
+		if sc.Response == nil {
 			return
 		}
-	} else {
-		if !h.checkRateLimit(callerID, false) {
-			h.writeResponse(s, &CollectionResponse{Status: StatusTooManyRequests})
+
+		data, err := json.Marshal(sc.Response)
+		if err != nil {
+			sc.Logger.Error("failed to marshal response", "error", err)
 			return
 		}
-	}
-
-	// Parse owner peer ID
-	if req.OwnerPeerID == "" {
-		h.writeResponse(s, &CollectionResponse{Status: StatusBadRequest,
-			Headers: map[string]any{"Error": "ownerPeerId is required"}})
-		return
-	}
-	ownerID, err := peer.Decode(req.OwnerPeerID)
-	if err != nil {
-		h.writeResponse(s, &CollectionResponse{Status: StatusBadRequest,
-			Headers: map[string]any{"Error": "invalid ownerPeerId"}})
-		return
-	}
-
-	// Validate path for operations that require it
-	needsPath := req.Operation != OpLIST || req.Path != ""
-	if needsPath && req.Path != "" {
-		if err := validatePath(req.Path); err != nil {
-			h.writeResponse(s, &CollectionResponse{Status: StatusBadRequest,
-				Headers: map[string]any{"Error": err.Error()}})
-			return
+		if err := codec.WriteFrame(sc.Stream, data); err != nil {
+			sc.Logger.Error("failed to write response", "error", err)
 		}
 	}
+}
 
-	// Enforce owner-only access for write operations
-	if isWrite && callerID != ownerID {
-		h.writeResponse(s, &CollectionResponse{Status: StatusForbidden,
-			Headers: map[string]any{"Error": "write operations require owner access"}})
+// commonValidation validates ownerPeerId presence, parses it, validates path
+// where required, and enforces owner-only access for write operations.
+func commonValidation() forge.Middleware {
+	return func(sc *forge.StreamContext, next func()) {
+		req := sc.Request.(*CollectionRequest)
+
+		// Parse owner peer ID
+		if req.OwnerPeerID == "" {
+			sc.Response = &CollectionResponse{Status: StatusBadRequest,
+				Headers: map[string]any{"Error": "ownerPeerId is required"}}
+			return
+		}
+		ownerID, err := peer.Decode(req.OwnerPeerID)
+		if err != nil {
+			sc.Response = &CollectionResponse{Status: StatusBadRequest,
+				Headers: map[string]any{"Error": "invalid ownerPeerId"}}
+			return
+		}
+
+		// Store the parsed owner ID for downstream handlers.
+		sc.Set("ownerID", ownerID)
+
+		// Validate path for operations that require it
+		needsPath := req.Operation != OpLIST || req.Path != ""
+		if needsPath && req.Path != "" {
+			if err := validatePath(req.Path); err != nil {
+				sc.Response = &CollectionResponse{Status: StatusBadRequest,
+					Headers: map[string]any{"Error": err.Error()}}
+				return
+			}
+		}
+
+		// Enforce owner-only access for write operations
+		isWrite := req.Operation == OpCREATE || req.Operation == OpPUT || req.Operation == OpDELETE
+		if isWrite && sc.PeerID != ownerID {
+			sc.Response = &CollectionResponse{Status: StatusForbidden,
+				Headers: map[string]any{"Error": "write operations require owner access"}}
+			return
+		}
+
+		sc.Logger.Debug("handling collection request",
+			"operation", req.Operation,
+			"owner", req.OwnerPeerID,
+			"path", req.Path,
+			"key", req.Key,
+			"caller", sc.PeerID.String(),
+		)
+
+		next()
+	}
+}
+
+// ownerIDFrom retrieves the parsed owner peer.ID from the StreamContext.
+func ownerIDFrom(sc *forge.StreamContext) peer.ID {
+	v, _ := sc.Get("ownerID")
+	return v.(peer.ID)
+}
+
+// handleCreate creates a new collection.
+func handleCreate(sc *forge.StreamContext, next func()) {
+	store, _ := forge.ServiceFrom[storage.Storage](sc, "storage")
+	req := sc.Request.(*CollectionRequest)
+	ownerID := ownerIDFrom(sc)
+
+	if req.Path == "" {
+		sc.Response = &CollectionResponse{Status: StatusBadRequest,
+			Headers: map[string]any{"Error": "path is required"}}
 		return
 	}
 
 	ctx := context.Background()
-
-	switch req.Operation {
-	case OpCREATE:
-		h.handleCreate(ctx, s, &req, ownerID)
-	case OpGET:
-		if req.Key != "" {
-			h.handleGetItem(ctx, s, &req, ownerID)
-		} else {
-			h.handleGetMetadata(ctx, s, &req, ownerID)
-		}
-	case OpPUT:
-		h.handlePut(ctx, s, &req, ownerID, callerID)
-	case OpDELETE:
-		if req.Key != "" {
-			h.handleDeleteItem(ctx, s, &req, ownerID)
-		} else {
-			h.handleDeleteCollection(ctx, s, &req, ownerID)
-		}
-	case OpLIST:
-		if req.Path != "" {
-			h.handleListKeys(ctx, s, &req, ownerID)
-		} else {
-			h.handleListCollections(ctx, s, ownerID)
-		}
-	case OpQUERY:
-		h.handleQuery(ctx, s, &req, ownerID)
-	default:
-		h.writeResponse(s, &CollectionResponse{Status: StatusBadRequest,
-			Headers: map[string]any{"Error": "unknown operation: " + req.Operation}})
-	}
-}
-
-// handleCreate creates a new collection.
-func (h *Handler) handleCreate(ctx context.Context, s network.Stream, req *CollectionRequest, ownerID peer.ID) {
-	if req.Path == "" {
-		h.writeResponse(s, &CollectionResponse{Status: StatusBadRequest,
-			Headers: map[string]any{"Error": "path is required"}})
-		return
-	}
-
-	coll, err := h.store.CreateCollection(ctx, ownerID, req.Path, req.Name)
+	coll, err := store.CreateCollection(ctx, ownerID, req.Path, req.Name)
 	if err != nil {
-		h.logger.Error("failed to create collection", "error", err)
-		h.writeResponse(s, &CollectionResponse{Status: StatusInternalError})
+		sc.Logger.Error("failed to create collection", "error", err)
+		sc.Response = &CollectionResponse{Status: StatusInternalError}
 		return
 	}
 
@@ -229,35 +242,51 @@ func (h *Handler) handleCreate(ctx context.Context, s network.Stream, req *Colle
 		"recordCount": coll.RecordCount,
 	})
 	if err != nil {
-		h.writeResponse(s, &CollectionResponse{Status: StatusInternalError})
+		sc.Response = &CollectionResponse{Status: StatusInternalError}
 		return
 	}
 
-	h.writeResponse(s, &CollectionResponse{
+	sc.Response = &CollectionResponse{
 		Status: StatusCreated,
 		Headers: map[string]any{
 			"Content-Type": "application/json",
 		},
 		Body: base64.StdEncoding.EncodeToString(bodyBytes),
-	})
+	}
+}
+
+// handleGet dispatches to getMetadata or getItem based on Key presence.
+func handleGet(sc *forge.StreamContext, next func()) {
+	req := sc.Request.(*CollectionRequest)
+
+	if req.Key != "" {
+		handleGetItem(sc, next)
+	} else {
+		handleGetMetadata(sc, next)
+	}
 }
 
 // handleGetMetadata returns collection metadata.
-func (h *Handler) handleGetMetadata(ctx context.Context, s network.Stream, req *CollectionRequest, ownerID peer.ID) {
+func handleGetMetadata(sc *forge.StreamContext, next func()) {
+	store, _ := forge.ServiceFrom[storage.Storage](sc, "storage")
+	req := sc.Request.(*CollectionRequest)
+	ownerID := ownerIDFrom(sc)
+
 	if req.Path == "" {
-		h.writeResponse(s, &CollectionResponse{Status: StatusBadRequest,
-			Headers: map[string]any{"Error": "path is required"}})
+		sc.Response = &CollectionResponse{Status: StatusBadRequest,
+			Headers: map[string]any{"Error": "path is required"}}
 		return
 	}
 
-	coll, err := h.store.GetCollection(ctx, ownerID, req.Path)
+	ctx := context.Background()
+	coll, err := store.GetCollection(ctx, ownerID, req.Path)
 	if err != nil {
-		h.logger.Error("failed to get collection", "error", err)
-		h.writeResponse(s, &CollectionResponse{Status: StatusInternalError})
+		sc.Logger.Error("failed to get collection", "error", err)
+		sc.Response = &CollectionResponse{Status: StatusInternalError}
 		return
 	}
 	if coll == nil {
-		h.writeResponse(s, &CollectionResponse{Status: StatusNotFound})
+		sc.Response = &CollectionResponse{Status: StatusNotFound}
 		return
 	}
 
@@ -269,47 +298,52 @@ func (h *Handler) handleGetMetadata(ctx context.Context, s network.Stream, req *
 		"createdAt":      coll.CreatedAt.UnixMilli(),
 	})
 	if err != nil {
-		h.writeResponse(s, &CollectionResponse{Status: StatusInternalError})
+		sc.Response = &CollectionResponse{Status: StatusInternalError}
 		return
 	}
 
-	h.writeResponse(s, &CollectionResponse{
+	sc.Response = &CollectionResponse{
 		Status: StatusOK,
 		Headers: map[string]any{
 			"Content-Type":   "application/json",
 			"X-Record-Count": coll.RecordCount,
 		},
 		Body: base64.StdEncoding.EncodeToString(bodyBytes),
-	})
+	}
 }
 
 // handleGetItem returns a single collection item by key.
-func (h *Handler) handleGetItem(ctx context.Context, s network.Stream, req *CollectionRequest, ownerID peer.ID) {
-	coll, err := h.store.GetCollection(ctx, ownerID, req.Path)
+func handleGetItem(sc *forge.StreamContext, next func()) {
+	store, _ := forge.ServiceFrom[storage.Storage](sc, "storage")
+	req := sc.Request.(*CollectionRequest)
+	ownerID := ownerIDFrom(sc)
+
+	ctx := context.Background()
+	coll, err := store.GetCollection(ctx, ownerID, req.Path)
 	if err != nil {
-		h.logger.Error("failed to get collection", "error", err)
-		h.writeResponse(s, &CollectionResponse{Status: StatusInternalError})
+		sc.Logger.Error("failed to get collection", "error", err)
+		sc.Response = &CollectionResponse{Status: StatusInternalError}
 		return
 	}
 	if coll == nil {
-		h.writeResponse(s, &CollectionResponse{Status: StatusNotFound,
-			Headers: map[string]any{"Error": "collection not found"}})
+		sc.Response = &CollectionResponse{Status: StatusNotFound,
+			Headers: map[string]any{"Error": "collection not found"}}
 		return
 	}
 
-	item, err := h.store.GetCollectionItem(ctx, coll.ID, req.Key)
+	item, err := store.GetCollectionItem(ctx, coll.ID, req.Key)
 	if err != nil {
-		h.logger.Error("failed to get collection item", "error", err)
-		h.writeResponse(s, &CollectionResponse{Status: StatusInternalError})
+		sc.Logger.Error("failed to get collection item", "error", err)
+		sc.Response = &CollectionResponse{Status: StatusInternalError}
 		return
 	}
 	if item == nil {
-		h.writeResponse(s, &CollectionResponse{Status: StatusNotFound,
-			Headers: map[string]any{"Error": "item not found"}})
+		sc.Response = &CollectionResponse{Status: StatusNotFound,
+			Headers: map[string]any{"Error": "item not found"}}
 		return
 	}
 
-	h.writeResponse(s, &CollectionResponse{
+	sc.Response = &CollectionResponse{
 		Status: StatusOK,
 		Headers: map[string]any{
 			"Content-Type": "application/json",
@@ -319,42 +353,49 @@ func (h *Handler) handleGetItem(ctx context.Context, s network.Stream, req *Coll
 			"Created-At":   item.CreatedAt.UnixMilli(),
 		},
 		Body: base64.StdEncoding.EncodeToString(item.Content),
-	})
+	}
 }
 
 // handlePut upserts a collection item.
-func (h *Handler) handlePut(ctx context.Context, s network.Stream, req *CollectionRequest, ownerID, callerID peer.ID) {
+func handlePut(sc *forge.StreamContext, next func()) {
+	store, _ := forge.ServiceFrom[storage.Storage](sc, "storage")
+	req := sc.Request.(*CollectionRequest)
+	ownerID := ownerIDFrom(sc)
+	callerID := sc.PeerID
+
 	if req.Path == "" || req.Key == "" {
-		h.writeResponse(s, &CollectionResponse{Status: StatusBadRequest,
-			Headers: map[string]any{"Error": "path and key are required"}})
+		sc.Response = &CollectionResponse{Status: StatusBadRequest,
+			Headers: map[string]any{"Error": "path and key are required"}}
 		return
 	}
 
+	ctx := context.Background()
+
 	// Look up collection
-	coll, err := h.store.GetCollection(ctx, ownerID, req.Path)
+	coll, err := store.GetCollection(ctx, ownerID, req.Path)
 	if err != nil {
-		h.logger.Error("failed to get collection", "error", err)
-		h.writeResponse(s, &CollectionResponse{Status: StatusInternalError})
+		sc.Logger.Error("failed to get collection", "error", err)
+		sc.Response = &CollectionResponse{Status: StatusInternalError}
 		return
 	}
 	if coll == nil {
-		h.writeResponse(s, &CollectionResponse{Status: StatusNotFound,
-			Headers: map[string]any{"Error": "collection not found"}})
+		sc.Response = &CollectionResponse{Status: StatusNotFound,
+			Headers: map[string]any{"Error": "collection not found"}}
 		return
 	}
 
 	// Decode body
 	content, err := base64.StdEncoding.DecodeString(req.Body)
 	if err != nil {
-		h.writeResponse(s, &CollectionResponse{Status: StatusBadRequest,
-			Headers: map[string]any{"Error": "invalid base64 body"}})
+		sc.Response = &CollectionResponse{Status: StatusBadRequest,
+			Headers: map[string]any{"Error": "invalid base64 body"}}
 		return
 	}
 
 	// Validate that content is valid JSON (required for JSONB storage)
 	if !json.Valid(content) {
-		h.writeResponse(s, &CollectionResponse{Status: StatusBadRequest,
-			Headers: map[string]any{"Error": "body must be valid JSON"}})
+		sc.Response = &CollectionResponse{Status: StatusBadRequest,
+			Headers: map[string]any{"Error": "body must be valid JSON"}}
 		return
 	}
 
@@ -364,15 +405,15 @@ func (h *Handler) handlePut(ctx context.Context, s network.Stream, req *Collecti
 		ifMatch = &match
 	}
 
-	item, created, err := h.store.PutCollectionItem(ctx, coll.ID, req.Key, content, callerID, ifMatch)
+	item, created, err := store.PutCollectionItem(ctx, coll.ID, req.Key, content, callerID, ifMatch)
 	if err != nil {
 		if _, ok := err.(*storage.CollectionItemConflictError); ok {
-			h.writeResponse(s, &CollectionResponse{Status: StatusConflict,
-				Headers: map[string]any{"Error": err.Error()}})
+			sc.Response = &CollectionResponse{Status: StatusConflict,
+				Headers: map[string]any{"Error": err.Error()}}
 			return
 		}
-		h.logger.Error("failed to put collection item", "error", err)
-		h.writeResponse(s, &CollectionResponse{Status: StatusInternalError})
+		sc.Logger.Error("failed to put collection item", "error", err)
+		sc.Response = &CollectionResponse{Status: StatusInternalError}
 		return
 	}
 
@@ -381,72 +422,108 @@ func (h *Handler) handlePut(ctx context.Context, s network.Stream, req *Collecti
 		status = StatusCreated
 	}
 
-	h.writeResponse(s, &CollectionResponse{
+	sc.Response = &CollectionResponse{
 		Status: status,
 		Headers: map[string]any{
 			"ETag":      item.ContentHash,
 			"X-Version": item.Version,
 		},
-	})
+	}
+}
+
+// handleDelete dispatches to deleteCollection or deleteItem based on Key presence.
+func handleDelete(sc *forge.StreamContext, next func()) {
+	req := sc.Request.(*CollectionRequest)
+
+	if req.Key != "" {
+		handleDeleteItem(sc, next)
+	} else {
+		handleDeleteCollection(sc, next)
+	}
 }
 
 // handleDeleteCollection removes a collection and all its items.
-func (h *Handler) handleDeleteCollection(ctx context.Context, s network.Stream, req *CollectionRequest, ownerID peer.ID) {
+func handleDeleteCollection(sc *forge.StreamContext, next func()) {
+	store, _ := forge.ServiceFrom[storage.Storage](sc, "storage")
+	req := sc.Request.(*CollectionRequest)
+	ownerID := ownerIDFrom(sc)
+
 	if req.Path == "" {
-		h.writeResponse(s, &CollectionResponse{Status: StatusBadRequest,
-			Headers: map[string]any{"Error": "path is required"}})
+		sc.Response = &CollectionResponse{Status: StatusBadRequest,
+			Headers: map[string]any{"Error": "path is required"}}
 		return
 	}
 
-	deleted, err := h.store.DeleteCollection(ctx, ownerID, req.Path)
+	ctx := context.Background()
+	deleted, err := store.DeleteCollection(ctx, ownerID, req.Path)
 	if err != nil {
-		h.logger.Error("failed to delete collection", "error", err)
-		h.writeResponse(s, &CollectionResponse{Status: StatusInternalError})
+		sc.Logger.Error("failed to delete collection", "error", err)
+		sc.Response = &CollectionResponse{Status: StatusInternalError}
 		return
 	}
 	if !deleted {
-		h.writeResponse(s, &CollectionResponse{Status: StatusNotFound})
+		sc.Response = &CollectionResponse{Status: StatusNotFound}
 		return
 	}
 
-	h.writeResponse(s, &CollectionResponse{Status: StatusNoContent})
+	sc.Response = &CollectionResponse{Status: StatusNoContent}
 }
 
 // handleDeleteItem removes a single item from a collection.
-func (h *Handler) handleDeleteItem(ctx context.Context, s network.Stream, req *CollectionRequest, ownerID peer.ID) {
-	coll, err := h.store.GetCollection(ctx, ownerID, req.Path)
+func handleDeleteItem(sc *forge.StreamContext, next func()) {
+	store, _ := forge.ServiceFrom[storage.Storage](sc, "storage")
+	req := sc.Request.(*CollectionRequest)
+	ownerID := ownerIDFrom(sc)
+
+	ctx := context.Background()
+	coll, err := store.GetCollection(ctx, ownerID, req.Path)
 	if err != nil {
-		h.logger.Error("failed to get collection", "error", err)
-		h.writeResponse(s, &CollectionResponse{Status: StatusInternalError})
+		sc.Logger.Error("failed to get collection", "error", err)
+		sc.Response = &CollectionResponse{Status: StatusInternalError}
 		return
 	}
 	if coll == nil {
-		h.writeResponse(s, &CollectionResponse{Status: StatusNotFound,
-			Headers: map[string]any{"Error": "collection not found"}})
+		sc.Response = &CollectionResponse{Status: StatusNotFound,
+			Headers: map[string]any{"Error": "collection not found"}}
 		return
 	}
 
-	deleted, err := h.store.DeleteCollectionItem(ctx, coll.ID, req.Key)
+	deleted, err := store.DeleteCollectionItem(ctx, coll.ID, req.Key)
 	if err != nil {
-		h.logger.Error("failed to delete collection item", "error", err)
-		h.writeResponse(s, &CollectionResponse{Status: StatusInternalError})
+		sc.Logger.Error("failed to delete collection item", "error", err)
+		sc.Response = &CollectionResponse{Status: StatusInternalError}
 		return
 	}
 	if !deleted {
-		h.writeResponse(s, &CollectionResponse{Status: StatusNotFound,
-			Headers: map[string]any{"Error": "item not found"}})
+		sc.Response = &CollectionResponse{Status: StatusNotFound,
+			Headers: map[string]any{"Error": "item not found"}}
 		return
 	}
 
-	h.writeResponse(s, &CollectionResponse{Status: StatusNoContent})
+	sc.Response = &CollectionResponse{Status: StatusNoContent}
+}
+
+// handleList dispatches to listCollections or listKeys based on Path presence.
+func handleList(sc *forge.StreamContext, next func()) {
+	req := sc.Request.(*CollectionRequest)
+
+	if req.Path != "" {
+		handleListKeys(sc, next)
+	} else {
+		handleListCollections(sc, next)
+	}
 }
 
 // handleListCollections returns all collections for an owner.
-func (h *Handler) handleListCollections(ctx context.Context, s network.Stream, ownerID peer.ID) {
-	collections, err := h.store.ListCollections(ctx, ownerID)
+func handleListCollections(sc *forge.StreamContext, next func()) {
+	store, _ := forge.ServiceFrom[storage.Storage](sc, "storage")
+	ownerID := ownerIDFrom(sc)
+
+	ctx := context.Background()
+	collections, err := store.ListCollections(ctx, ownerID)
 	if err != nil {
-		h.logger.Error("failed to list collections", "error", err)
-		h.writeResponse(s, &CollectionResponse{Status: StatusInternalError})
+		sc.Logger.Error("failed to list collections", "error", err)
+		sc.Response = &CollectionResponse{Status: StatusInternalError}
 		return
 	}
 
@@ -471,30 +548,35 @@ func (h *Handler) handleListCollections(ctx context.Context, s network.Stream, o
 
 	bodyBytes, err := json.Marshal(entries)
 	if err != nil {
-		h.writeResponse(s, &CollectionResponse{Status: StatusInternalError})
+		sc.Response = &CollectionResponse{Status: StatusInternalError}
 		return
 	}
 
-	h.writeResponse(s, &CollectionResponse{
+	sc.Response = &CollectionResponse{
 		Status: StatusOK,
 		Headers: map[string]any{
 			"Content-Type": "application/json",
 		},
 		Body: base64.StdEncoding.EncodeToString(bodyBytes),
-	})
+	}
 }
 
 // handleListKeys returns all keys in a collection.
-func (h *Handler) handleListKeys(ctx context.Context, s network.Stream, req *CollectionRequest, ownerID peer.ID) {
-	coll, err := h.store.GetCollection(ctx, ownerID, req.Path)
+func handleListKeys(sc *forge.StreamContext, next func()) {
+	store, _ := forge.ServiceFrom[storage.Storage](sc, "storage")
+	req := sc.Request.(*CollectionRequest)
+	ownerID := ownerIDFrom(sc)
+
+	ctx := context.Background()
+	coll, err := store.GetCollection(ctx, ownerID, req.Path)
 	if err != nil {
-		h.logger.Error("failed to get collection", "error", err)
-		h.writeResponse(s, &CollectionResponse{Status: StatusInternalError})
+		sc.Logger.Error("failed to get collection", "error", err)
+		sc.Response = &CollectionResponse{Status: StatusInternalError}
 		return
 	}
 	if coll == nil {
-		h.writeResponse(s, &CollectionResponse{Status: StatusNotFound,
-			Headers: map[string]any{"Error": "collection not found"}})
+		sc.Response = &CollectionResponse{Status: StatusNotFound,
+			Headers: map[string]any{"Error": "collection not found"}}
 		return
 	}
 
@@ -507,10 +589,10 @@ func (h *Handler) handleListKeys(ctx context.Context, s network.Stream, req *Col
 		offset = *req.Offset
 	}
 
-	keys, totalCount, err := h.store.ListCollectionKeys(ctx, coll.ID, limit, offset)
+	keys, totalCount, err := store.ListCollectionKeys(ctx, coll.ID, limit, offset)
 	if err != nil {
-		h.logger.Error("failed to list collection keys", "error", err)
-		h.writeResponse(s, &CollectionResponse{Status: StatusInternalError})
+		sc.Logger.Error("failed to list collection keys", "error", err)
+		sc.Response = &CollectionResponse{Status: StatusInternalError}
 		return
 	}
 
@@ -518,11 +600,11 @@ func (h *Handler) handleListKeys(ctx context.Context, s network.Stream, req *Col
 		"keys": keys,
 	})
 	if err != nil {
-		h.writeResponse(s, &CollectionResponse{Status: StatusInternalError})
+		sc.Response = &CollectionResponse{Status: StatusInternalError}
 		return
 	}
 
-	h.writeResponse(s, &CollectionResponse{
+	sc.Response = &CollectionResponse{
 		Status: StatusOK,
 		Headers: map[string]any{
 			"Content-Type":  "application/json",
@@ -530,26 +612,31 @@ func (h *Handler) handleListKeys(ctx context.Context, s network.Stream, req *Col
 			"X-Has-More":    offset+limit < totalCount,
 		},
 		Body: base64.StdEncoding.EncodeToString(bodyBytes),
-	})
+	}
 }
 
 // handleQuery queries collection items using JSONB filters.
-func (h *Handler) handleQuery(ctx context.Context, s network.Stream, req *CollectionRequest, ownerID peer.ID) {
+func handleQuery(sc *forge.StreamContext, next func()) {
+	store, _ := forge.ServiceFrom[storage.Storage](sc, "storage")
+	req := sc.Request.(*CollectionRequest)
+	ownerID := ownerIDFrom(sc)
+
 	if req.Path == "" {
-		h.writeResponse(s, &CollectionResponse{Status: StatusBadRequest,
-			Headers: map[string]any{"Error": "path is required"}})
+		sc.Response = &CollectionResponse{Status: StatusBadRequest,
+			Headers: map[string]any{"Error": "path is required"}}
 		return
 	}
 
-	coll, err := h.store.GetCollection(ctx, ownerID, req.Path)
+	ctx := context.Background()
+	coll, err := store.GetCollection(ctx, ownerID, req.Path)
 	if err != nil {
-		h.logger.Error("failed to get collection", "error", err)
-		h.writeResponse(s, &CollectionResponse{Status: StatusInternalError})
+		sc.Logger.Error("failed to get collection", "error", err)
+		sc.Response = &CollectionResponse{Status: StatusInternalError}
 		return
 	}
 	if coll == nil {
-		h.writeResponse(s, &CollectionResponse{Status: StatusNotFound,
-			Headers: map[string]any{"Error": "collection not found"}})
+		sc.Response = &CollectionResponse{Status: StatusNotFound,
+			Headers: map[string]any{"Error": "collection not found"}}
 		return
 	}
 
@@ -566,11 +653,11 @@ func (h *Handler) handleQuery(ctx context.Context, s network.Stream, req *Collec
 		sortAsc = *req.SortAsc
 	}
 
-	result, err := h.store.QueryCollection(ctx, coll.ID, req.Filter, req.SortField, sortAsc, limit, offset)
+	result, err := store.QueryCollection(ctx, coll.ID, req.Filter, req.SortField, sortAsc, limit, offset)
 	if err != nil {
-		h.logger.Error("failed to query collection", "error", err)
-		h.writeResponse(s, &CollectionResponse{Status: StatusInternalError,
-			Headers: map[string]any{"Error": err.Error()}})
+		sc.Logger.Error("failed to query collection", "error", err)
+		sc.Response = &CollectionResponse{Status: StatusInternalError,
+			Headers: map[string]any{"Error": err.Error()}}
 		return
 	}
 
@@ -597,11 +684,11 @@ func (h *Handler) handleQuery(ctx context.Context, s network.Stream, req *Collec
 		"items": items,
 	})
 	if err != nil {
-		h.writeResponse(s, &CollectionResponse{Status: StatusInternalError})
+		sc.Response = &CollectionResponse{Status: StatusInternalError}
 		return
 	}
 
-	h.writeResponse(s, &CollectionResponse{
+	sc.Response = &CollectionResponse{
 		Status: StatusOK,
 		Headers: map[string]any{
 			"Content-Type":  "application/json",
@@ -609,7 +696,7 @@ func (h *Handler) handleQuery(ctx context.Context, s network.Stream, req *Collec
 			"X-Has-More":    result.HasMore,
 		},
 		Body: base64.StdEncoding.EncodeToString(bodyBytes),
-	})
+	}
 }
 
 // =============================================================================
@@ -642,50 +729,4 @@ func containsDotDot(path string) bool {
 		}
 	}
 	return false
-}
-
-func (h *Handler) checkRateLimit(peerID peer.ID, isWrite bool) bool {
-	h.rateLimitMu.Lock()
-	defer h.rateLimitMu.Unlock()
-
-	now := time.Now()
-	key := peerID.String()
-	cutoff := now.Add(-h.rateLimitWindow)
-
-	var historyMap map[string][]time.Time
-	var maxReqs int
-	if isWrite {
-		historyMap = h.writeHistory
-		maxReqs = h.maxWriteRequests
-	} else {
-		historyMap = h.readHistory
-		maxReqs = h.maxReadRequests
-	}
-
-	history := historyMap[key]
-	filtered := history[:0]
-	for _, ts := range history {
-		if ts.After(cutoff) {
-			filtered = append(filtered, ts)
-		}
-	}
-
-	if len(filtered) >= maxReqs {
-		historyMap[key] = filtered
-		return false
-	}
-
-	historyMap[key] = append(filtered, now)
-	return true
-}
-
-func (h *Handler) writeResponse(s network.Stream, resp *CollectionResponse) {
-	data, err := json.Marshal(resp)
-	if err != nil {
-		h.logger.Error("failed to marshal response", "error", err)
-		return
-	}
-	if err := frame.WriteFrame(s, data); err != nil {
-		h.logger.Error("failed to write response", "error", err)
-	}
 }

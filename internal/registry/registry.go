@@ -12,7 +12,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 
 	"github.com/twostack/go-ricochet/internal/core"
-	"github.com/twostack/go-ricochet/internal/p2p"
+	"github.com/twostack/go-p2p-forge/node"
 )
 
 const (
@@ -40,7 +40,7 @@ type SFServerInfo struct {
 
 // Registry provides service discovery for S&F servers using GossipSub.
 type Registry struct {
-	node      *p2p.Node
+	node      *node.Node
 	config    *core.ServerConfig
 	ownPeerID peer.ID
 	servers   map[string]*SFServerInfo
@@ -50,15 +50,18 @@ type Registry struct {
 }
 
 // NewRegistry creates a new service registry.
-func NewRegistry(node *p2p.Node, cfg *core.ServerConfig, ownPeerID peer.ID, logger *slog.Logger) *Registry {
+func NewRegistry(n *node.Node, cfg *core.ServerConfig, ownPeerID peer.ID, logger *slog.Logger) *Registry {
 	return &Registry{
-		node:      node,
+		node:      n,
 		config:    cfg,
 		ownPeerID: ownPeerID,
 		servers:   make(map[string]*SFServerInfo),
 		logger:    logger.With("component", "registry"),
 	}
 }
+
+// Name returns the service name for lifecycle logging.
+func (r *Registry) Name() string { return "registry" }
 
 // Start joins the announcement topics and begins periodic announcements
 // and subscription listening.

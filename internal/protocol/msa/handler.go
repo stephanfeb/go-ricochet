@@ -2,79 +2,95 @@ package msa
 
 import (
 	"context"
+	"encoding/json"
 	"log/slog"
-	"sync"
 	"time"
 
-	"github.com/libp2p/go-libp2p/core/network"
-	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/core/protocol"
+
+	forge "github.com/twostack/go-p2p-forge"
+	"github.com/twostack/go-p2p-forge/codec"
+	"github.com/twostack/go-p2p-forge/middleware"
 
 	"github.com/twostack/go-ricochet/internal/core"
 	"github.com/twostack/go-ricochet/internal/mta"
-	"github.com/twostack/go-ricochet/internal/protocol/frame"
 )
 
 // ProtocolID is the MSA protocol identifier.
 const ProtocolID = protocol.ID("/sf-network/submit/1.0.0")
 
-// Handler is the Mail Submission Agent protocol handler.
-type Handler struct {
-	router           *mta.Router
-	logger           *slog.Logger
-	rateLimitMu      sync.Mutex
-	requestHistory   map[string][]time.Time
-	rateLimitWindow  time.Duration
-	maxRequests      int
+// NewPipeline creates a forge pipeline for the Mail Submission Agent.
+func NewPipeline(logger *slog.Logger, pool *codec.BufferPool, reg *forge.Registry) *forge.Pipeline {
+	limiter := middleware.NewSingleBucket(time.Minute, 100)
+
+	return forge.NewPipeline(logger,
+		middleware.Recovery(),
+		ackResponseWriter(),
+		forge.FrameDecodeMiddleware(pool),
+		middleware.RateLimitMiddleware(limiter),
+		deserializeMessage(),
+		submitHandler,
+	).WithRegistry(reg)
 }
 
-// NewHandler creates a new MSA handler.
-func NewHandler(router *mta.Router, logger *slog.Logger) *Handler {
-	return &Handler{
-		router:          router,
-		logger:          logger,
-		requestHistory:  make(map[string][]time.Time),
-		rateLimitWindow: time.Minute,
-		maxRequests:     100,
+// ackResponseWriter writes a StoreAck response. On pipeline error, it
+// converts the error into an error ack so the client always gets a response.
+func ackResponseWriter() forge.Middleware {
+	return func(sc *forge.StreamContext, next func()) {
+		next()
+
+		// Convert pipeline errors into error ack responses.
+		if sc.Err != nil && sc.Response == nil {
+			sc.Response = &core.StoreAck{
+				Success:      false,
+				ErrorMessage: sc.Err.Error(),
+			}
+		}
+
+		if sc.Response == nil {
+			return
+		}
+
+		data, err := json.Marshal(sc.Response)
+		if err != nil {
+			sc.Logger.Error("failed to marshal ack", "error", err)
+			return
+		}
+		if err := codec.WriteFrame(sc.Stream, data); err != nil {
+			sc.Logger.Error("failed to write ack", "error", err)
+		}
 	}
 }
 
-// HandleStream handles an incoming submission stream.
-func (h *Handler) HandleStream(s network.Stream) {
-	callerID := s.Conn().RemotePeer()
-	defer s.Close()
-
-	h.logger.Debug("handling submission", "caller", callerID.String())
-
-	// Check rate limit
-	if !h.checkRateLimit(callerID) {
-		h.sendError(s, "rate limit exceeded")
-		return
+// deserializeMessage decodes a core.Message from sc.RawBytes using the
+// custom MessageFromJSON decoder (handles base64 payload field).
+func deserializeMessage() forge.Middleware {
+	return func(sc *forge.StreamContext, next func()) {
+		msg, err := core.MessageFromJSON(sc.RawBytes)
+		if err != nil {
+			sc.Err = err
+			sc.Logger.Error("failed to decode message", "error", err)
+			return
+		}
+		sc.Request = msg
+		next()
 	}
+}
 
-	// Read length-prefixed frame
-	data, err := frame.ReadFrame(s)
-	if err != nil {
-		h.logger.Error("failed to read frame", "error", err)
-		h.sendError(s, "failed to read message")
-		return
-	}
-
-	// Decode message
-	msg, err := frame.DecodeMessage(data)
-	if err != nil {
-		h.logger.Error("failed to decode message", "error", err)
-		h.sendError(s, "invalid message format")
-		return
-	}
+func submitHandler(sc *forge.StreamContext, next func()) {
+	router, _ := forge.ServiceFrom[*mta.Router](sc, "mta")
+	msg := sc.Request.(*core.Message)
 
 	// Validate sender matches caller
-	if msg.SenderPeerID != callerID.String() {
-		h.sendError(s, "unauthorized: sender does not match connection")
+	if msg.SenderPeerID != sc.PeerID.String() {
+		sc.Response = &core.StoreAck{
+			Success:      false,
+			ErrorMessage: "unauthorized: sender does not match connection",
+		}
 		return
 	}
 
-	h.logger.Info("submitting message",
+	sc.Logger.Info("submitting message",
 		"message_id", msg.MessageID,
 		"from", msg.SenderPeerID,
 		"to", msg.RecipientPeerID,
@@ -82,9 +98,8 @@ func (h *Handler) HandleStream(s network.Stream) {
 
 	// Hand off to MTA for routing and delivery
 	ctx := context.Background()
-	messageID, err := h.router.AcceptMessage(ctx, msg, callerID)
+	messageID, err := router.AcceptMessage(ctx, msg, sc.PeerID)
 
-	// Send acknowledgment
 	ack := &core.StoreAck{
 		MessageID: messageID,
 		Success:   err == nil,
@@ -93,51 +108,5 @@ func (h *Handler) HandleStream(s network.Stream) {
 		ack.ErrorMessage = err.Error()
 	}
 
-	ackData, encErr := frame.EncodeStoreAck(ack)
-	if encErr != nil {
-		h.logger.Error("failed to encode ack", "error", encErr)
-		return
-	}
-
-	if writeErr := frame.WriteFrame(s, ackData); writeErr != nil {
-		h.logger.Error("failed to write ack", "error", writeErr)
-	}
-}
-
-func (h *Handler) checkRateLimit(peerID peer.ID) bool {
-	h.rateLimitMu.Lock()
-	defer h.rateLimitMu.Unlock()
-
-	now := time.Now()
-	key := peerID.String()
-	cutoff := now.Add(-h.rateLimitWindow)
-
-	history := h.requestHistory[key]
-	filtered := history[:0]
-	for _, ts := range history {
-		if ts.After(cutoff) {
-			filtered = append(filtered, ts)
-		}
-	}
-
-	if len(filtered) >= h.maxRequests {
-		h.requestHistory[key] = filtered
-		return false
-	}
-
-	h.requestHistory[key] = append(filtered, now)
-	return true
-}
-
-func (h *Handler) sendError(s network.Stream, message string) {
-	ack := &core.StoreAck{
-		Success:      false,
-		ErrorMessage: message,
-	}
-
-	data, err := frame.EncodeStoreAck(ack)
-	if err != nil {
-		return
-	}
-	_ = frame.WriteFrame(s, data)
+	sc.Response = ack
 }

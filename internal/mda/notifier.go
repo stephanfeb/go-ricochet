@@ -8,23 +8,24 @@ import (
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/peer"
 
+	"github.com/twostack/go-p2p-forge/codec"
+	"github.com/twostack/go-p2p-forge/node"
+
 	"github.com/twostack/go-ricochet/internal/core"
-	"github.com/twostack/go-ricochet/internal/p2p"
 	"github.com/twostack/go-ricochet/internal/presence"
-	"github.com/twostack/go-ricochet/internal/protocol/frame"
 	"github.com/twostack/go-ricochet/internal/protocol/notify"
 )
 
 // Notifier sends push notifications when new messages are delivered.
 type Notifier struct {
 	host     host.Host
-	node     *p2p.Node
+	node     *node.Node
 	presence *presence.Monitor
 	logger   *slog.Logger
 }
 
 // NewNotifier creates a new push notification sender.
-func NewNotifier(h host.Host, node *p2p.Node, pm *presence.Monitor, logger *slog.Logger) *Notifier {
+func NewNotifier(h host.Host, node *node.Node, pm *presence.Monitor, logger *slog.Logger) *Notifier {
 	return &Notifier{
 		host:     h,
 		node:     node,
@@ -83,7 +84,7 @@ func (n *Notifier) notifyDirect(ctx context.Context, ownerID peer.ID, notificati
 		return
 	}
 
-	if err := frame.WriteFrame(stream, data); err != nil {
+	if err := codec.WriteFrame(stream, data); err != nil {
 		n.logger.Debug("cannot write notification", "peer_id", ownerID.String(), "error", err)
 		return
 	}

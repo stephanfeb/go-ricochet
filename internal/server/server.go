@@ -8,14 +8,19 @@ import (
 	"os"
 	"time"
 
+	"github.com/libp2p/go-libp2p"
 	"github.com/libp2p/go-libp2p/core/crypto"
-	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/peer"
+	udxtransport "github.com/stephanfeb/go-libp2p-udx-transport"
+
+	forge "github.com/twostack/go-p2p-forge"
+	forgehost "github.com/twostack/go-p2p-forge/host"
+	"github.com/twostack/go-p2p-forge/codec"
+	"github.com/twostack/go-p2p-forge/node"
 
 	"github.com/twostack/go-ricochet/internal/core"
 	"github.com/twostack/go-ricochet/internal/mda"
 	"github.com/twostack/go-ricochet/internal/mta"
-	"github.com/twostack/go-ricochet/internal/p2p"
 	"github.com/twostack/go-ricochet/internal/presence"
 	"github.com/twostack/go-ricochet/internal/protocol/maa"
 	"github.com/twostack/go-ricochet/internal/protocol/mma"
@@ -34,11 +39,10 @@ type Server struct {
 	logger *slog.Logger
 
 	// Core components
-	host    host.Host
-	node    *p2p.Node
-	storage storage.Storage
-	mdaSrv  *mda.MailboxServer
-	mtaRtr  *mta.Router
+	forgeServer *forge.Server
+	storage     storage.Storage
+	mdaSrv      *mda.MailboxServer
+	mtaRtr      *mta.Router
 
 	// Services
 	registry        *registry.Registry
@@ -81,13 +85,19 @@ func (s *Server) Start(parentCtx context.Context) error {
 		return fmt.Errorf("initialize storage: %w", err)
 	}
 
-	// Initialize P2P
+	// Build and start forge server (host + node)
 	if err := s.initializeP2P(s.ctx); err != nil {
 		return fmt.Errorf("initialize p2p: %w", err)
 	}
 
-	// Initialize services (MDA, MTA, registry, presence)
+	// Initialize services (MDA, MTA, registry, presence) — needs Host/Node
 	s.initializeServices(s.ctx)
+
+	// Register server-level singletons for pipeline handler DI
+	s.forgeServer.Provide("storage", s.storage)
+	s.forgeServer.Provide("mda", s.mdaSrv)
+	s.forgeServer.Provide("mta", s.mtaRtr)
+	s.forgeServer.Provide("config", s.config)
 
 	// Register protocol handlers
 	s.registerProtocolHandlers()
@@ -97,8 +107,8 @@ func (s *Server) Start(parentCtx context.Context) error {
 
 	s.isRunning = true
 
-	peerID := s.host.ID()
-	addrs := s.host.Addrs()
+	peerID := s.forgeServer.PeerID()
+	addrs := s.forgeServer.Host().Addrs()
 	s.logger.Info("server started",
 		"peer_id", peerID.String(),
 		"addrs", fmt.Sprintf("%v", addrs),
@@ -116,14 +126,16 @@ func (s *Server) Stop() error {
 	s.logger.Info("stopping server")
 	s.isRunning = false
 
-	// Cancel context first so background goroutines (maintenanceLoop, etc.) exit promptly
+	// Cancel context first so background goroutines exit promptly
 	if s.cancel != nil {
 		s.cancel()
 	}
 
 	// Stop services
 	if s.presenceService != nil {
-		s.presenceService.Stop()
+		if err := s.presenceService.Stop(); err != nil {
+			s.logger.Warn("error stopping presence service", "error", err)
+		}
 	}
 	if s.presenceMonitor != nil {
 		s.presenceMonitor.StopMonitoring()
@@ -134,11 +146,9 @@ func (s *Server) Stop() error {
 		}
 	}
 
-	// Close P2P node (closes host, DHT, PubSub)
-	if s.node != nil {
-		if err := s.node.Close(); err != nil {
-			s.logger.Warn("error closing p2p node", "error", err)
-		}
+	// Stop forge server (closes node + host)
+	if s.forgeServer != nil {
+		s.forgeServer.Stop()
 	}
 
 	// Close MDA (which closes storage)
@@ -154,15 +164,20 @@ func (s *Server) Stop() error {
 
 // PeerID returns the server's peer ID.
 func (s *Server) PeerID() peer.ID {
-	if s.host == nil {
+	if s.forgeServer == nil {
 		return ""
 	}
-	return s.host.ID()
+	return s.forgeServer.PeerID()
 }
 
 // IsRunning returns whether the server is running.
 func (s *Server) IsRunning() bool {
 	return s.isRunning
+}
+
+// ForgeServer returns the underlying forge server (available after Start).
+func (s *Server) ForgeServer() *forge.Server {
+	return s.forgeServer
 }
 
 func (s *Server) initializeStorage(ctx context.Context) error {
@@ -194,29 +209,76 @@ func (s *Server) initializeP2P(ctx context.Context) error {
 		return fmt.Errorf("load identity: %w", err)
 	}
 
-	peerID, err := p2p.PeerIDFromIdentity(priv)
+	peerID, err := forgehost.PeerIDFromIdentity(priv)
 	if err != nil {
 		return fmt.Errorf("derive peer id: %w", err)
 	}
 	s.logger.Info("loaded identity", "peer_id", peerID.String())
 
-	// Create host
-	h, err := p2p.CreateHost(s.config, priv, s.logger)
-	if err != nil {
-		return fmt.Errorf("create host: %w", err)
-	}
-	s.host = h
+	// Build forge config from ricochet config
+	forgeCfg := s.buildForgeConfig()
 
-	// Create node (DHT + PubSub)
-	node, err := p2p.NewNode(ctx, s.config, priv, h, s.logger)
-	if err != nil {
-		h.Close()
-		return fmt.Errorf("create node: %w", err)
+	// Create forge server
+	s.forgeServer = forge.NewServer(
+		forge.WithConfig(forgeCfg),
+		forge.WithIdentity(priv),
+		forge.WithLogger(s.logger),
+		forge.WithTransport(libp2p.Transport(udxtransport.NewTransport)),
+	)
+
+	// Start forge server (creates host + node)
+	if err := s.forgeServer.Start(ctx); err != nil {
+		return fmt.Errorf("start forge server: %w", err)
 	}
-	s.node = node
 
 	s.logger.Info("P2P stack initialized")
 	return nil
+}
+
+func (s *Server) buildForgeConfig() *forge.Config {
+	cfg := forge.DefaultConfig()
+
+	// Network
+	cfg.Host.Port = s.config.Port
+	cfg.Host.ListenAddresses = s.config.ListenAddresses
+	cfg.Host.ExternalAddresses = s.config.ExternalAddresses
+	cfg.Host.BootstrapPeers = s.config.BootstrapPeers
+
+	// Yamux tuning for mobile clients
+	cfg.Host.YamuxKeepAlive = 60 * time.Second
+	cfg.Host.YamuxWriteTimeout = 30 * time.Second
+
+	// Relay
+	cfg.Host.EnableRelay = s.config.EnableRelay
+	cfg.Host.EnableRelayService = s.config.EnableRelayService
+	cfg.Host.EnableAutoRelay = s.config.EnableAutoRelay
+	cfg.Host.EnableHolePunching = s.config.EnableHolePunching
+	cfg.Host.EnableAutoNAT = s.config.EnableAutoNAT
+
+	// Relay limits
+	rl := s.config.RelayLimits
+	cfg.Host.RelayLimits = forgehost.RelayLimits{
+		MaxReservations:        rl.MaxReservations,
+		MaxCircuits:            rl.MaxCircuits,
+		BufferSize:             rl.BufferSize,
+		MaxReservationsPerPeer: rl.MaxReservationsPerPeer,
+		MaxReservationsPerIP:   rl.MaxReservationsPerIP,
+		MaxReservationsPerASN:  rl.MaxReservationsPerASN,
+		ReservationTTL:         rl.ReservationTTL,
+		ConnectionDuration:     rl.ConnectionDuration,
+		ConnectionData:         rl.ConnectionData,
+	}
+
+	// Node
+	cfg.Node.DHTMode = node.DHTModeServer
+	cfg.Node.BootstrapPeers = s.config.BootstrapPeers
+	cfg.Node.EnablePubSub = true
+
+	// Identity / Data
+	cfg.IdentityFile = s.config.IdentityFile
+	cfg.DataDirectory = s.config.DataDirectory
+
+	return cfg
 }
 
 func (s *Server) initializeServices(ctx context.Context) {
@@ -235,19 +297,19 @@ func (s *Server) initializeServices(ctx context.Context) {
 
 	// Create push notifier
 	if s.config.EnablePushDelivery {
-		notifier := mda.NewNotifier(s.host, s.node, s.presenceMonitor, s.logger)
+		notifier := mda.NewNotifier(s.forgeServer.Host(), s.forgeServer.Node(), s.presenceMonitor, s.logger)
 		s.mdaSrv.SetNotifier(notifier)
 		s.logger.Info("push notifier initialized")
 	}
 
 	// Create service registry
-	s.registry = registry.NewRegistry(s.node, s.config, s.host.ID(), s.logger)
+	s.registry = registry.NewRegistry(s.forgeServer.Node(), s.config, s.forgeServer.PeerID(), s.logger)
 	s.logger.Info("service registry initialized")
 
 	// Create presence monitor
 	if s.config.EnablePresenceMonitoring {
 		s.presenceCache = presence.NewCache(30 * time.Second)
-		s.presenceMonitor = presence.NewMonitor(s.presenceCache, s.host, s.logger)
+		s.presenceMonitor = presence.NewMonitor(s.presenceCache, s.forgeServer.Host(), s.logger)
 		s.logger.Info("presence monitor initialized")
 	}
 
@@ -263,40 +325,50 @@ func (s *Server) initializeServices(ctx context.Context) {
 			MaxBatchSize:      50,
 			EnableBroadcast:   true,
 		}
-		s.presenceService = presence.NewService(s.host, s.node, s.presenceCache, presCfg, s.logger)
+		s.presenceService = presence.NewService(s.forgeServer.Host(), s.forgeServer.Node(), s.presenceCache, presCfg, s.logger)
 		s.logger.Info("presence broadcast service initialized")
 	}
 }
 
 func (s *Server) registerProtocolHandlers() {
+	pool := codec.NewBufferPool()
+	reg := s.forgeServer.Registry()
+	h := s.forgeServer.Host()
+
+	// NOTE: Handlers are registered directly on the host because
+	// forge.Server.Start() has already been called (we need Host/Node
+	// available for service initialization before handler registration).
+	// forge.Server.Handle() only stores handlers for Start() to register,
+	// so post-Start registration must go through the host directly.
+
 	// MSA — Mail Submission Agent (write path)
-	msaHandler := msa.NewHandler(s.mtaRtr, s.logger)
-	s.host.SetStreamHandler(msa.ProtocolID, msaHandler.HandleStream)
+	msaPipeline := msa.NewPipeline(s.logger, pool, reg)
+	h.SetStreamHandler(msa.ProtocolID, msaPipeline.StreamHandler())
 	s.logger.Info("registered MSA handler", "protocol", msa.ProtocolID)
 
 	// MAA — Mail Access Agent (read path)
-	maaHandler := maa.NewHandler(s.mdaSrv, s.logger)
-	s.host.SetStreamHandler(maa.ProtocolID, maaHandler.HandleStream)
+	maaPipeline := maa.NewPipeline(s.logger, pool, reg)
+	h.SetStreamHandler(maa.ProtocolID, maaPipeline.StreamHandler())
 	s.logger.Info("registered MAA handler", "protocol", maa.ProtocolID)
 
 	// MMA — Mailbox Management Agent (admin path)
-	mmaHandler := mma.NewHandler(s.mdaSrv, s.config, s.logger)
-	s.host.SetStreamHandler(mma.ProtocolID, mmaHandler.HandleStream)
+	mmaPipeline := mma.NewPipeline(s.logger, pool, reg)
+	h.SetStreamHandler(mma.ProtocolID, mmaPipeline.StreamHandler())
 	s.logger.Info("registered MMA handler", "protocol", mma.ProtocolID)
 
 	// SDA — Store Document Access (document path)
-	sdaHandler := sda.NewHandler(s.storage, s.logger)
-	s.host.SetStreamHandler(sda.ProtocolID, sdaHandler.HandleStream)
+	sdaPipeline := sda.NewPipeline(s.logger, pool, reg)
+	h.SetStreamHandler(sda.ProtocolID, sdaPipeline.StreamHandler())
 	s.logger.Info("registered SDA handler", "protocol", sda.ProtocolID)
 
 	// SFA — Store Feed Agent (feed path)
-	sfaHandler := sfa.NewHandler(s.storage, s.logger)
-	s.host.SetStreamHandler(sfa.ProtocolID, sfaHandler.HandleStream)
+	sfaPipeline := sfa.NewPipeline(s.logger, pool, reg)
+	h.SetStreamHandler(sfa.ProtocolID, sfaPipeline.StreamHandler())
 	s.logger.Info("registered SFA handler", "protocol", sfa.ProtocolID)
 
 	// SCA — Store Collection Agent (collection path)
-	scaHandler := sca.NewHandler(s.storage, s.logger)
-	s.host.SetStreamHandler(sca.ProtocolID, scaHandler.HandleStream)
+	scaPipeline := sca.NewPipeline(s.logger, pool, reg)
+	h.SetStreamHandler(sca.ProtocolID, scaPipeline.StreamHandler())
 	s.logger.Info("registered SCA handler", "protocol", sca.ProtocolID)
 }
 
@@ -318,7 +390,7 @@ func (s *Server) startServices(ctx context.Context) {
 	}
 
 	// Log host advertised addresses (confirms relay service)
-	addrs := s.host.Addrs()
+	addrs := s.forgeServer.Host().Addrs()
 	s.logger.Info("host advertised addresses", "addrs", fmt.Sprintf("%v", addrs))
 
 	// Start periodic maintenance
@@ -340,8 +412,8 @@ func (s *Server) maintenanceLoop(ctx context.Context) {
 			if err := s.mdaSrv.PerformMaintenance(ctx); err != nil {
 				s.logger.Warn("maintenance error", "error", err)
 			}
-			if s.node != nil {
-				s.node.LogDHTStatus()
+			if s.forgeServer.Node() != nil {
+				s.forgeServer.Node().LogDHTStatus()
 			}
 		}
 	}
@@ -354,15 +426,15 @@ func (s *Server) loadIdentity() (crypto.PrivKey, error) {
 		if err != nil {
 			return nil, fmt.Errorf("parse RICOCHET_SEED_HEX: %w", err)
 		}
-		return p2p.LoadIdentityFromSeed(seed)
+		return forgehost.LoadIdentityFromSeed(seed)
 	}
 
 	// 2. Identity file from config
 	if s.config.IdentityFile != "" {
-		return p2p.LoadIdentityFromFile(s.config.IdentityFile)
+		return forgehost.LoadIdentityFromFile(s.config.IdentityFile)
 	}
 
 	// 3. Auto-generate in data directory
 	identityPath := s.config.DataDirectory + "/peer_identity.key"
-	return p2p.LoadOrCreateIdentity(identityPath)
+	return forgehost.LoadOrCreateIdentity(identityPath)
 }

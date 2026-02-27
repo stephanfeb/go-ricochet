@@ -8,14 +8,15 @@ import (
 	"fmt"
 	"log/slog"
 	"regexp"
-	"sync"
 	"time"
 
-	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/core/protocol"
 
-	"github.com/twostack/go-ricochet/internal/protocol/frame"
+	forge "github.com/twostack/go-p2p-forge"
+	"github.com/twostack/go-p2p-forge/codec"
+	"github.com/twostack/go-p2p-forge/middleware"
+
 	"github.com/twostack/go-ricochet/internal/storage"
 )
 
@@ -85,189 +86,213 @@ type DocResponse struct {
 	Body    string         `json:"body,omitempty"` // base64 encoded
 }
 
-// Handler is the Store Document Access protocol handler.
-type Handler struct {
-	store          storage.Storage
-	logger         *slog.Logger
+// directoryListingPath is the well-known document path that triggers directory materialization.
+const directoryListingPath = "directory-listing"
 
-	// Rate limiting: separate buckets for read and write operations.
-	rateLimitMu       sync.Mutex
-	readHistory       map[string][]time.Time
-	writeHistory      map[string][]time.Time
-	rateLimitWindow   time.Duration
-	maxReadRequests   int
-	maxWriteRequests  int
+// NewPipeline creates a forge pipeline for the Store Document Agent.
+func NewPipeline(logger *slog.Logger, pool *codec.BufferPool, reg *forge.Registry) *forge.Pipeline {
+	limiter := middleware.NewDualBucket(time.Minute, 100, 20)
+
+	routes := map[string]forge.Middleware{
+		OpGET:       middleware.Chain(forge.JSONDeserialize[DocRequest](), handleGet),
+		OpPUT:       middleware.Chain(forge.JSONDeserialize[DocRequest](), handlePut),
+		OpPATCH:     middleware.Chain(forge.JSONDeserialize[DocRequest](), handlePatch),
+		OpHEAD:      middleware.Chain(forge.JSONDeserialize[DocRequest](), handleHead),
+		OpDELETE:    middleware.Chain(forge.JSONDeserialize[DocRequest](), handleDelete),
+		OpLIST:      middleware.Chain(forge.JSONDeserialize[DocRequest](), handleList),
+		OpHISTORY:   middleware.Chain(forge.JSONDeserialize[DocRequest](), handleHistory),
+		OpDIRECTORY: middleware.Chain(forge.JSONDeserialize[DocRequest](), handleDirectory),
+	}
+
+	return forge.NewPipeline(logger,
+		middleware.Recovery(),
+		docResponseWriter(),
+		forge.FrameDecodeMiddleware(pool),
+		middleware.DualRateLimitMiddleware(limiter, isWriteClassifier),
+		commonValidation(),
+		middleware.OperationRouter("operation", routes),
+	).WithRegistry(reg)
 }
 
-// NewHandler creates a new SDA handler.
-func NewHandler(store storage.Storage, logger *slog.Logger) *Handler {
-	return &Handler{
-		store:            store,
-		logger:           logger,
-		readHistory:      make(map[string][]time.Time),
-		writeHistory:     make(map[string][]time.Time),
-		rateLimitWindow:  time.Minute,
-		maxReadRequests:  100,
-		maxWriteRequests: 20,
+// isWriteClassifier peeks at the raw bytes to determine if the request is a write operation.
+func isWriteClassifier(raw []byte) bool {
+	var envelope struct {
+		Operation       string `json:"operation"`
+		DirectoryAction string `json:"directoryAction"`
 	}
-}
-
-// HandleStream handles an incoming document access stream.
-func (h *Handler) HandleStream(s network.Stream) {
-	callerID := s.Conn().RemotePeer()
-	// NOTE: Do NOT defer s.CloseWrite() here. For large responses (e.g., 88KB+
-	// banner images), CloseWrite sends a Yamux FIN frame that can arrive at the
-	// client before all data packets are delivered over UDX (UDP-based transport).
-	// This causes the client to see a closed stream mid-read, resulting in
-	// "Stream closed after reading N of M bytes" errors. The client closes
-	// the stream after reading the response, so server-side half-close is
-	// unnecessary.
-	defer s.Close()
-
-	// Read length-prefixed frame
-	data, err := frame.ReadFrame(s)
-	if err != nil {
-		h.logger.Error("failed to read frame", "error", err)
-		h.writeResponse(s, &DocResponse{Status: StatusBadRequest})
-		return
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		return false
 	}
-
-	// Parse request
-	var req DocRequest
-	if err := json.Unmarshal(data, &req); err != nil {
-		h.logger.Error("failed to parse request", "error", err)
-		h.writeResponse(s, &DocResponse{Status: StatusBadRequest})
-		return
-	}
-
-	h.logger.Debug("handling document request",
-		"operation", req.Operation,
-		"owner", req.OwnerPeerID,
-		"path", req.Path,
-		"caller", callerID.String(),
-	)
-
-	// Determine if this is a read or write operation and check rate limits
-	isWrite := req.Operation == OpPUT || req.Operation == OpPATCH || req.Operation == OpDELETE
-	if req.Operation == OpDIRECTORY {
-		isWrite = req.DirectoryAction == "join" || req.DirectoryAction == "leave"
-	}
-	if isWrite {
-		if !h.checkRateLimit(callerID, true) {
-			h.writeResponse(s, &DocResponse{Status: StatusTooManyRequests})
-			return
-		}
-	} else {
-		if !h.checkRateLimit(callerID, false) {
-			h.writeResponse(s, &DocResponse{Status: StatusTooManyRequests})
-			return
-		}
-	}
-
-	// Parse owner peer ID
-	if req.OwnerPeerID == "" {
-		h.writeResponse(s, &DocResponse{Status: StatusBadRequest,
-			Headers: map[string]any{"Error": "ownerPeerId is required"}})
-		return
-	}
-	ownerID, err := peer.Decode(req.OwnerPeerID)
-	if err != nil {
-		h.writeResponse(s, &DocResponse{Status: StatusBadRequest,
-			Headers: map[string]any{"Error": "invalid ownerPeerId"}})
-		return
-	}
-
-	// Validate path for operations that require it
-	if req.Operation != OpLIST && req.Operation != OpDIRECTORY {
-		if err := validatePath(req.Path); err != nil {
-			h.writeResponse(s, &DocResponse{Status: StatusBadRequest,
-				Headers: map[string]any{"Error": err.Error()}})
-			return
-		}
-	}
-
-	// Enforce owner-only access for write operations
-	if isWrite && callerID != ownerID {
-		h.writeResponse(s, &DocResponse{Status: StatusForbidden,
-			Headers: map[string]any{"Error": "write operations require owner access"}})
-		return
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	switch req.Operation {
-	case OpGET:
-		h.handleGet(ctx, s, &req, ownerID)
-	case OpPUT:
-		h.handlePut(ctx, s, &req, ownerID, callerID)
-	case OpPATCH:
-		h.handlePatch(ctx, s, &req, ownerID, callerID)
-	case OpHEAD:
-		h.handleHead(ctx, s, &req, ownerID)
-	case OpDELETE:
-		h.handleDelete(ctx, s, &req, ownerID)
-	case OpLIST:
-		h.handleList(ctx, s, ownerID)
-	case OpHISTORY:
-		h.handleHistory(ctx, s, &req, ownerID)
+	switch envelope.Operation {
+	case OpPUT, OpPATCH, OpDELETE:
+		return true
 	case OpDIRECTORY:
-		h.handleDirectory(ctx, s, &req, ownerID)
-	default:
-		h.writeResponse(s, &DocResponse{Status: StatusBadRequest,
-			Headers: map[string]any{"Error": "unknown operation: " + req.Operation}})
+		return envelope.DirectoryAction == "join" || envelope.DirectoryAction == "leave"
+	}
+	return false
+}
+
+// docResponseWriter writes a DocResponse as a JSON frame. On pipeline error,
+// it converts the error into an error response so the client always gets a response.
+func docResponseWriter() forge.Middleware {
+	return func(sc *forge.StreamContext, next func()) {
+		next()
+
+		// Convert pipeline errors into error responses.
+		if sc.Err != nil && sc.Response == nil {
+			status := StatusInternalError
+			if errors.Is(sc.Err, forge.ErrRateLimited) {
+				status = StatusTooManyRequests
+			}
+			sc.Response = &DocResponse{
+				Status:  status,
+				Headers: map[string]any{"Error": sc.Err.Error()},
+			}
+		}
+
+		if sc.Response == nil {
+			return
+		}
+
+		data, err := json.Marshal(sc.Response)
+		if err != nil {
+			sc.Logger.Error("failed to marshal response", "error", err)
+			return
+		}
+		if err := codec.WriteFrame(sc.Stream, data); err != nil {
+			sc.Logger.Error("failed to write response", "error", err)
+		}
+	}
+}
+
+// commonValidation parses the owner peer ID, validates the path, and checks
+// owner-only access for write operations. It runs after deserialization and
+// before operation dispatch, but since OperationRouter runs before
+// JSONDeserialize in each route, this middleware operates on RawBytes to
+// extract ownerPeerId and path before the per-route deserialize runs.
+//
+// Because OperationRouter is placed after commonValidation in the pipeline,
+// commonValidation peeks at the raw JSON to perform pre-dispatch validation.
+func commonValidation() forge.Middleware {
+	return func(sc *forge.StreamContext, next func()) {
+		// Peek at the raw bytes for common validation fields.
+		var envelope struct {
+			Operation   string `json:"operation"`
+			OwnerPeerID string `json:"ownerPeerId"`
+			Path        string `json:"path"`
+
+			DirectoryAction string `json:"directoryAction"`
+		}
+		if err := json.Unmarshal(sc.RawBytes, &envelope); err != nil {
+			sc.Response = &DocResponse{Status: StatusBadRequest}
+			return
+		}
+
+		sc.Logger.Debug("handling document request",
+			"operation", envelope.Operation,
+			"owner", envelope.OwnerPeerID,
+			"path", envelope.Path,
+			"caller", sc.PeerID.String(),
+		)
+
+		// Parse owner peer ID.
+		if envelope.OwnerPeerID == "" {
+			sc.Response = &DocResponse{Status: StatusBadRequest,
+				Headers: map[string]any{"Error": "ownerPeerId is required"}}
+			return
+		}
+		ownerID, err := peer.Decode(envelope.OwnerPeerID)
+		if err != nil {
+			sc.Response = &DocResponse{Status: StatusBadRequest,
+				Headers: map[string]any{"Error": "invalid ownerPeerId"}}
+			return
+		}
+		sc.Set("ownerID", ownerID)
+
+		// Validate path for operations that require it.
+		if envelope.Operation != OpLIST && envelope.Operation != OpDIRECTORY {
+			if err := validatePath(envelope.Path); err != nil {
+				sc.Response = &DocResponse{Status: StatusBadRequest,
+					Headers: map[string]any{"Error": err.Error()}}
+				return
+			}
+		}
+
+		// Enforce owner-only access for write operations.
+		isWrite := envelope.Operation == OpPUT || envelope.Operation == OpPATCH || envelope.Operation == OpDELETE
+		if envelope.Operation == OpDIRECTORY {
+			isWrite = envelope.DirectoryAction == "join" || envelope.DirectoryAction == "leave"
+		}
+		if isWrite && sc.PeerID != ownerID {
+			sc.Response = &DocResponse{Status: StatusForbidden,
+				Headers: map[string]any{"Error": "write operations require owner access"}}
+			return
+		}
+
+		next()
 	}
 }
 
 // handleGet retrieves a document. Supports If-None-Match for conditional GET.
-func (h *Handler) handleGet(ctx context.Context, s network.Stream, req *DocRequest, ownerID peer.ID) {
-	doc, err := h.store.GetDocument(ctx, ownerID, req.Path)
+func handleGet(sc *forge.StreamContext, next func()) {
+	req := sc.Request.(*DocRequest)
+	store, _ := forge.ServiceFrom[storage.Storage](sc, "storage")
+	ownerID, _ := sc.Get("ownerID")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	doc, err := store.GetDocument(ctx, ownerID.(peer.ID), req.Path)
 	if err != nil {
 		if errors.Is(err, storage.ErrDocumentNotFound) {
-			h.writeResponse(s, &DocResponse{Status: StatusNotFound})
+			sc.Response = &DocResponse{Status: StatusNotFound}
 			return
 		}
-		h.logger.Error("failed to get document", "error", err)
-		h.writeResponse(s, &DocResponse{Status: StatusInternalError})
+		sc.Logger.Error("failed to get document", "error", err)
+		sc.Response = &DocResponse{Status: StatusInternalError}
 		return
 	}
 	if doc == nil {
-		h.writeResponse(s, &DocResponse{Status: StatusNotFound})
+		sc.Response = &DocResponse{Status: StatusNotFound}
 		return
 	}
 
 	// Conditional GET: If-None-Match
 	if ifNoneMatch, ok := req.Headers["If-None-Match"]; ok {
 		if ifNoneMatch == doc.ContentHash {
-			h.writeResponse(s, &DocResponse{
+			sc.Response = &DocResponse{
 				Status: StatusNotModified,
 				Headers: map[string]any{
 					"ETag": doc.ContentHash,
 				},
-			})
+			}
 			return
 		}
 	}
 
-	h.writeResponse(s, &DocResponse{
+	sc.Response = &DocResponse{
 		Status: StatusOK,
 		Headers: map[string]any{
-			"ETag":         doc.ContentHash,
-			"Content-Type": doc.ContentType,
+			"ETag":          doc.ContentHash,
+			"Content-Type":  doc.ContentType,
 			"Last-Modified": doc.UpdatedAt.UnixMilli(),
-			"Version":      doc.VersionNumber,
+			"Version":       doc.VersionNumber,
 		},
 		Body: base64.StdEncoding.EncodeToString(doc.Content),
-	})
+	}
 }
 
 // handlePut creates or replaces a document. Supports If-Match for conditional PUT.
-func (h *Handler) handlePut(ctx context.Context, s network.Stream, req *DocRequest, ownerID, callerID peer.ID) {
+func handlePut(sc *forge.StreamContext, next func()) {
+	req := sc.Request.(*DocRequest)
+	store, _ := forge.ServiceFrom[storage.Storage](sc, "storage")
+	ownerID, _ := sc.Get("ownerID")
+
 	// Decode body
 	content, err := base64.StdEncoding.DecodeString(req.Body)
 	if err != nil {
-		h.writeResponse(s, &DocResponse{Status: StatusBadRequest,
-			Headers: map[string]any{"Error": "invalid base64 body"}})
+		sc.Response = &DocResponse{Status: StatusBadRequest,
+			Headers: map[string]any{"Error": "invalid base64 body"}}
 		return
 	}
 
@@ -282,9 +307,12 @@ func (h *Handler) handlePut(ctx context.Context, s network.Stream, req *DocReque
 		ifMatch = &im
 	}
 
-	result, err := h.store.PutDocument(ctx, ownerID, req.Path, content, contentType, callerID, ifMatch)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	result, err := store.PutDocument(ctx, ownerID.(peer.ID), req.Path, content, contentType, sc.PeerID, ifMatch)
 	if err != nil {
-		h.handleWriteError(s, err)
+		sc.Response = writeErrorResponse(sc.Logger, err)
 		return
 	}
 
@@ -293,32 +321,36 @@ func (h *Handler) handlePut(ctx context.Context, s network.Stream, req *DocReque
 		status = StatusCreated
 	}
 
-	h.writeResponse(s, &DocResponse{
+	// Materialize directory listing if applicable (fire-and-forget side effect).
+	maybeUpdateDirectoryListing(ctx, sc.Logger, store, ownerID.(peer.ID), req.Path)
+
+	sc.Response = &DocResponse{
 		Status: status,
 		Headers: map[string]any{
 			"ETag":          result.ContentHash,
 			"Last-Modified": result.UpdatedAt.UnixMilli(),
 		},
-	})
-
-	// Materialize directory listing if applicable
-	h.maybeUpdateDirectoryListing(ctx, ownerID, req.Path)
+	}
 }
 
 // handlePatch applies a partial update to a document.
-func (h *Handler) handlePatch(ctx context.Context, s network.Stream, req *DocRequest, ownerID, callerID peer.ID) {
+func handlePatch(sc *forge.StreamContext, next func()) {
+	req := sc.Request.(*DocRequest)
+	store, _ := forge.ServiceFrom[storage.Storage](sc, "storage")
+	ownerID, _ := sc.Get("ownerID")
+
 	// Decode body as JSON patch object
 	bodyBytes, err := base64.StdEncoding.DecodeString(req.Body)
 	if err != nil {
-		h.writeResponse(s, &DocResponse{Status: StatusBadRequest,
-			Headers: map[string]any{"Error": "invalid base64 body"}})
+		sc.Response = &DocResponse{Status: StatusBadRequest,
+			Headers: map[string]any{"Error": "invalid base64 body"}}
 		return
 	}
 
 	var patch map[string]any
 	if err := json.Unmarshal(bodyBytes, &patch); err != nil {
-		h.writeResponse(s, &DocResponse{Status: StatusBadRequest,
-			Headers: map[string]any{"Error": "invalid JSON patch body"}})
+		sc.Response = &DocResponse{Status: StatusBadRequest,
+			Headers: map[string]any{"Error": "invalid JSON patch body"}}
 		return
 	}
 
@@ -328,55 +360,65 @@ func (h *Handler) handlePatch(ctx context.Context, s network.Stream, req *DocReq
 		ifMatch = &im
 	}
 
-	result, err := h.store.PatchDocument(ctx, ownerID, req.Path, patch, callerID, ifMatch)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	result, err := store.PatchDocument(ctx, ownerID.(peer.ID), req.Path, patch, sc.PeerID, ifMatch)
 	if err != nil {
-		h.handleWriteError(s, err)
+		sc.Response = writeErrorResponse(sc.Logger, err)
 		return
 	}
 
-	h.writeResponse(s, &DocResponse{
+	// Materialize directory listing if applicable (fire-and-forget side effect).
+	maybeUpdateDirectoryListing(ctx, sc.Logger, store, ownerID.(peer.ID), req.Path)
+
+	sc.Response = &DocResponse{
 		Status: StatusOK,
 		Headers: map[string]any{
 			"ETag":          result.ContentHash,
 			"Last-Modified": result.UpdatedAt.UnixMilli(),
 		},
-	})
-
-	// Materialize directory listing if applicable
-	h.maybeUpdateDirectoryListing(ctx, ownerID, req.Path)
+	}
 }
 
 // handleHead returns document metadata without the body.
-func (h *Handler) handleHead(ctx context.Context, s network.Stream, req *DocRequest, ownerID peer.ID) {
-	doc, err := h.store.GetDocument(ctx, ownerID, req.Path)
+func handleHead(sc *forge.StreamContext, next func()) {
+	req := sc.Request.(*DocRequest)
+	store, _ := forge.ServiceFrom[storage.Storage](sc, "storage")
+	ownerID, _ := sc.Get("ownerID")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	doc, err := store.GetDocument(ctx, ownerID.(peer.ID), req.Path)
 	if err != nil {
 		if errors.Is(err, storage.ErrDocumentNotFound) {
-			h.writeResponse(s, &DocResponse{Status: StatusNotFound})
+			sc.Response = &DocResponse{Status: StatusNotFound}
 			return
 		}
-		h.logger.Error("failed to get document", "error", err)
-		h.writeResponse(s, &DocResponse{Status: StatusInternalError})
+		sc.Logger.Error("failed to get document", "error", err)
+		sc.Response = &DocResponse{Status: StatusInternalError}
 		return
 	}
 	if doc == nil {
-		h.writeResponse(s, &DocResponse{Status: StatusNotFound})
+		sc.Response = &DocResponse{Status: StatusNotFound}
 		return
 	}
 
 	// Conditional: If-None-Match
 	if ifNoneMatch, ok := req.Headers["If-None-Match"]; ok {
 		if ifNoneMatch == doc.ContentHash {
-			h.writeResponse(s, &DocResponse{
+			sc.Response = &DocResponse{
 				Status: StatusNotModified,
 				Headers: map[string]any{
 					"ETag": doc.ContentHash,
 				},
-			})
+			}
 			return
 		}
 	}
 
-	h.writeResponse(s, &DocResponse{
+	sc.Response = &DocResponse{
 		Status: StatusOK,
 		Headers: map[string]any{
 			"ETag":           doc.ContentHash,
@@ -385,46 +427,59 @@ func (h *Handler) handleHead(ctx context.Context, s network.Stream, req *DocRequ
 			"Last-Modified":  doc.UpdatedAt.Format(time.RFC3339),
 			"Version":        fmt.Sprintf("%d", doc.VersionNumber),
 		},
-	})
+	}
 }
 
 // handleDelete removes a document.
-func (h *Handler) handleDelete(ctx context.Context, s network.Stream, req *DocRequest, ownerID peer.ID) {
-	deleted, err := h.store.DeleteDocument(ctx, ownerID, req.Path)
+func handleDelete(sc *forge.StreamContext, next func()) {
+	req := sc.Request.(*DocRequest)
+	store, _ := forge.ServiceFrom[storage.Storage](sc, "storage")
+	ownerID, _ := sc.Get("ownerID")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	deleted, err := store.DeleteDocument(ctx, ownerID.(peer.ID), req.Path)
 	if err != nil {
-		h.logger.Error("failed to delete document", "error", err)
-		h.writeResponse(s, &DocResponse{Status: StatusInternalError})
+		sc.Logger.Error("failed to delete document", "error", err)
+		sc.Response = &DocResponse{Status: StatusInternalError}
 		return
 	}
 
 	if !deleted {
-		h.writeResponse(s, &DocResponse{Status: StatusNotFound})
+		sc.Response = &DocResponse{Status: StatusNotFound}
 		return
 	}
 
-	h.writeResponse(s, &DocResponse{Status: StatusNoContent})
+	// Remove directory listing if applicable (fire-and-forget side effect).
+	maybeRemoveDirectoryListing(ctx, sc.Logger, store, ownerID.(peer.ID), req.Path)
 
-	// Remove directory listing if applicable
-	h.maybeRemoveDirectoryListing(ctx, ownerID, req.Path)
+	sc.Response = &DocResponse{Status: StatusNoContent}
 }
 
 // handleList returns all documents for an owner.
-func (h *Handler) handleList(ctx context.Context, s network.Stream, ownerID peer.ID) {
-	docs, err := h.store.ListDocuments(ctx, ownerID)
+func handleList(sc *forge.StreamContext, next func()) {
+	store, _ := forge.ServiceFrom[storage.Storage](sc, "storage")
+	ownerID, _ := sc.Get("ownerID")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	docs, err := store.ListDocuments(ctx, ownerID.(peer.ID))
 	if err != nil {
-		h.logger.Error("failed to list documents", "error", err)
-		h.writeResponse(s, &DocResponse{Status: StatusInternalError})
+		sc.Logger.Error("failed to list documents", "error", err)
+		sc.Response = &DocResponse{Status: StatusInternalError}
 		return
 	}
 
 	// Build a JSON array of document info
 	type docEntry struct {
-		Path         string `json:"path"`
-		ContentType  string `json:"contentType"`
-		ContentHash  string `json:"contentHash"`
-		Size         int    `json:"size"`
-		UpdatedAt    string `json:"updatedAt"`
-		Version      int    `json:"versionNumber"`
+		Path        string `json:"path"`
+		ContentType string `json:"contentType"`
+		ContentHash string `json:"contentHash"`
+		Size        int    `json:"size"`
+		UpdatedAt   string `json:"updatedAt"`
+		Version     int    `json:"versionNumber"`
 	}
 
 	entries := make([]docEntry, 0, len(docs))
@@ -441,35 +496,42 @@ func (h *Handler) handleList(ctx context.Context, s network.Stream, ownerID peer
 
 	bodyBytes, err := json.Marshal(entries)
 	if err != nil {
-		h.writeResponse(s, &DocResponse{Status: StatusInternalError})
+		sc.Response = &DocResponse{Status: StatusInternalError}
 		return
 	}
 
-	h.writeResponse(s, &DocResponse{
+	sc.Response = &DocResponse{
 		Status: StatusOK,
 		Headers: map[string]any{
 			"Content-Type": "application/json",
 		},
 		Body: base64.StdEncoding.EncodeToString(bodyBytes),
-	})
+	}
 }
 
 // handleHistory returns version history for a document.
-func (h *Handler) handleHistory(ctx context.Context, s network.Stream, req *DocRequest, ownerID peer.ID) {
+func handleHistory(sc *forge.StreamContext, next func()) {
+	req := sc.Request.(*DocRequest)
+	store, _ := forge.ServiceFrom[storage.Storage](sc, "storage")
+	ownerID, _ := sc.Get("ownerID")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
 	// If a specific version is requested, return that single version
 	if req.VersionNumber != nil {
-		version, err := h.store.GetDocumentAtVersion(ctx, ownerID, req.Path, *req.VersionNumber)
+		version, err := store.GetDocumentAtVersion(ctx, ownerID.(peer.ID), req.Path, *req.VersionNumber)
 		if err != nil {
 			if errors.Is(err, storage.ErrDocumentNotFound) {
-				h.writeResponse(s, &DocResponse{Status: StatusNotFound})
+				sc.Response = &DocResponse{Status: StatusNotFound}
 				return
 			}
-			h.logger.Error("failed to get document version", "error", err)
-			h.writeResponse(s, &DocResponse{Status: StatusInternalError})
+			sc.Logger.Error("failed to get document version", "error", err)
+			sc.Response = &DocResponse{Status: StatusInternalError}
 			return
 		}
 
-		h.writeResponse(s, &DocResponse{
+		sc.Response = &DocResponse{
 			Status: StatusOK,
 			Headers: map[string]any{
 				"ETag":         version.ContentHash,
@@ -478,19 +540,19 @@ func (h *Handler) handleHistory(ctx context.Context, s network.Stream, req *DocR
 				"Created-At":   version.CreatedAt.UnixMilli(),
 			},
 			Body: base64.StdEncoding.EncodeToString(version.Content),
-		})
+		}
 		return
 	}
 
 	// Otherwise return version history listing
-	versions, err := h.store.GetDocumentHistory(ctx, ownerID, req.Path, req.MaxVersions)
+	versions, err := store.GetDocumentHistory(ctx, ownerID.(peer.ID), req.Path, req.MaxVersions)
 	if err != nil {
 		if errors.Is(err, storage.ErrDocumentNotFound) {
-			h.writeResponse(s, &DocResponse{Status: StatusNotFound})
+			sc.Response = &DocResponse{Status: StatusNotFound}
 			return
 		}
-		h.logger.Error("failed to get document history", "error", err)
-		h.writeResponse(s, &DocResponse{Status: StatusInternalError})
+		sc.Logger.Error("failed to get document history", "error", err)
+		sc.Response = &DocResponse{Status: StatusInternalError}
 		return
 	}
 
@@ -515,40 +577,42 @@ func (h *Handler) handleHistory(ctx context.Context, s network.Stream, req *DocR
 
 	bodyBytes, err := json.Marshal(entries)
 	if err != nil {
-		h.writeResponse(s, &DocResponse{Status: StatusInternalError})
+		sc.Response = &DocResponse{Status: StatusInternalError}
 		return
 	}
 
-	h.writeResponse(s, &DocResponse{
+	sc.Response = &DocResponse{
 		Status: StatusOK,
 		Headers: map[string]any{
 			"Content-Type": "application/json",
 		},
 		Body: base64.StdEncoding.EncodeToString(bodyBytes),
-	})
-}
-
-// directoryListingPath is the well-known document path that triggers directory materialization.
-const directoryListingPath = "directory-listing"
-
-// handleDirectory handles DIRECTORY operations (join, leave, browse, get).
-func (h *Handler) handleDirectory(ctx context.Context, s network.Stream, req *DocRequest, ownerID peer.ID) {
-	switch req.DirectoryAction {
-	case "join":
-		h.handleDirectoryJoin(ctx, s, req, ownerID)
-	case "leave":
-		h.handleDirectoryLeave(ctx, s, ownerID)
-	case "browse":
-		h.handleDirectoryBrowse(ctx, s, req)
-	case "get":
-		h.handleDirectoryGet(ctx, s, ownerID)
-	default:
-		h.writeResponse(s, &DocResponse{Status: StatusBadRequest,
-			Headers: map[string]any{"Error": "unknown directoryAction: " + req.DirectoryAction}})
 	}
 }
 
-func (h *Handler) handleDirectoryJoin(ctx context.Context, s network.Stream, req *DocRequest, ownerID peer.ID) {
+// handleDirectory handles DIRECTORY operations (join, leave, browse, get).
+func handleDirectory(sc *forge.StreamContext, next func()) {
+	req := sc.Request.(*DocRequest)
+
+	switch req.DirectoryAction {
+	case "join":
+		handleDirectoryJoin(sc, req)
+	case "leave":
+		handleDirectoryLeave(sc)
+	case "browse":
+		handleDirectoryBrowse(sc, req)
+	case "get":
+		handleDirectoryGet(sc)
+	default:
+		sc.Response = &DocResponse{Status: StatusBadRequest,
+			Headers: map[string]any{"Error": "unknown directoryAction: " + req.DirectoryAction}}
+	}
+}
+
+func handleDirectoryJoin(sc *forge.StreamContext, req *DocRequest) {
+	store, _ := forge.ServiceFrom[storage.Storage](sc, "storage")
+	ownerID, _ := sc.Get("ownerID")
+
 	// Decode listing from body
 	var listing struct {
 		DisplayName string         `json:"displayName"`
@@ -560,65 +624,79 @@ func (h *Handler) handleDirectoryJoin(ctx context.Context, s network.Stream, req
 	if req.Body != "" {
 		bodyBytes, err := base64.StdEncoding.DecodeString(req.Body)
 		if err != nil {
-			h.writeResponse(s, &DocResponse{Status: StatusBadRequest,
-				Headers: map[string]any{"Error": "invalid base64 body"}})
+			sc.Response = &DocResponse{Status: StatusBadRequest,
+				Headers: map[string]any{"Error": "invalid base64 body"}}
 			return
 		}
 		if err := json.Unmarshal(bodyBytes, &listing); err != nil {
-			h.writeResponse(s, &DocResponse{Status: StatusBadRequest,
-				Headers: map[string]any{"Error": "invalid JSON body"}})
+			sc.Response = &DocResponse{Status: StatusBadRequest,
+				Headers: map[string]any{"Error": "invalid JSON body"}}
 			return
 		}
 	}
 
 	if listing.DisplayName == "" {
-		h.writeResponse(s, &DocResponse{Status: StatusBadRequest,
-			Headers: map[string]any{"Error": "displayName is required"}})
+		sc.Response = &DocResponse{Status: StatusBadRequest,
+			Headers: map[string]any{"Error": "displayName is required"}}
 		return
 	}
 
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
 	entry := &storage.DirectoryEntry{
-		OwnerPeerID: ownerID.String(),
+		OwnerPeerID: ownerID.(peer.ID).String(),
 		DisplayName: listing.DisplayName,
 		Bio:         listing.Bio,
 		AvatarHash:  listing.AvatarHash,
 		Extras:      listing.Extras,
 	}
 
-	if err := h.store.UpsertDirectoryEntry(ctx, entry); err != nil {
-		h.logger.Error("failed to upsert directory entry", "error", err)
-		h.writeResponse(s, &DocResponse{Status: StatusInternalError})
+	if err := store.UpsertDirectoryEntry(ctx, entry); err != nil {
+		sc.Logger.Error("failed to upsert directory entry", "error", err)
+		sc.Response = &DocResponse{Status: StatusInternalError}
 		return
 	}
 
-	h.writeResponse(s, &DocResponse{Status: StatusOK})
+	sc.Response = &DocResponse{Status: StatusOK}
 }
 
-func (h *Handler) handleDirectoryLeave(ctx context.Context, s network.Stream, ownerID peer.ID) {
-	if err := h.store.RemoveDirectoryEntry(ctx, ownerID.String()); err != nil {
-		h.logger.Error("failed to remove directory entry", "error", err)
-		h.writeResponse(s, &DocResponse{Status: StatusInternalError})
+func handleDirectoryLeave(sc *forge.StreamContext) {
+	store, _ := forge.ServiceFrom[storage.Storage](sc, "storage")
+	ownerID, _ := sc.Get("ownerID")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	if err := store.RemoveDirectoryEntry(ctx, ownerID.(peer.ID).String()); err != nil {
+		sc.Logger.Error("failed to remove directory entry", "error", err)
+		sc.Response = &DocResponse{Status: StatusInternalError}
 		return
 	}
-	h.writeResponse(s, &DocResponse{Status: StatusNoContent})
+	sc.Response = &DocResponse{Status: StatusNoContent}
 }
 
-func (h *Handler) handleDirectoryBrowse(ctx context.Context, s network.Stream, req *DocRequest) {
+func handleDirectoryBrowse(sc *forge.StreamContext, req *DocRequest) {
+	store, _ := forge.ServiceFrom[storage.Storage](sc, "storage")
+
 	limit := 20
 	if req.DirectoryLimit != nil && *req.DirectoryLimit > 0 {
 		limit = *req.DirectoryLimit
 	}
 
-	h.logger.Info("directory browse request",
+	sc.Logger.Info("directory browse request",
 		"query", req.DirectoryQuery,
 		"cursor", req.DirectoryCursor,
 		"limit", limit,
 	)
 
-	page, err := h.store.BrowseDirectory(ctx, req.DirectoryQuery, req.DirectoryCursor, limit)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	page, err := store.BrowseDirectory(ctx, req.DirectoryQuery, req.DirectoryCursor, limit)
 	if err != nil {
-		h.logger.Error("failed to browse directory", "error", err)
-		h.writeResponse(s, &DocResponse{Status: StatusInternalError})
+		sc.Logger.Error("failed to browse directory", "error", err)
+		sc.Response = &DocResponse{Status: StatusInternalError}
 		return
 	}
 
@@ -626,7 +704,7 @@ func (h *Handler) handleDirectoryBrowse(ctx context.Context, s network.Stream, r
 	if page.Entries != nil {
 		entryCount = len(page.Entries)
 	}
-	h.logger.Info("directory browse result",
+	sc.Logger.Info("directory browse result",
 		"entries", entryCount,
 		"hasMore", page.HasMore,
 		"nextCursor", page.NextCursor,
@@ -634,54 +712,60 @@ func (h *Handler) handleDirectoryBrowse(ctx context.Context, s network.Stream, r
 
 	bodyBytes, err := json.Marshal(page)
 	if err != nil {
-		h.writeResponse(s, &DocResponse{Status: StatusInternalError})
+		sc.Response = &DocResponse{Status: StatusInternalError}
 		return
 	}
 
-	h.writeResponse(s, &DocResponse{
+	sc.Response = &DocResponse{
 		Status: StatusOK,
 		Headers: map[string]any{
 			"Content-Type": "application/json",
 		},
 		Body: base64.StdEncoding.EncodeToString(bodyBytes),
-	})
+	}
 }
 
-func (h *Handler) handleDirectoryGet(ctx context.Context, s network.Stream, ownerID peer.ID) {
-	entry, err := h.store.GetDirectoryEntry(ctx, ownerID.String())
+func handleDirectoryGet(sc *forge.StreamContext) {
+	store, _ := forge.ServiceFrom[storage.Storage](sc, "storage")
+	ownerID, _ := sc.Get("ownerID")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	entry, err := store.GetDirectoryEntry(ctx, ownerID.(peer.ID).String())
 	if err != nil {
-		h.logger.Error("failed to get directory entry", "error", err)
-		h.writeResponse(s, &DocResponse{Status: StatusInternalError})
+		sc.Logger.Error("failed to get directory entry", "error", err)
+		sc.Response = &DocResponse{Status: StatusInternalError}
 		return
 	}
 	if entry == nil {
-		h.writeResponse(s, &DocResponse{Status: StatusNotFound})
+		sc.Response = &DocResponse{Status: StatusNotFound}
 		return
 	}
 
 	bodyBytes, err := json.Marshal(entry)
 	if err != nil {
-		h.writeResponse(s, &DocResponse{Status: StatusInternalError})
+		sc.Response = &DocResponse{Status: StatusInternalError}
 		return
 	}
 
-	h.writeResponse(s, &DocResponse{
+	sc.Response = &DocResponse{
 		Status: StatusOK,
 		Headers: map[string]any{
 			"Content-Type": "application/json",
 		},
 		Body: base64.StdEncoding.EncodeToString(bodyBytes),
-	})
+	}
 }
 
 // maybeUpdateDirectoryListing materializes a directory-listing document into
 // the directory_listings table when a user PUTs or PATCHes the well-known path.
-func (h *Handler) maybeUpdateDirectoryListing(ctx context.Context, ownerID peer.ID, path string) {
+func maybeUpdateDirectoryListing(ctx context.Context, logger *slog.Logger, store storage.Storage, ownerID peer.ID, path string) {
 	if path != directoryListingPath {
 		return
 	}
 
-	doc, err := h.store.GetDocument(ctx, ownerID, path)
+	doc, err := store.GetDocument(ctx, ownerID, path)
 	if err != nil || doc == nil {
 		return
 	}
@@ -694,13 +778,13 @@ func (h *Handler) maybeUpdateDirectoryListing(ctx context.Context, ownerID peer.
 		Extras      map[string]any `json:"extras"`
 	}
 	if err := json.Unmarshal(doc.Content, &listing); err != nil {
-		h.logger.Warn("invalid directory-listing document", "error", err)
+		logger.Warn("invalid directory-listing document", "error", err)
 		return
 	}
 
 	// If listed is explicitly false, remove from directory
 	if listing.Listed != nil && !*listing.Listed {
-		_ = h.store.RemoveDirectoryEntry(ctx, ownerID.String())
+		_ = store.RemoveDirectoryEntry(ctx, ownerID.String())
 		return
 	}
 
@@ -715,41 +799,41 @@ func (h *Handler) maybeUpdateDirectoryListing(ctx context.Context, ownerID peer.
 		AvatarHash:  listing.AvatarHash,
 		Extras:      listing.Extras,
 	}
-	if err := h.store.UpsertDirectoryEntry(ctx, entry); err != nil {
-		h.logger.Warn("failed to materialize directory listing", "error", err)
+	if err := store.UpsertDirectoryEntry(ctx, entry); err != nil {
+		logger.Warn("failed to materialize directory listing", "error", err)
 	}
 }
 
 // maybeRemoveDirectoryListing removes a directory entry when the directory-listing
 // document is deleted.
-func (h *Handler) maybeRemoveDirectoryListing(ctx context.Context, ownerID peer.ID, path string) {
+func maybeRemoveDirectoryListing(ctx context.Context, logger *slog.Logger, store storage.Storage, ownerID peer.ID, path string) {
 	if path != directoryListingPath {
 		return
 	}
-	_ = h.store.RemoveDirectoryEntry(ctx, ownerID.String())
+	_ = store.RemoveDirectoryEntry(ctx, ownerID.String())
 }
 
-// handleWriteError converts storage errors to appropriate response status codes.
-func (h *Handler) handleWriteError(s network.Stream, err error) {
+// writeErrorResponse converts storage errors to an appropriate DocResponse.
+func writeErrorResponse(logger *slog.Logger, err error) *DocResponse {
 	var sizeErr *storage.DocumentSizeExceededError
 	var conflictErr *storage.DocumentConflictError
 
 	switch {
 	case errors.Is(err, storage.ErrDocumentNotFound):
-		h.writeResponse(s, &DocResponse{Status: StatusNotFound})
+		return &DocResponse{Status: StatusNotFound}
 	case errors.As(err, &sizeErr):
-		h.writeResponse(s, &DocResponse{Status: StatusPayloadTooLarge,
-			Headers: map[string]any{"Error": sizeErr.Error()}})
+		return &DocResponse{Status: StatusPayloadTooLarge,
+			Headers: map[string]any{"Error": sizeErr.Error()}}
 	case errors.As(err, &conflictErr):
-		h.writeResponse(s, &DocResponse{Status: StatusConflict,
+		return &DocResponse{Status: StatusConflict,
 			Headers: map[string]any{
 				"Error":         conflictErr.Error(),
 				"Expected-ETag": conflictErr.ExpectedHash,
 				"Actual-ETag":   conflictErr.ActualHash,
-			}})
+			}}
 	default:
-		h.logger.Error("document write error", "error", err)
-		h.writeResponse(s, &DocResponse{Status: StatusInternalError})
+		logger.Error("document write error", "error", err)
+		return &DocResponse{Status: StatusInternalError}
 	}
 }
 
@@ -781,56 +865,4 @@ func containsDotDot(path string) bool {
 		}
 	}
 	return false
-}
-
-// checkRateLimit enforces per-peer rate limiting with separate read/write buckets.
-func (h *Handler) checkRateLimit(peerID peer.ID, isWrite bool) bool {
-	h.rateLimitMu.Lock()
-	defer h.rateLimitMu.Unlock()
-
-	now := time.Now()
-	key := peerID.String()
-	cutoff := now.Add(-h.rateLimitWindow)
-
-	var historyMap map[string][]time.Time
-	var maxReqs int
-	if isWrite {
-		historyMap = h.writeHistory
-		maxReqs = h.maxWriteRequests
-	} else {
-		historyMap = h.readHistory
-		maxReqs = h.maxReadRequests
-	}
-
-	history := historyMap[key]
-	filtered := history[:0]
-	for _, ts := range history {
-		if ts.After(cutoff) {
-			filtered = append(filtered, ts)
-		}
-	}
-
-	if len(filtered) >= maxReqs {
-		historyMap[key] = filtered
-		return false
-	}
-
-	historyMap[key] = append(filtered, now)
-	return true
-}
-
-// writeResponse marshals and writes a DocResponse over the stream.
-func (h *Handler) writeResponse(s network.Stream, resp *DocResponse) {
-	data, err := json.Marshal(resp)
-	if err != nil {
-		h.logger.Error("failed to marshal response", "error", err)
-		return
-	}
-	h.logger.Debug("writing response", "status", resp.Status, "frameSize", len(data))
-	writeStart := time.Now()
-	if err := frame.WriteFrame(s, data); err != nil {
-		h.logger.Error("failed to write response", "error", err, "elapsed", time.Since(writeStart))
-		return
-	}
-	h.logger.Debug("response written", "status", resp.Status, "frameSize", len(data), "elapsed", time.Since(writeStart))
 }

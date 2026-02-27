@@ -2,96 +2,180 @@ package maa
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
+	"io"
 	"log/slog"
-	"sync"
 	"time"
 
-	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/core/protocol"
 
+	forge "github.com/twostack/go-p2p-forge"
+	"github.com/twostack/go-p2p-forge/codec"
+	"github.com/twostack/go-p2p-forge/middleware"
+
 	"github.com/twostack/go-ricochet/internal/core"
 	"github.com/twostack/go-ricochet/internal/mda"
-	"github.com/twostack/go-ricochet/internal/protocol/frame"
 )
 
 // ProtocolID is the MAA protocol identifier.
 const ProtocolID = protocol.ID("/sf-network/access/1.0.0")
 
-// Handler is the Mail Access Agent protocol handler.
-type Handler struct {
-	mda              *mda.MailboxServer
-	logger           *slog.Logger
-	rateLimitMu      sync.Mutex
-	requestHistory   map[string][]time.Time
-	rateLimitWindow  time.Duration
-	maxRequests      int
+// NewPipeline creates a forge pipeline for the Mail Access Agent.
+func NewPipeline(logger *slog.Logger, pool *codec.BufferPool, reg *forge.Registry) *forge.Pipeline {
+	limiter := middleware.NewSingleBucket(time.Minute, 100)
+
+	routes := map[string]forge.Middleware{
+		"retrieve":       middleware.Chain(deserializeRetrieve(), handleRetrieve),
+		"markDelivered":  middleware.Chain(forge.JSONDeserialize[core.MarkDeliveredRequest](), handleMarkDelivered),
+		"updateFlags":    middleware.Chain(forge.JSONDeserialize[core.UpdateFlagsRequest](), handleUpdateFlags),
+		"expunge":        middleware.Chain(forge.JSONDeserialize[core.ExpungeRequest](), handleExpunge),
+		"deleteMessages": middleware.Chain(forge.JSONDeserialize[core.DeleteMessagesRequest](), handleDeleteMessages),
+	}
+
+	return forge.NewPipeline(logger,
+		middleware.Recovery(),
+		maaResponseWriter(),
+		forge.FrameDecodeMiddleware(pool),
+		middleware.RateLimitMiddleware(limiter),
+		defaultOperationType(),
+		middleware.OperationRouter("operationType", routes),
+	).WithRegistry(reg)
 }
 
-// NewHandler creates a new MAA handler.
-func NewHandler(mailboxServer *mda.MailboxServer, logger *slog.Logger) *Handler {
-	return &Handler{
-		mda:             mailboxServer,
-		logger:          logger,
-		requestHistory:  make(map[string][]time.Time),
-		rateLimitWindow: time.Minute,
-		maxRequests:     100,
+// maaResponseWriter writes the response after downstream handlers complete.
+// For retrieve operations, sc.Response is a FrameIterator that produces
+// multiple length-prefixed frames (metadata + N messages). For all other
+// operations, sc.Response is a single JSON-serializable struct.
+//
+// On pipeline error with no response set, it writes a JSON error frame.
+func maaResponseWriter() forge.Middleware {
+	return func(sc *forge.StreamContext, next func()) {
+		next()
+
+		// Convert pipeline errors into JSON error responses.
+		if sc.Err != nil && sc.Response == nil {
+			sc.Response = map[string]string{"error": sc.Err.Error()}
+		}
+
+		if sc.Response == nil {
+			return
+		}
+
+		// Multi-frame path: retrieve response implements FrameIterator.
+		if iter, ok := sc.Response.(forge.FrameIterator); ok {
+			for {
+				data, err := iter.Next()
+				if err == io.EOF {
+					return
+				}
+				if err != nil {
+					sc.Logger.Error("failed to produce frame", "error", err)
+					return
+				}
+				if err := codec.WriteFrame(sc.Stream, data); err != nil {
+					sc.Logger.Error("failed to write frame", "error", err)
+					return
+				}
+			}
+		}
+
+		// Single-frame path.
+		data, err := json.Marshal(sc.Response)
+		if err != nil {
+			sc.Logger.Error("failed to marshal response", "error", err)
+			return
+		}
+		if err := codec.WriteFrame(sc.Stream, data); err != nil {
+			sc.Logger.Error("failed to write response", "error", err)
+		}
 	}
 }
 
-// HandleStream handles an incoming access stream.
-func (h *Handler) HandleStream(s network.Stream) {
-	callerID := s.Conn().RemotePeer()
-	defer s.Close()
-
-	// Read length-prefixed frame
-	data, err := frame.ReadFrame(s)
-	if err != nil {
-		h.logger.Error("failed to read frame", "error", err)
-		h.sendError(s, "failed to read request")
-		return
-	}
-
-	// Determine operation type
-	opType, err := frame.GetOperationType(data)
-	if err != nil {
-		h.logger.Error("failed to get operation type", "error", err)
-		h.sendError(s, "invalid request format")
-		return
-	}
-
-	h.logger.Debug("handling access request", "operation", opType, "caller", callerID.String())
-
-	// Check rate limit
-	if !h.checkRateLimit(callerID) {
-		h.sendError(s, "rate limit exceeded")
-		return
-	}
-
-	ctx := context.Background()
-
-	switch opType {
-	case "retrieve":
-		h.handleRetrieve(ctx, s, data, callerID)
-	case "markDelivered":
-		h.handleMarkDelivered(ctx, s, data)
-	case "updateFlags":
-		h.handleUpdateFlags(ctx, s, data)
-	case "expunge":
-		h.handleExpunge(ctx, s, data, callerID)
-	case "deleteMessages":
-		h.handleDeleteMessages(ctx, s, data)
-	default:
-		h.sendError(s, "unknown operation type: "+opType)
+// defaultOperationType injects "operationType":"retrieve" into RawBytes when
+// the field is missing, preserving backwards compatibility with clients that
+// omit the field for retrieve requests.
+func defaultOperationType() forge.Middleware {
+	return func(sc *forge.StreamContext, next func()) {
+		var envelope struct {
+			OperationType string `json:"operationType"`
+		}
+		if err := json.Unmarshal(sc.RawBytes, &envelope); err == nil && envelope.OperationType == "" {
+			// Inject the default operationType into the raw JSON.
+			var m map[string]json.RawMessage
+			if err := json.Unmarshal(sc.RawBytes, &m); err == nil {
+				m["operationType"] = json.RawMessage(`"retrieve"`)
+				if patched, err := json.Marshal(m); err == nil {
+					sc.RawBytes = patched
+				}
+			}
+		}
+		next()
 	}
 }
 
-func (h *Handler) handleRetrieve(ctx context.Context, s network.Stream, data []byte, callerID peer.ID) {
-	req, err := frame.DecodeRetrieveRequest(data)
-	if err != nil {
-		h.sendError(s, "invalid retrieve request")
-		return
+// deserializeRetrieve decodes a core.RetrieveRequest from sc.RawBytes.
+// RetrieveRequest does not carry an operationType field, so we use plain
+// JSON unmarshal rather than the generic JSONDeserialize (which would also
+// work, but this mirrors the original frame.DecodeRetrieveRequest).
+func deserializeRetrieve() forge.Middleware {
+	return func(sc *forge.StreamContext, next func()) {
+		var req core.RetrieveRequest
+		if err := json.Unmarshal(sc.RawBytes, &req); err != nil {
+			sc.Err = fmt.Errorf("invalid retrieve request: %w", err)
+			return
+		}
+		sc.Request = &req
+		next()
 	}
+}
+
+// retrieveIterator implements forge.FrameIterator for the compound retrieve
+// response: one metadata frame followed by N message frames.
+//
+// The metadata frame is JSON: {"messageCount": N, "hasMore": bool}
+// Each message frame is produced by Message.ToJSON() (handles base64 payload).
+type retrieveIterator struct {
+	metadata *retrieveMetadata
+	messages []*core.Message
+	idx      int // -1 = metadata not yet sent, 0..N-1 = message index
+}
+
+type retrieveMetadata struct {
+	MessageCount int  `json:"messageCount"`
+	HasMore      bool `json:"hasMore"`
+}
+
+func newRetrieveIterator(messages []*core.Message, hasMore bool) *retrieveIterator {
+	return &retrieveIterator{
+		metadata: &retrieveMetadata{
+			MessageCount: len(messages),
+			HasMore:      hasMore,
+		},
+		messages: messages,
+		idx:      -1,
+	}
+}
+
+func (ri *retrieveIterator) Next() ([]byte, error) {
+	if ri.idx == -1 {
+		ri.idx = 0
+		return json.Marshal(ri.metadata)
+	}
+	if ri.idx >= len(ri.messages) {
+		return nil, io.EOF
+	}
+	msg := ri.messages[ri.idx]
+	ri.idx++
+	return msg.ToJSON()
+}
+
+// handleRetrieve retrieves messages from the mailbox.
+func handleRetrieve(sc *forge.StreamContext, next func()) {
+	req := sc.Request.(*core.RetrieveRequest)
+	mailbox, _ := forge.ServiceFrom[*mda.MailboxServer](sc, "mda")
+	callerID := sc.PeerID
 
 	// Check if requesting own mailbox or cross-peer read
 	isOwnMailbox := req.PeerID == callerID.String()
@@ -107,7 +191,7 @@ func (h *Handler) handleRetrieve(ctx context.Context, s network.Stream, data []b
 
 	ownerPeerID, err := peer.Decode(req.PeerID)
 	if err != nil {
-		h.sendError(s, "invalid peer ID")
+		sc.Response = map[string]string{"error": "invalid peer ID"}
 		return
 	}
 
@@ -124,75 +208,54 @@ func (h *Handler) handleRetrieve(ctx context.Context, s network.Stream, data []b
 		fromSeq = &v
 	}
 
-	messages, err := h.mda.Retrieve(ctx, addr, callerID, mda.RetrieveOpts{
+	ctx := context.Background()
+	messages, err := mailbox.Retrieve(ctx, addr, callerID, mda.RetrieveOpts{
 		FromSequence: fromSeq,
 		MaxMessages:  req.MaxMessages,
 		MinPriority:  req.MinPriority,
 	})
 	if err != nil {
-		h.logger.Warn("retrieve failed", "error", err)
+		sc.Logger.Warn("retrieve failed", "error", err)
 		messages = nil
 	}
 
-	resp := &core.RetrieveResponse{
-		Messages: messages,
-		HasMore:  false,
-	}
-
-	respData, err := frame.EncodeRetrieveResponse(resp)
-	if err != nil {
-		h.sendError(s, "failed to encode response")
-		return
-	}
-
-	if err := frame.WriteFrame(s, respData); err != nil {
-		h.logger.Error("failed to write response", "error", err)
-	}
-
-	h.logger.Info("retrieved messages", "count", len(messages))
+	sc.Response = newRetrieveIterator(messages, false)
+	sc.Logger.Info("retrieved messages", "count", len(messages))
 }
 
-func (h *Handler) handleMarkDelivered(ctx context.Context, s network.Stream, data []byte) {
-	req, err := frame.DecodeMarkDelivered(data)
+// handleMarkDelivered marks messages as delivered.
+func handleMarkDelivered(sc *forge.StreamContext, next func()) {
+	req := sc.Request.(*core.MarkDeliveredRequest)
+	mailbox, _ := forge.ServiceFrom[*mda.MailboxServer](sc, "mda")
+
+	ctx := context.Background()
+	updatedCount, err := mailbox.Storage.MarkMessagesDelivered(ctx, req.MessageIDs)
 	if err != nil {
-		h.sendError(s, "invalid mark delivered request")
-		return
+		sc.Logger.Error("failed to mark messages delivered", "error", err)
 	}
 
-	updatedCount, err := h.mda.Storage.MarkMessagesDelivered(ctx, req.MessageIDs)
-	if err != nil {
-		h.logger.Error("failed to mark messages delivered", "error", err)
-	}
-
-	ack := &core.MarkDeliveredAck{
+	sc.Response = &core.MarkDeliveredAck{
 		Success:      err == nil,
 		UpdatedCount: updatedCount,
 	}
 
-	ackData, err := frame.EncodeMarkDeliveredAck(ack)
-	if err != nil {
-		return
-	}
-	_ = frame.WriteFrame(s, ackData)
-
-	h.logger.Info("marked messages delivered", "count", updatedCount)
+	sc.Logger.Info("marked messages delivered", "count", updatedCount)
 }
 
-func (h *Handler) handleUpdateFlags(ctx context.Context, s network.Stream, data []byte) {
-	req, err := frame.DecodeUpdateFlags(data)
-	if err != nil {
-		h.sendError(s, "invalid update flags request")
-		return
-	}
+// handleUpdateFlags updates IMAP-style flags on a message.
+func handleUpdateFlags(sc *forge.StreamContext, next func()) {
+	req := sc.Request.(*core.UpdateFlagsRequest)
+	mailbox, _ := forge.ServiceFrom[*mda.MailboxServer](sc, "mda")
 
-	success, err := h.mda.Storage.UpdateMessageFlags(ctx, req.MessageID, req.AddFlags, req.RemoveFlags)
+	ctx := context.Background()
+	success, err := mailbox.Storage.UpdateMessageFlags(ctx, req.MessageID, req.AddFlags, req.RemoveFlags)
 	if err != nil {
-		h.logger.Error("failed to update flags", "error", err)
+		sc.Logger.Error("failed to update flags", "error", err)
 	}
 
 	var newFlags *uint32
 	if success {
-		newFlags, _ = h.mda.Storage.GetMessageFlags(ctx, req.MessageID)
+		newFlags, _ = mailbox.Storage.GetMessageFlags(ctx, req.MessageID)
 	}
 
 	ack := &core.UpdateFlagsAck{
@@ -203,102 +266,52 @@ func (h *Handler) handleUpdateFlags(ctx context.Context, s network.Stream, data 
 		ack.ErrorMessage = "message not found"
 	}
 
-	ackData, err := frame.EncodeUpdateFlagsAck(ack)
-	if err != nil {
-		return
-	}
-	_ = frame.WriteFrame(s, ackData)
+	sc.Response = ack
 }
 
-func (h *Handler) handleExpunge(ctx context.Context, s network.Stream, data []byte, callerID peer.ID) {
-	req, err := frame.DecodeExpunge(data)
-	if err != nil {
-		h.sendError(s, "invalid expunge request")
-		return
-	}
+// handleExpunge deletes messages marked with the \Deleted flag.
+func handleExpunge(sc *forge.StreamContext, next func()) {
+	req := sc.Request.(*core.ExpungeRequest)
+	mailbox, _ := forge.ServiceFrom[*mda.MailboxServer](sc, "mda")
+	callerID := sc.PeerID
 
 	// Verify requesting peer matches
 	if req.PeerID != callerID.String() {
-		h.sendError(s, "unauthorized: can only expunge own mailboxes")
+		sc.Response = map[string]string{"error": "unauthorized: can only expunge own mailboxes"}
 		return
 	}
 
+	ctx := context.Background()
 	var deletedCount int
 	if req.FolderPath != "" {
-		record, err := h.mda.Storage.FindMailbox(ctx, callerID, req.FolderPath)
+		record, err := mailbox.Storage.FindMailbox(ctx, callerID, req.FolderPath)
 		if err == nil && record != nil {
-			deletedCount, _ = h.mda.Storage.ExpungeMailbox(ctx, record.ID)
+			deletedCount, _ = mailbox.Storage.ExpungeMailbox(ctx, record.ID)
 		}
 	} else {
-		deletedCount, _ = h.mda.Storage.ExpungeAllMailboxes(ctx, callerID)
+		deletedCount, _ = mailbox.Storage.ExpungeAllMailboxes(ctx, callerID)
 	}
 
-	ack := &core.ExpungeAck{
+	sc.Response = &core.ExpungeAck{
 		Success:      true,
 		DeletedCount: deletedCount,
 	}
 
-	ackData, err := frame.EncodeExpungeAck(ack)
-	if err != nil {
-		return
-	}
-	_ = frame.WriteFrame(s, ackData)
-
-	h.logger.Info("expunged messages", "count", deletedCount)
+	sc.Logger.Info("expunged messages", "count", deletedCount)
 }
 
-func (h *Handler) handleDeleteMessages(ctx context.Context, s network.Stream, data []byte) {
-	req, err := frame.DecodeDeleteMessages(data)
-	if err != nil {
-		h.sendError(s, "invalid delete messages request")
-		return
-	}
+// handleDeleteMessages immediately deletes messages by ID.
+func handleDeleteMessages(sc *forge.StreamContext, next func()) {
+	req := sc.Request.(*core.DeleteMessagesRequest)
+	mailbox, _ := forge.ServiceFrom[*mda.MailboxServer](sc, "mda")
 
-	err = h.mda.Storage.DeleteMessages(ctx, req.MessageIDs)
+	ctx := context.Background()
+	err := mailbox.Storage.DeleteMessages(ctx, req.MessageIDs)
 
-	ack := &core.DeleteMessagesAck{
+	sc.Response = &core.DeleteMessagesAck{
 		Success:      err == nil,
 		DeletedCount: len(req.MessageIDs),
 	}
 
-	ackData, encErr := frame.EncodeDeleteMessagesAck(ack)
-	if encErr != nil {
-		return
-	}
-	_ = frame.WriteFrame(s, ackData)
-
-	h.logger.Info("deleted messages", "count", len(req.MessageIDs))
-}
-
-func (h *Handler) checkRateLimit(peerID peer.ID) bool {
-	h.rateLimitMu.Lock()
-	defer h.rateLimitMu.Unlock()
-
-	now := time.Now()
-	key := peerID.String()
-	cutoff := now.Add(-h.rateLimitWindow)
-
-	history := h.requestHistory[key]
-	filtered := history[:0]
-	for _, ts := range history {
-		if ts.After(cutoff) {
-			filtered = append(filtered, ts)
-		}
-	}
-
-	if len(filtered) >= h.maxRequests {
-		h.requestHistory[key] = filtered
-		return false
-	}
-
-	h.requestHistory[key] = append(filtered, now)
-	return true
-}
-
-func (h *Handler) sendError(s network.Stream, message string) {
-	data, err := frame.EncodeError(message)
-	if err != nil {
-		return
-	}
-	_ = frame.WriteFrame(s, data)
+	sc.Logger.Info("deleted messages", "count", len(req.MessageIDs))
 }

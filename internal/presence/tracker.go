@@ -8,13 +8,13 @@ import (
 
 	"github.com/libp2p/go-libp2p/core/peer"
 
-	"github.com/twostack/go-ricochet/internal/p2p"
+	"github.com/twostack/go-p2p-forge/node"
 )
 
 // Tracker subscribes to presence topics from servers and maintains
 // a local presence cache for contacts.
 type Tracker struct {
-	node     *p2p.Node
+	node     *node.Node
 	cache    *Cache
 	contacts map[peer.ID]bool
 	mu       sync.RWMutex
@@ -26,7 +26,7 @@ type Tracker struct {
 }
 
 // NewTracker creates a new client-side presence tracker.
-func NewTracker(node *p2p.Node, cache *Cache, logger *slog.Logger) *Tracker {
+func NewTracker(node *node.Node, cache *Cache, logger *slog.Logger) *Tracker {
 	return &Tracker{
 		node:     node,
 		cache:    cache,

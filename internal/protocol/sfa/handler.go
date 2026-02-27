@@ -7,14 +7,16 @@ import (
 	"fmt"
 	"log/slog"
 	"regexp"
-	"sync"
+	"strings"
 	"time"
 
-	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/core/protocol"
 
-	"github.com/twostack/go-ricochet/internal/protocol/frame"
+	forge "github.com/twostack/go-p2p-forge"
+	"github.com/twostack/go-p2p-forge/codec"
+	"github.com/twostack/go-p2p-forge/middleware"
+
 	"github.com/twostack/go-ricochet/internal/storage"
 )
 
@@ -80,159 +82,170 @@ type FeedResponse struct {
 	Body    string         `json:"body,omitempty"` // base64 encoded
 }
 
-// Handler is the Store Feed Access protocol handler.
-type Handler struct {
-	store  storage.Storage
-	logger *slog.Logger
+// NewPipeline creates a forge pipeline for the Store Feed Agent.
+func NewPipeline(logger *slog.Logger, pool *codec.BufferPool, reg *forge.Registry) *forge.Pipeline {
+	limiter := middleware.NewDualBucket(time.Minute, 100, 20)
 
-	// Rate limiting: separate buckets for read and write operations.
-	rateLimitMu      sync.Mutex
-	readHistory      map[string][]time.Time
-	writeHistory     map[string][]time.Time
-	rateLimitWindow  time.Duration
-	maxReadRequests  int
-	maxWriteRequests int
+	return forge.NewPipeline(logger,
+		middleware.Recovery(),
+		feedResponseWriter(),
+		forge.FrameDecodeMiddleware(pool),
+		middleware.DualRateLimitMiddleware(limiter, isWriteClassifier),
+		forge.JSONDeserialize[FeedRequest](),
+		commonValidation(),
+		middleware.OperationRouter("operation", map[string]forge.Middleware{
+			OpCREATE: createHandler,
+			OpGET:    getHandler,
+			OpAPPEND: appendHandler,
+			OpDELETE: deleteHandler,
+			OpLIST:   listHandler,
+		}),
+	).WithRegistry(reg)
 }
 
-// NewHandler creates a new SFA handler.
-func NewHandler(store storage.Storage, logger *slog.Logger) *Handler {
-	return &Handler{
-		store:            store,
-		logger:           logger,
-		readHistory:      make(map[string][]time.Time),
-		writeHistory:     make(map[string][]time.Time),
-		rateLimitWindow:  time.Minute,
-		maxReadRequests:  100,
-		maxWriteRequests: 20,
+// isWriteClassifier inspects raw JSON bytes to classify CREATE, APPEND, and DELETE
+// as write operations for dual-bucket rate limiting.
+func isWriteClassifier(raw []byte) bool {
+	s := string(raw)
+	return strings.Contains(s, `"CREATE"`) ||
+		strings.Contains(s, `"APPEND"`) ||
+		strings.Contains(s, `"DELETE"`)
+}
+
+// feedResponseWriter writes a FeedResponse as a JSON frame after the downstream
+// pipeline completes. On pipeline error, it converts the error into an error response
+// so the client always gets a response.
+func feedResponseWriter() forge.Middleware {
+	return func(sc *forge.StreamContext, next func()) {
+		next()
+
+		// Convert pipeline errors into error responses.
+		if sc.Err != nil && sc.Response == nil {
+			status := StatusInternalError
+			if sc.Err == forge.ErrRateLimited {
+				status = StatusTooManyRequests
+			} else if sc.Err == middleware.ErrUnknownOperation {
+				status = StatusBadRequest
+			} else if sc.Err == middleware.ErrMissingOperation {
+				status = StatusBadRequest
+			}
+			sc.Response = &FeedResponse{
+				Status:  status,
+				Headers: map[string]any{"Error": sc.Err.Error()},
+			}
+		}
+
+		if sc.Response == nil {
+			return
+		}
+
+		data, err := json.Marshal(sc.Response)
+		if err != nil {
+			sc.Logger.Error("failed to marshal response", "error", err)
+			return
+		}
+		if err := codec.WriteFrame(sc.Stream, data); err != nil {
+			sc.Logger.Error("failed to write response", "error", err)
+		}
 	}
 }
 
-// HandleStream handles an incoming feed access stream.
-func (h *Handler) HandleStream(s network.Stream) {
-	callerID := s.Conn().RemotePeer()
-	defer s.Close()
+// commonValidation validates the ownerPeerId and path fields shared across operations.
+// It parses the owner peer ID and stores it in the StreamContext values for downstream use.
+// For non-LIST operations, it also validates the path.
+// For write operations by non-owners, it enforces owner-only access with a collaborative
+// APPEND exception (including auto-create of collaborative feeds).
+func commonValidation() forge.Middleware {
+	return func(sc *forge.StreamContext, next func()) {
+		req := sc.Request.(*FeedRequest)
 
-	// Read length-prefixed frame
-	data, err := frame.ReadFrame(s)
-	if err != nil {
-		h.logger.Error("failed to read frame", "error", err)
-		h.writeResponse(s, &FeedResponse{Status: StatusBadRequest})
-		return
-	}
-
-	// Parse request
-	var req FeedRequest
-	if err := json.Unmarshal(data, &req); err != nil {
-		h.logger.Error("failed to parse request", "error", err)
-		h.writeResponse(s, &FeedResponse{Status: StatusBadRequest})
-		return
-	}
-
-	h.logger.Debug("handling feed request",
-		"operation", req.Operation,
-		"owner", req.OwnerPeerID,
-		"path", req.Path,
-		"caller", callerID.String(),
-	)
-
-	// Determine if this is a read or write operation and check rate limits
-	isWrite := req.Operation == OpCREATE || req.Operation == OpAPPEND || req.Operation == OpDELETE
-	if isWrite {
-		if !h.checkRateLimit(callerID, true) {
-			h.writeResponse(s, &FeedResponse{Status: StatusTooManyRequests})
+		// Parse owner peer ID
+		if req.OwnerPeerID == "" {
+			sc.Response = &FeedResponse{Status: StatusBadRequest,
+				Headers: map[string]any{"Error": "ownerPeerId is required"}}
 			return
 		}
-	} else {
-		if !h.checkRateLimit(callerID, false) {
-			h.writeResponse(s, &FeedResponse{Status: StatusTooManyRequests})
+		ownerID, err := peer.Decode(req.OwnerPeerID)
+		if err != nil {
+			sc.Response = &FeedResponse{Status: StatusBadRequest,
+				Headers: map[string]any{"Error": "invalid ownerPeerId"}}
 			return
 		}
-	}
 
-	// Parse owner peer ID
-	if req.OwnerPeerID == "" {
-		h.writeResponse(s, &FeedResponse{Status: StatusBadRequest,
-			Headers: map[string]any{"Error": "ownerPeerId is required"}})
-		return
-	}
-	ownerID, err := peer.Decode(req.OwnerPeerID)
-	if err != nil {
-		h.writeResponse(s, &FeedResponse{Status: StatusBadRequest,
-			Headers: map[string]any{"Error": "invalid ownerPeerId"}})
-		return
-	}
+		// Store parsed owner ID for downstream handlers.
+		sc.Set("ownerID", ownerID)
 
-	// Validate path for operations that require it
-	if req.Operation != OpLIST {
-		if err := validatePath(req.Path); err != nil {
-			h.writeResponse(s, &FeedResponse{Status: StatusBadRequest,
-				Headers: map[string]any{"Error": err.Error()}})
-			return
-		}
-	}
-
-	// Enforce owner-only access for write operations.
-	// Exception: APPEND is allowed on collaborative feeds (auto-created if needed).
-	if isWrite && callerID != ownerID {
-		if req.Operation == OpAPPEND {
-			ctx := context.Background()
-			feed, err := h.store.GetFeed(ctx, ownerID, req.Path)
-			if err != nil {
-				h.writeResponse(s, &FeedResponse{Status: StatusInternalError,
-					Headers: map[string]any{"Error": "failed to check feed"}})
+		// Validate path for operations that require it
+		if req.Operation != OpLIST {
+			if err := validatePath(req.Path); err != nil {
+				sc.Response = &FeedResponse{Status: StatusBadRequest,
+					Headers: map[string]any{"Error": err.Error()}}
 				return
 			}
-			if feed == nil {
-				// Auto-create as collaborative feed for non-owner appends
-				feed, err = h.store.CreateFeed(ctx, ownerID, req.Path, "", "", true)
+		}
+
+		// Enforce owner-only access for write operations.
+		// Exception: APPEND is allowed on collaborative feeds (auto-created if needed).
+		callerID := sc.PeerID
+		isWrite := req.Operation == OpCREATE || req.Operation == OpAPPEND || req.Operation == OpDELETE
+		if isWrite && callerID != ownerID {
+			if req.Operation == OpAPPEND {
+				store, _ := forge.ServiceFrom[storage.Storage](sc, "storage")
+				ctx := context.Background()
+				feed, err := store.GetFeed(ctx, ownerID, req.Path)
 				if err != nil {
-					h.logger.Error("failed to auto-create collaborative feed",
-						"path", req.Path, "owner", ownerID, "error", err)
-					h.writeResponse(s, &FeedResponse{Status: StatusInternalError,
-						Headers: map[string]any{"Error": "failed to create feed"}})
+					sc.Response = &FeedResponse{Status: StatusInternalError,
+						Headers: map[string]any{"Error": "failed to check feed"}}
 					return
 				}
-				h.logger.Info("auto-created collaborative feed for non-owner append",
-					"path", req.Path, "owner", ownerID, "contributor", callerID)
-			} else if !feed.CollaborativeMode {
-				h.writeResponse(s, &FeedResponse{Status: StatusForbidden,
-					Headers: map[string]any{"Error": "write operations require owner access"}})
+				if feed == nil {
+					// Auto-create as collaborative feed for non-owner appends
+					feed, err = store.CreateFeed(ctx, ownerID, req.Path, "", "", true)
+					if err != nil {
+						sc.Logger.Error("failed to auto-create collaborative feed",
+							"path", req.Path, "owner", ownerID, "error", err)
+						sc.Response = &FeedResponse{Status: StatusInternalError,
+							Headers: map[string]any{"Error": "failed to create feed"}}
+						return
+					}
+					sc.Logger.Info("auto-created collaborative feed for non-owner append",
+						"path", req.Path, "owner", ownerID, "contributor", callerID)
+				} else if !feed.CollaborativeMode {
+					sc.Response = &FeedResponse{Status: StatusForbidden,
+						Headers: map[string]any{"Error": "write operations require owner access"}}
+					return
+				}
+				sc.Logger.Debug("allowing collaborative append",
+					"feed", req.Path, "owner", ownerID, "contributor", callerID)
+			} else {
+				sc.Response = &FeedResponse{Status: StatusForbidden,
+					Headers: map[string]any{"Error": "write operations require owner access"}}
 				return
 			}
-			h.logger.Debug("allowing collaborative append",
-				"feed", req.Path, "owner", ownerID, "contributor", callerID)
-		} else {
-			h.writeResponse(s, &FeedResponse{Status: StatusForbidden,
-				Headers: map[string]any{"Error": "write operations require owner access"}})
-			return
 		}
-	}
 
-	ctx := context.Background()
+		sc.Logger.Debug("handling feed request",
+			"operation", req.Operation,
+			"owner", req.OwnerPeerID,
+			"path", req.Path,
+			"caller", callerID.String(),
+		)
 
-	switch req.Operation {
-	case OpCREATE:
-		h.handleCreate(ctx, s, &req, ownerID)
-	case OpGET:
-		h.handleGet(ctx, s, &req, ownerID)
-	case OpAPPEND:
-		h.handleAppend(ctx, s, &req, ownerID, callerID)
-	case OpDELETE:
-		h.handleDelete(ctx, s, &req, ownerID)
-	case OpLIST:
-		h.handleList(ctx, s, ownerID)
-	default:
-		h.writeResponse(s, &FeedResponse{Status: StatusBadRequest,
-			Headers: map[string]any{"Error": "unknown operation: " + req.Operation}})
+		next()
 	}
 }
 
-// handleCreate creates a new feed.
-func (h *Handler) handleCreate(ctx context.Context, s network.Stream, req *FeedRequest, ownerID peer.ID) {
-	feed, err := h.store.CreateFeed(ctx, ownerID, req.Path, req.Title, req.Description, req.Collaborative)
+// createHandler handles the CREATE operation.
+func createHandler(sc *forge.StreamContext, next func()) {
+	store, _ := forge.ServiceFrom[storage.Storage](sc, "storage")
+	req := sc.Request.(*FeedRequest)
+	ownerID, _ := sc.Get("ownerID")
+
+	ctx := context.Background()
+	feed, err := store.CreateFeed(ctx, ownerID.(peer.ID), req.Path, req.Title, req.Description, req.Collaborative)
 	if err != nil {
-		h.logger.Error("failed to create feed", "error", err)
-		h.writeResponse(s, &FeedResponse{Status: StatusInternalError})
+		sc.Logger.Error("failed to create feed", "error", err)
+		sc.Response = &FeedResponse{Status: StatusInternalError}
 		return
 	}
 
@@ -245,48 +258,54 @@ func (h *Handler) handleCreate(ctx context.Context, s network.Stream, req *FeedR
 		"collaborativeMode": feed.CollaborativeMode,
 	})
 	if err != nil {
-		h.writeResponse(s, &FeedResponse{Status: StatusInternalError})
+		sc.Response = &FeedResponse{Status: StatusInternalError}
 		return
 	}
 
-	h.writeResponse(s, &FeedResponse{
+	sc.Response = &FeedResponse{
 		Status: StatusCreated,
 		Headers: map[string]any{
 			"Content-Type": "application/json",
 		},
 		Body: base64.StdEncoding.EncodeToString(bodyBytes),
-	})
+	}
 }
 
-// handleGet handles feed metadata, single entry, or range queries.
-func (h *Handler) handleGet(ctx context.Context, s network.Stream, req *FeedRequest, ownerID peer.ID) {
+// getHandler handles the GET operation: feed metadata, single entry, or range queries.
+func getHandler(sc *forge.StreamContext, next func()) {
+	store, _ := forge.ServiceFrom[storage.Storage](sc, "storage")
+	req := sc.Request.(*FeedRequest)
+	ownerID, _ := sc.Get("ownerID")
+
+	ctx := context.Background()
+
 	// Look up the feed
-	feed, err := h.store.GetFeed(ctx, ownerID, req.Path)
+	feed, err := store.GetFeed(ctx, ownerID.(peer.ID), req.Path)
 	if err != nil {
-		h.logger.Error("failed to get feed", "error", err)
-		h.writeResponse(s, &FeedResponse{Status: StatusInternalError})
+		sc.Logger.Error("failed to get feed", "error", err)
+		sc.Response = &FeedResponse{Status: StatusInternalError}
 		return
 	}
 	if feed == nil {
-		h.writeResponse(s, &FeedResponse{Status: StatusNotFound})
+		sc.Response = &FeedResponse{Status: StatusNotFound}
 		return
 	}
 
 	// Dispatch based on request parameters
 	if req.SequenceNumber != nil {
 		// Single entry by sequence number
-		h.handleGetEntry(ctx, s, feed, *req.SequenceNumber)
+		handleGetEntry(sc, store, feed, *req.SequenceNumber)
 	} else if req.FromSequence != nil || req.ToSequence != nil || req.Limit != nil {
 		// Range query
-		h.handleGetEntries(ctx, s, feed, req)
+		handleGetEntries(sc, store, feed, req)
 	} else {
 		// Feed metadata
-		h.handleGetMetadata(s, feed)
+		handleGetMetadata(sc, feed)
 	}
 }
 
 // handleGetMetadata returns feed metadata.
-func (h *Handler) handleGetMetadata(s network.Stream, feed *storage.FeedRecord) {
+func handleGetMetadata(sc *forge.StreamContext, feed *storage.FeedRecord) {
 	bodyBytes, err := json.Marshal(map[string]any{
 		"title":           feed.Title,
 		"description":     feed.Description,
@@ -295,58 +314,60 @@ func (h *Handler) handleGetMetadata(s network.Stream, feed *storage.FeedRecord) 
 		"createdAt":       feed.CreatedAt.UnixMilli(),
 	})
 	if err != nil {
-		h.writeResponse(s, &FeedResponse{Status: StatusInternalError})
+		sc.Response = &FeedResponse{Status: StatusInternalError}
 		return
 	}
 
-	h.writeResponse(s, &FeedResponse{
+	sc.Response = &FeedResponse{
 		Status: StatusOK,
 		Headers: map[string]any{
-			"Content-Type":    "application/json",
-			"X-Sequence":      feed.CurrentSequence,
+			"Content-Type": "application/json",
+			"X-Sequence":   feed.CurrentSequence,
 		},
 		Body: base64.StdEncoding.EncodeToString(bodyBytes),
-	})
+	}
 }
 
 // handleGetEntry returns a single feed entry by sequence number.
-func (h *Handler) handleGetEntry(ctx context.Context, s network.Stream, feed *storage.FeedRecord, seq int) {
-	entry, err := h.store.GetFeedEntry(ctx, feed.ID, seq)
+func handleGetEntry(sc *forge.StreamContext, store storage.Storage, feed *storage.FeedRecord, seq int) {
+	ctx := context.Background()
+	entry, err := store.GetFeedEntry(ctx, feed.ID, seq)
 	if err != nil {
-		h.logger.Error("failed to get feed entry", "error", err)
-		h.writeResponse(s, &FeedResponse{Status: StatusInternalError})
+		sc.Logger.Error("failed to get feed entry", "error", err)
+		sc.Response = &FeedResponse{Status: StatusInternalError}
 		return
 	}
 	if entry == nil {
-		h.writeResponse(s, &FeedResponse{Status: StatusNotFound})
+		sc.Response = &FeedResponse{Status: StatusNotFound}
 		return
 	}
 
-	h.writeResponse(s, &FeedResponse{
+	sc.Response = &FeedResponse{
 		Status: StatusOK,
 		Headers: map[string]any{
-			"ETag":           entry.ContentHash,
-			"X-Sequence":     entry.SequenceNumber,
-			"X-Entry-Type":   entry.EntryType,
-			"X-Created-By":   entry.CreatedByPeerID,
-			"Content-Type":   feed.EntryContentType,
-			"Created-At":     entry.CreatedAt.UnixMilli(),
+			"ETag":         entry.ContentHash,
+			"X-Sequence":   entry.SequenceNumber,
+			"X-Entry-Type": entry.EntryType,
+			"X-Created-By": entry.CreatedByPeerID,
+			"Content-Type": feed.EntryContentType,
+			"Created-At":   entry.CreatedAt.UnixMilli(),
 		},
 		Body: base64.StdEncoding.EncodeToString(entry.Content),
-	})
+	}
 }
 
 // handleGetEntries returns a range of feed entries.
-func (h *Handler) handleGetEntries(ctx context.Context, s network.Stream, feed *storage.FeedRecord, req *FeedRequest) {
+func handleGetEntries(sc *forge.StreamContext, store storage.Storage, feed *storage.FeedRecord, req *FeedRequest) {
 	limit := 50
 	if req.Limit != nil && *req.Limit > 0 {
 		limit = *req.Limit
 	}
 
-	entries, hasMore, err := h.store.GetFeedEntries(ctx, feed.ID, req.FromSequence, req.ToSequence, req.EntryType, limit)
+	ctx := context.Background()
+	entries, hasMore, err := store.GetFeedEntries(ctx, feed.ID, req.FromSequence, req.ToSequence, req.EntryType, limit)
 	if err != nil {
-		h.logger.Error("failed to get feed entries", "error", err)
-		h.writeResponse(s, &FeedResponse{Status: StatusInternalError})
+		sc.Logger.Error("failed to get feed entries", "error", err)
+		sc.Response = &FeedResponse{Status: StatusInternalError}
 		return
 	}
 
@@ -375,7 +396,7 @@ func (h *Handler) handleGetEntries(ctx context.Context, s network.Stream, feed *
 		"entries": result,
 	})
 	if err != nil {
-		h.writeResponse(s, &FeedResponse{Status: StatusInternalError})
+		sc.Response = &FeedResponse{Status: StatusInternalError}
 		return
 	}
 
@@ -387,75 +408,91 @@ func (h *Handler) handleGetEntries(ctx context.Context, s network.Stream, feed *
 		headers["X-Next-Sequence"] = entries[len(entries)-1].SequenceNumber + 1
 	}
 
-	h.writeResponse(s, &FeedResponse{
+	sc.Response = &FeedResponse{
 		Status:  StatusOK,
 		Headers: headers,
 		Body:    base64.StdEncoding.EncodeToString(bodyBytes),
-	})
+	}
 }
 
-// handleAppend adds an entry to a feed.
-func (h *Handler) handleAppend(ctx context.Context, s network.Stream, req *FeedRequest, ownerID, callerID peer.ID) {
+// appendHandler handles the APPEND operation: adds an entry to a feed.
+func appendHandler(sc *forge.StreamContext, next func()) {
+	store, _ := forge.ServiceFrom[storage.Storage](sc, "storage")
+	req := sc.Request.(*FeedRequest)
+	ownerID, _ := sc.Get("ownerID")
+	callerID := sc.PeerID
+
+	ctx := context.Background()
+
 	// Look up the feed
-	feed, err := h.store.GetFeed(ctx, ownerID, req.Path)
+	feed, err := store.GetFeed(ctx, ownerID.(peer.ID), req.Path)
 	if err != nil {
-		h.logger.Error("failed to get feed", "error", err)
-		h.writeResponse(s, &FeedResponse{Status: StatusInternalError})
+		sc.Logger.Error("failed to get feed", "error", err)
+		sc.Response = &FeedResponse{Status: StatusInternalError}
 		return
 	}
 	if feed == nil {
-		h.writeResponse(s, &FeedResponse{Status: StatusNotFound,
-			Headers: map[string]any{"Error": "feed not found"}})
+		sc.Response = &FeedResponse{Status: StatusNotFound,
+			Headers: map[string]any{"Error": "feed not found"}}
 		return
 	}
 
 	// Decode body
 	content, err := base64.StdEncoding.DecodeString(req.Body)
 	if err != nil {
-		h.writeResponse(s, &FeedResponse{Status: StatusBadRequest,
-			Headers: map[string]any{"Error": "invalid base64 body"}})
+		sc.Response = &FeedResponse{Status: StatusBadRequest,
+			Headers: map[string]any{"Error": "invalid base64 body"}}
 		return
 	}
 
-	entry, err := h.store.AppendFeedEntry(ctx, feed.ID, content, callerID, req.EntryType)
+	entry, err := store.AppendFeedEntry(ctx, feed.ID, content, callerID, req.EntryType)
 	if err != nil {
-		h.logger.Error("failed to append feed entry", "error", err)
-		h.writeResponse(s, &FeedResponse{Status: StatusInternalError})
+		sc.Logger.Error("failed to append feed entry", "error", err)
+		sc.Response = &FeedResponse{Status: StatusInternalError}
 		return
 	}
 
-	h.writeResponse(s, &FeedResponse{
+	sc.Response = &FeedResponse{
 		Status: StatusCreated,
 		Headers: map[string]any{
 			"X-Sequence": entry.SequenceNumber,
 			"ETag":       entry.ContentHash,
 		},
-	})
+	}
 }
 
-// handleDelete removes a feed and all its entries.
-func (h *Handler) handleDelete(ctx context.Context, s network.Stream, req *FeedRequest, ownerID peer.ID) {
-	deleted, err := h.store.DeleteFeed(ctx, ownerID, req.Path)
+// deleteHandler handles the DELETE operation: removes a feed and all its entries.
+func deleteHandler(sc *forge.StreamContext, next func()) {
+	store, _ := forge.ServiceFrom[storage.Storage](sc, "storage")
+	req := sc.Request.(*FeedRequest)
+	ownerID, _ := sc.Get("ownerID")
+
+	ctx := context.Background()
+	deleted, err := store.DeleteFeed(ctx, ownerID.(peer.ID), req.Path)
 	if err != nil {
-		h.logger.Error("failed to delete feed", "error", err)
-		h.writeResponse(s, &FeedResponse{Status: StatusInternalError})
+		sc.Logger.Error("failed to delete feed", "error", err)
+		sc.Response = &FeedResponse{Status: StatusInternalError}
 		return
 	}
 
 	if !deleted {
-		h.writeResponse(s, &FeedResponse{Status: StatusNotFound})
+		sc.Response = &FeedResponse{Status: StatusNotFound}
 		return
 	}
 
-	h.writeResponse(s, &FeedResponse{Status: StatusNoContent})
+	sc.Response = &FeedResponse{Status: StatusNoContent}
 }
 
-// handleList returns all feeds for an owner.
-func (h *Handler) handleList(ctx context.Context, s network.Stream, ownerID peer.ID) {
-	feeds, err := h.store.ListFeeds(ctx, ownerID)
+// listHandler handles the LIST operation: returns all feeds for an owner.
+func listHandler(sc *forge.StreamContext, next func()) {
+	store, _ := forge.ServiceFrom[storage.Storage](sc, "storage")
+	ownerID, _ := sc.Get("ownerID")
+
+	ctx := context.Background()
+	feeds, err := store.ListFeeds(ctx, ownerID.(peer.ID))
 	if err != nil {
-		h.logger.Error("failed to list feeds", "error", err)
-		h.writeResponse(s, &FeedResponse{Status: StatusInternalError})
+		sc.Logger.Error("failed to list feeds", "error", err)
+		sc.Response = &FeedResponse{Status: StatusInternalError}
 		return
 	}
 
@@ -482,17 +519,17 @@ func (h *Handler) handleList(ctx context.Context, s network.Stream, ownerID peer
 
 	bodyBytes, err := json.Marshal(entries)
 	if err != nil {
-		h.writeResponse(s, &FeedResponse{Status: StatusInternalError})
+		sc.Response = &FeedResponse{Status: StatusInternalError}
 		return
 	}
 
-	h.writeResponse(s, &FeedResponse{
+	sc.Response = &FeedResponse{
 		Status: StatusOK,
 		Headers: map[string]any{
 			"Content-Type": "application/json",
 		},
 		Body: base64.StdEncoding.EncodeToString(bodyBytes),
-	})
+	}
 }
 
 // =============================================================================
@@ -527,52 +564,3 @@ func containsDotDot(path string) bool {
 	}
 	return false
 }
-
-// checkRateLimit enforces per-peer rate limiting with separate read/write buckets.
-func (h *Handler) checkRateLimit(peerID peer.ID, isWrite bool) bool {
-	h.rateLimitMu.Lock()
-	defer h.rateLimitMu.Unlock()
-
-	now := time.Now()
-	key := peerID.String()
-	cutoff := now.Add(-h.rateLimitWindow)
-
-	var historyMap map[string][]time.Time
-	var maxReqs int
-	if isWrite {
-		historyMap = h.writeHistory
-		maxReqs = h.maxWriteRequests
-	} else {
-		historyMap = h.readHistory
-		maxReqs = h.maxReadRequests
-	}
-
-	history := historyMap[key]
-	filtered := history[:0]
-	for _, ts := range history {
-		if ts.After(cutoff) {
-			filtered = append(filtered, ts)
-		}
-	}
-
-	if len(filtered) >= maxReqs {
-		historyMap[key] = filtered
-		return false
-	}
-
-	historyMap[key] = append(filtered, now)
-	return true
-}
-
-// writeResponse marshals and writes a FeedResponse over the stream.
-func (h *Handler) writeResponse(s network.Stream, resp *FeedResponse) {
-	data, err := json.Marshal(resp)
-	if err != nil {
-		h.logger.Error("failed to marshal response", "error", err)
-		return
-	}
-	if err := frame.WriteFrame(s, data); err != nil {
-		h.logger.Error("failed to write response", "error", err)
-	}
-}
-

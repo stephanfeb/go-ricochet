@@ -11,7 +11,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/multiformats/go-multiaddr"
 
-	"github.com/twostack/go-ricochet/internal/p2p"
+	"github.com/twostack/go-p2p-forge/node"
 )
 
 // PresenceConfig holds presence service configuration.
@@ -42,7 +42,7 @@ func PresenceTopic(serverID peer.ID) string {
 // Service manages server-side presence tracking and broadcasting.
 type Service struct {
 	host   host.Host
-	node   *p2p.Node
+	node   *node.Node
 	cache  *Cache
 	config *PresenceConfig
 	logger *slog.Logger
@@ -65,7 +65,7 @@ type Service struct {
 }
 
 // NewService creates a new presence broadcasting service.
-func NewService(h host.Host, node *p2p.Node, cache *Cache, cfg *PresenceConfig, logger *slog.Logger) *Service {
+func NewService(h host.Host, node *node.Node, cache *Cache, cfg *PresenceConfig, logger *slog.Logger) *Service {
 	if cfg == nil {
 		cfg = DefaultPresenceConfig()
 	}
@@ -79,6 +79,9 @@ func NewService(h host.Host, node *p2p.Node, cache *Cache, cfg *PresenceConfig, 
 		topic:          PresenceTopic(h.ID()),
 	}
 }
+
+// Name returns the service name for lifecycle logging.
+func (s *Service) Name() string { return "presence" }
 
 // Start joins the presence GossipSub topic and begins background loops.
 func (s *Service) Start(ctx context.Context) error {
@@ -110,7 +113,7 @@ func (s *Service) Start(ctx context.Context) error {
 }
 
 // Stop cancels all background goroutines.
-func (s *Service) Stop() {
+func (s *Service) Stop() error {
 	if s.cancel != nil {
 		s.cancel()
 	}
@@ -120,6 +123,7 @@ func (s *Service) Stop() {
 	}
 	s.batchMu.Unlock()
 	s.logger.Info("presence service stopped")
+	return nil
 }
 
 // GetOnlinePeers returns currently tracked online peers.

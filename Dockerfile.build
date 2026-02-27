@@ -16,9 +16,9 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Go SDK
-RUN wget -q https://go.dev/dl/go1.24.12.linux-amd64.tar.gz \
-    && tar -C /usr/local -xzf go1.24.12.linux-amd64.tar.gz \
-    && rm go1.24.12.linux-amd64.tar.gz
+RUN wget -q https://go.dev/dl/go1.25.0.linux-amd64.tar.gz \
+    && tar -C /usr/local -xzf go1.25.0.linux-amd64.tar.gz \
+    && rm go1.25.0.linux-amd64.tar.gz
 
 # Add Go to PATH
 ENV PATH="/usr/local/go/bin:/home/builder/go/bin:${PATH}"
