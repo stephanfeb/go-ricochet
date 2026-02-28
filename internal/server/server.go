@@ -244,9 +244,15 @@ func (s *Server) buildForgeConfig() *forge.Config {
 	cfg.Host.ExternalAddresses = s.config.ExternalAddresses
 	cfg.Host.BootstrapPeers = s.config.BootstrapPeers
 
-	// Yamux tuning for mobile clients
-	cfg.Host.YamuxKeepAlive = 60 * time.Second
-	cfg.Host.YamuxWriteTimeout = 30 * time.Second
+	// Yamux tuning for mobile clients.
+	// KeepAlive: how often to ping idle connections. Lower = faster dead-peer detection
+	// but more bandwidth. 15s is aggressive enough for mobile while still battery-friendly.
+	// WriteTimeout: max time for a single write (including yamux frames). The sendLoop
+	// blocks on writes, preventing ANY new stream opens until the write completes or
+	// times out. 10s ensures dead connections unblock the sendLoop quickly.
+	// Total dead-connection detection: KeepAlive + WriteTimeout = 25s worst case.
+	cfg.Host.YamuxKeepAlive = 15 * time.Second
+	cfg.Host.YamuxWriteTimeout = 10 * time.Second
 
 	// Relay
 	cfg.Host.EnableRelay = s.config.EnableRelay

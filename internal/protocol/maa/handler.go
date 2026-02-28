@@ -2,9 +2,9 @@ package maa
 
 import (
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log/slog"
 	"time"
 
@@ -63,25 +63,15 @@ func maaResponseWriter() forge.Middleware {
 			return
 		}
 
-		// Multi-frame path: retrieve response implements FrameIterator.
-		if iter, ok := sc.Response.(forge.FrameIterator); ok {
-			for {
-				data, err := iter.Next()
-				if err == io.EOF {
-					return
-				}
-				if err != nil {
-					sc.Logger.Error("failed to produce frame", "error", err)
-					return
-				}
-				if err := codec.WriteFrame(sc.Stream, data); err != nil {
-					sc.Logger.Error("failed to write frame", "error", err)
-					return
-				}
+		// Check for pre-encoded raw bytes (compound retrieve response).
+		if raw, ok := sc.Response.(rawResponse); ok {
+			if err := codec.WriteFrame(sc.Stream, []byte(raw)); err != nil {
+				sc.Logger.Error("failed to write raw response", "error", err)
 			}
+			return
 		}
 
-		// Single-frame path.
+		// Single-frame JSON path.
 		data, err := json.Marshal(sc.Response)
 		if err != nil {
 			sc.Logger.Error("failed to marshal response", "error", err)
@@ -92,6 +82,10 @@ func maaResponseWriter() forge.Middleware {
 		}
 	}
 }
+
+// rawResponse wraps pre-encoded bytes that should be written directly
+// as a frame without JSON marshaling.
+type rawResponse []byte
 
 // defaultOperationType injects "operationType":"retrieve" into RawBytes when
 // the field is missing, preserving backwards compatibility with clients that
@@ -131,44 +125,47 @@ func deserializeRetrieve() forge.Middleware {
 	}
 }
 
-// retrieveIterator implements forge.FrameIterator for the compound retrieve
-// response: one metadata frame followed by N message frames.
+// encodeCompoundRetrieveResponse builds the compound retrieve response in the
+// wire format expected by the Dart client:
 //
-// The metadata frame is JSON: {"messageCount": N, "hasMore": bool}
-// Each message frame is produced by Message.ToJSON() (handles base64 payload).
-type retrieveIterator struct {
-	metadata *retrieveMetadata
-	messages []*core.Message
-	idx      int // -1 = metadata not yet sent, 0..N-1 = message index
-}
-
-type retrieveMetadata struct {
-	MessageCount int  `json:"messageCount"`
-	HasMore      bool `json:"hasMore"`
-}
-
-func newRetrieveIterator(messages []*core.Message, hasMore bool) *retrieveIterator {
-	return &retrieveIterator{
-		metadata: &retrieveMetadata{
-			MessageCount: len(messages),
-			HasMore:      hasMore,
-		},
-		messages: messages,
-		idx:      -1,
+//	[4-byte metadata-length][metadata JSON][4-byte msg1-length][msg1 JSON]...
+//
+// This is a single compound blob written as one length-prefixed frame.
+func encodeCompoundRetrieveResponse(messages []*core.Message, hasMore bool) ([]byte, error) {
+	meta := map[string]any{
+		"messageCount": len(messages),
+		"hasMore":      hasMore,
 	}
-}
+	metaBytes, err := json.Marshal(meta)
+	if err != nil {
+		return nil, err
+	}
 
-func (ri *retrieveIterator) Next() ([]byte, error) {
-	if ri.idx == -1 {
-		ri.idx = 0
-		return json.Marshal(ri.metadata)
+	var encodedMsgs [][]byte
+	totalSize := 4 + len(metaBytes)
+	for _, msg := range messages {
+		msgBytes, err := msg.ToJSON()
+		if err != nil {
+			return nil, err
+		}
+		encodedMsgs = append(encodedMsgs, msgBytes)
+		totalSize += 4 + len(msgBytes)
 	}
-	if ri.idx >= len(ri.messages) {
-		return nil, io.EOF
+
+	buf := make([]byte, 0, totalSize)
+	lenBuf := make([]byte, 4)
+
+	binary.BigEndian.PutUint32(lenBuf, uint32(len(metaBytes)))
+	buf = append(buf, lenBuf...)
+	buf = append(buf, metaBytes...)
+
+	for _, msgBytes := range encodedMsgs {
+		binary.BigEndian.PutUint32(lenBuf, uint32(len(msgBytes)))
+		buf = append(buf, lenBuf...)
+		buf = append(buf, msgBytes...)
 	}
-	msg := ri.messages[ri.idx]
-	ri.idx++
-	return msg.ToJSON()
+
+	return buf, nil
 }
 
 // handleRetrieve retrieves messages from the mailbox.
@@ -219,7 +216,17 @@ func handleRetrieve(sc *forge.StreamContext, next func()) {
 		messages = nil
 	}
 
-	sc.Response = newRetrieveIterator(messages, false)
+	compoundBytes, err := encodeCompoundRetrieveResponse(messages, false)
+	if err != nil {
+		sc.Logger.Error("failed to encode retrieve response", "error", err)
+		sc.Response = map[string]string{"error": "internal encoding error"}
+		return
+	}
+
+	// Write the compound response as raw bytes. The response writer middleware
+	// will wrap this in a length-prefixed frame. We use rawResponse to signal
+	// that this is pre-encoded bytes, not a JSON object to marshal.
+	sc.Response = rawResponse(compoundBytes)
 	sc.Logger.Info("retrieved messages", "count", len(messages))
 }
 
