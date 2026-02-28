@@ -362,31 +362,14 @@ type notifiee struct {
 	service *Service
 }
 
-func (n *notifiee) Connected(net network.Network, conn network.Conn) {
-	pid := conn.RemotePeer()
-	conns := net.ConnsToPeer(pid)
-	n.service.logger.Info("DIAG: peer connection event",
-		"event", "connected",
-		"peer_id", pid,
-		"remote_addr", conn.RemoteMultiaddr(),
-		"total_conns", len(conns),
-		"conn_stat", conn.Stat(),
-	)
-	n.service.onPeerConnected(pid)
+func (n *notifiee) Connected(_ network.Network, conn network.Conn) {
+	n.service.onPeerConnected(conn.RemotePeer())
 }
 
 func (n *notifiee) Disconnected(net network.Network, conn network.Conn) {
-	pid := conn.RemotePeer()
-	remaining := net.ConnsToPeer(pid)
-	n.service.logger.Info("DIAG: peer connection event",
-		"event", "disconnected",
-		"peer_id", pid,
-		"remote_addr", conn.RemoteMultiaddr(),
-		"remaining_conns", len(remaining),
-	)
 	// Only fire if no remaining connections to this peer
-	if len(remaining) == 0 {
-		n.service.onPeerDisconnected(pid)
+	if len(net.ConnsToPeer(conn.RemotePeer())) == 0 {
+		n.service.onPeerDisconnected(conn.RemotePeer())
 	}
 }
 
