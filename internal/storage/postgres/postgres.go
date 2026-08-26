@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -491,6 +492,15 @@ func (s *PostgresStorage) GetDocument(ctx context.Context, ownerID peer.ID, path
 	return &r, nil
 }
 
+// PutDocument writes a document, archiving the previous version when history is
+// enabled. The whole operation runs in one transaction with the existing row
+// locked, so an If-Match precondition is compared and swapped atomically --
+// evaluating it outside a transaction let two concurrent conditional writes
+// both pass the check and both write, silently losing the first.
+//
+// The lock query deliberately does not select `content`. The body is never
+// needed here: the caller supplies the new one, and archiving the old one is a
+// server-side copy that never round-trips through this process.
 func (s *PostgresStorage) PutDocument(ctx context.Context, ownerID peer.ID, path string, content []byte, contentType string, updatedBy peer.ID, ifMatch *string) (*storage.DocumentPutResult, error) {
 	if len(content) > storage.MaxDocumentSize {
 		return nil, &storage.DocumentSizeExceededError{ActualSize: len(content), MaxSize: storage.MaxDocumentSize}
@@ -499,38 +509,60 @@ func (s *PostgresStorage) PutDocument(ctx context.Context, ownerID peer.ID, path
 	contentHash := computeContentHash(content)
 	now := time.Now()
 
-	// Check If-Match precondition
-	if ifMatch != nil {
-		existing, err := s.GetDocument(ctx, ownerID, path)
-		if err != nil {
-			return nil, err
-		}
-		if existing != nil && existing.ContentHash != *ifMatch {
-			return nil, &storage.DocumentConflictError{ExpectedHash: *ifMatch, ActualHash: existing.ContentHash}
-		}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("begin put document: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	var (
+		existingID         int64
+		existingHash       string
+		existingVersion    int
+		historyEnabled     bool
+		maxHistoryVersions *int
+		found              bool
+	)
+	err = tx.QueryRow(ctx, `
+		SELECT id, content_hash, version_number, history_enabled, max_history_versions
+		FROM documents
+		WHERE owner_peer_id = $1 AND path = $2
+		FOR UPDATE`,
+		ownerID.String(), path,
+	).Scan(&existingID, &existingHash, &existingVersion, &historyEnabled, &maxHistoryVersions)
+	switch {
+	case err == nil:
+		found = true
+	case errors.Is(err, pgx.ErrNoRows):
+		found = false
+	default:
+		return nil, fmt.Errorf("lock document: %w", err)
 	}
 
-	// Get existing for versioning
-	existing, err := s.GetDocument(ctx, ownerID, path)
-	if err != nil {
-		return nil, err
+	// Evaluated under the row lock. As before, an If-Match against a path that
+	// does not exist yet is treated as satisfied.
+	if ifMatch != nil && found && existingHash != *ifMatch {
+		return nil, &storage.DocumentConflictError{ExpectedHash: *ifMatch, ActualHash: existingHash}
 	}
 
 	newVersion := 1
-	if existing != nil {
-		newVersion = existing.VersionNumber + 1
+	if found {
+		newVersion = existingVersion + 1
 
-		// Save old version if history enabled
-		if existing.HistoryEnabled {
-			s.saveDocumentVersion(ctx, existing)
-			if existing.MaxHistoryVersions != nil {
-				s.pruneDocumentVersions(ctx, existing.ID, *existing.MaxHistoryVersions)
+		if historyEnabled {
+			if err := archiveDocumentVersion(ctx, tx, existingID); err != nil {
+				return nil, err
+			}
+			if maxHistoryVersions != nil {
+				if err := pruneDocumentVersions(ctx, tx, existingID, *maxHistoryVersions); err != nil {
+					return nil, err
+				}
 			}
 		}
 	}
 
 	var created bool
-	err = s.pool.QueryRow(ctx, `
+	err = tx.QueryRow(ctx, `
 		INSERT INTO documents (
 			owner_peer_id, path, content, content_type, content_hash,
 			created_at, updated_at, updated_by_peer_id, version_number
@@ -545,6 +577,10 @@ func (s *PostgresStorage) PutDocument(ctx context.Context, ownerID peer.ID, path
 	).Scan(&created)
 	if err != nil {
 		return nil, fmt.Errorf("put document: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("commit put document: %w", err)
 	}
 
 	return &storage.DocumentPutResult{
@@ -595,30 +631,55 @@ func (s *PostgresStorage) DeleteDocument(ctx context.Context, ownerID peer.ID, p
 	return tag.RowsAffected() > 0, nil
 }
 
-func (s *PostgresStorage) ListDocuments(ctx context.Context, ownerID peer.ID) ([]*storage.DocumentRecord, error) {
+// ListDocuments returns one page of document metadata, ordered by path.
+//
+// octet_length is computed in the database rather than selecting the body and
+// measuring it here. The previous implementation selected `content` for every
+// row so the handler could call len() on it, which made a single LIST transfer
+// the caller's entire document set out of Postgres and into this process only
+// to discard it.
+func (s *PostgresStorage) ListDocuments(ctx context.Context, ownerID peer.ID, afterPath string, limit int) ([]*storage.DocumentSummary, bool, error) {
+	if limit <= 0 {
+		limit = storage.DefaultDocumentListLimit
+	}
+	if limit > storage.MaxDocumentListLimit {
+		limit = storage.MaxDocumentListLimit
+	}
+
+	// Fetch one extra row to detect whether a further page exists without a
+	// second count query.
 	rows, err := s.pool.Query(ctx, `
-		SELECT id, owner_peer_id, path, content, content_type, content_hash,
-			   created_at, updated_at, updated_by_peer_id, version_number,
-			   history_enabled, max_history_versions, version_vector
-		FROM documents WHERE owner_peer_id = $1`,
-		ownerID.String(),
+		SELECT path, content_type, content_hash, octet_length(content),
+			   updated_at, version_number
+		FROM documents
+		WHERE owner_peer_id = $1 AND ($2 = '' OR path > $2)
+		ORDER BY path
+		LIMIT $3`,
+		ownerID.String(), afterPath, limit+1,
 	)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	defer rows.Close()
 
-	var records []*storage.DocumentRecord
+	records := make([]*storage.DocumentSummary, 0, limit)
 	for rows.Next() {
-		var r storage.DocumentRecord
-		if err := rows.Scan(&r.ID, &r.OwnerPeerID, &r.Path, &r.Content, &r.ContentType,
-			&r.ContentHash, &r.CreatedAt, &r.UpdatedAt, &r.UpdatedByPeerID,
-			&r.VersionNumber, &r.HistoryEnabled, &r.MaxHistoryVersions, &r.VersionVector); err != nil {
-			return nil, err
+		var r storage.DocumentSummary
+		if err := rows.Scan(&r.Path, &r.ContentType, &r.ContentHash, &r.Size,
+			&r.UpdatedAt, &r.VersionNumber); err != nil {
+			return nil, false, err
 		}
 		records = append(records, &r)
 	}
-	return records, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, false, err
+	}
+
+	hasMore := len(records) > limit
+	if hasMore {
+		records = records[:limit]
+	}
+	return records, hasMore, nil
 }
 
 func (s *PostgresStorage) GetDocumentHistory(ctx context.Context, ownerID peer.ID, path string, maxVersions *int) ([]*storage.DocumentVersionRecord, error) {
@@ -963,23 +1024,36 @@ func scanMessage(rows pgx.Rows) (*core.Message, error) {
 	return msg, nil
 }
 
-func (s *PostgresStorage) saveDocumentVersion(ctx context.Context, doc *storage.DocumentRecord) {
-	_, err := s.pool.Exec(ctx, `
+// archiveDocumentVersion copies a document's current row into document_versions
+// before it is overwritten. The copy happens entirely inside the database --
+// pulling the body out to Go only to send it straight back doubled the transfer
+// cost of every write to a history-enabled document.
+//
+// Both helpers take the transaction rather than the pool, and return their
+// errors rather than logging them: once inside a transaction a failed statement
+// aborts the whole thing, so swallowing the error would commit a version bump
+// whose history entry was never written.
+func archiveDocumentVersion(ctx context.Context, tx pgx.Tx, documentID int64) error {
+	_, err := tx.Exec(ctx, `
 		INSERT INTO document_versions (
 			document_id, version_number, content, content_hash, content_type,
 			created_at, created_by_peer_id
-		) VALUES ($1, $2, $3, $4, $5, $6, $7)
+		)
+		SELECT id, version_number, content, content_hash, content_type,
+			   updated_at, updated_by_peer_id
+		FROM documents
+		WHERE id = $1
 		ON CONFLICT (document_id, version_number) DO NOTHING`,
-		doc.ID, doc.VersionNumber, doc.Content, doc.ContentHash,
-		doc.ContentType, doc.UpdatedAt, doc.UpdatedByPeerID,
+		documentID,
 	)
 	if err != nil {
-		s.logger.Warn("Failed to save document version", "error", err)
+		return fmt.Errorf("archive document version: %w", err)
 	}
+	return nil
 }
 
-func (s *PostgresStorage) pruneDocumentVersions(ctx context.Context, documentID int64, maxVersions int) {
-	_, err := s.pool.Exec(ctx, `
+func pruneDocumentVersions(ctx context.Context, tx pgx.Tx, documentID int64, maxVersions int) error {
+	_, err := tx.Exec(ctx, `
 		DELETE FROM document_versions
 		WHERE id IN (
 			SELECT id FROM document_versions
@@ -990,8 +1064,9 @@ func (s *PostgresStorage) pruneDocumentVersions(ctx context.Context, documentID 
 		documentID, maxVersions,
 	)
 	if err != nil {
-		s.logger.Warn("Failed to prune document versions", "error", err)
+		return fmt.Errorf("prune document versions: %w", err)
 	}
+	return nil
 }
 
 func computeContentHash(content []byte) string {

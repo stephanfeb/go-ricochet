@@ -186,7 +186,7 @@ func (m *mockStorage) DeleteDocument(_ context.Context, _ peer.ID, _ string) (bo
 	panic("not implemented")
 }
 
-func (m *mockStorage) ListDocuments(_ context.Context, _ peer.ID) ([]*storage.DocumentRecord, error) {
+func (m *mockStorage) ListDocuments(_ context.Context, _ peer.ID, _ string, _ int) ([]*storage.DocumentSummary, bool, error) {
 	panic("not implemented")
 }
 

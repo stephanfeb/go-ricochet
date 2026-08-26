@@ -10,6 +10,14 @@ import (
 const (
 	// MaxDocumentSize is the maximum document size (10MB).
 	MaxDocumentSize = 10 * 1024 * 1024
+
+	// DefaultDocumentListLimit bounds a LIST that does not ask for a page size.
+	// Listing was previously unbounded; callers that need everything page with
+	// the cursor rather than relying on one unbounded response.
+	DefaultDocumentListLimit = 1000
+
+	// MaxDocumentListLimit caps what a caller may request per page.
+	MaxDocumentListLimit = 5000
 )
 
 // Storage defines the interface for Ricochet's storage backends.
@@ -56,7 +64,10 @@ type Storage interface {
 	PutDocument(ctx context.Context, ownerID peer.ID, path string, content []byte, contentType string, updatedBy peer.ID, ifMatch *string) (*DocumentPutResult, error)
 	PatchDocument(ctx context.Context, ownerID peer.ID, path string, patch map[string]any, updatedBy peer.ID, ifMatch *string) (*DocumentPutResult, error)
 	DeleteDocument(ctx context.Context, ownerID peer.ID, path string) (bool, error)
-	ListDocuments(ctx context.Context, ownerID peer.ID) ([]*DocumentRecord, error)
+	// ListDocuments returns one page of document metadata for an owner, ordered
+	// by path. afterPath is a keyset cursor ("" for the first page); the bool
+	// reports whether more rows follow the returned page.
+	ListDocuments(ctx context.Context, ownerID peer.ID, afterPath string, limit int) ([]*DocumentSummary, bool, error)
 	GetDocumentHistory(ctx context.Context, ownerID peer.ID, path string, maxVersions *int) ([]*DocumentVersionRecord, error)
 	GetDocumentAtVersion(ctx context.Context, ownerID peer.ID, path string, versionNumber int) (*DocumentVersionRecord, error)
 

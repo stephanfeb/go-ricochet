@@ -100,6 +100,19 @@ type DocumentRecord struct {
 	VersionVector      *string   `json:"versionVector,omitempty"`
 }
 
+// DocumentSummary is document metadata without the body. Listing returns these
+// rather than DocumentRecord: the body is never part of a listing response, and
+// selecting it meant every LIST pulled the caller's entire document set out of
+// the database purely so the handler could take its length.
+type DocumentSummary struct {
+	Path          string    `json:"path"`
+	ContentType   string    `json:"contentType"`
+	ContentHash   string    `json:"contentHash"`
+	Size          int       `json:"size"`
+	UpdatedAt     time.Time `json:"updatedAt"`
+	VersionNumber int       `json:"versionNumber"`
+}
+
 // FullPath returns "ownerPeerId/doc/path".
 func (r *DocumentRecord) FullPath() string {
 	return r.OwnerPeerID + "/doc/" + r.Path

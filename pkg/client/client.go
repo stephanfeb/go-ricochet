@@ -1122,43 +1122,69 @@ func (c *Client) DeleteDocument(ctx context.Context, ownerPeerID peer.ID, path s
 }
 
 // ListDocuments lists all documents for the given owner peer.
+//
+// The server pages listings, so this walks the cursor until it is exhausted and
+// returns the complete set -- the contract callers already relied on when
+// listing was unbounded server-side.
 func (c *Client) ListDocuments(ctx context.Context, ownerPeerID peer.ID, opts ...DocOption) ([]core.DocumentInfo, error) {
+	var (
+		infos  []core.DocumentInfo
+		cursor string
+	)
+
+	for {
+		page, next, err := c.listDocumentPage(ctx, ownerPeerID, cursor, opts)
+		if err != nil {
+			return nil, err
+		}
+		infos = append(infos, page...)
+		if next == "" {
+			return infos, nil
+		}
+		cursor = next
+	}
+}
+
+// listDocumentPage fetches one page and returns the cursor for the next one, or
+// "" when the listing is complete.
+func (c *Client) listDocumentPage(ctx context.Context, ownerPeerID peer.ID, cursor string, opts []DocOption) ([]core.DocumentInfo, string, error) {
 	req := &sda.DocRequest{
 		Operation:   sda.OpLIST,
 		OwnerPeerID: ownerPeerID.String(),
+		ListCursor:  cursor,
 	}
 
 	resp, err := c.doDoc(ctx, req, opts)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 
 	if resp.Status != sda.StatusOK {
-		return nil, fmt.Errorf("list documents failed with status %d", resp.Status)
+		return nil, "", fmt.Errorf("list documents failed with status %d", resp.Status)
 	}
 
 	if resp.Body == "" {
-		return nil, nil
+		return nil, "", nil
 	}
 
 	bodyBytes, err := base64.StdEncoding.DecodeString(resp.Body)
 	if err != nil {
-		return nil, fmt.Errorf("decode list body: %w", err)
+		return nil, "", fmt.Errorf("decode list body: %w", err)
 	}
 
 	// The server returns a list of docEntry objects; map them to core.DocumentInfo.
 	type docEntry struct {
-		Path         string `json:"path"`
-		ContentType  string `json:"contentType"`
-		ContentHash  string `json:"contentHash"`
-		Size         int    `json:"size"`
-		UpdatedAt    string `json:"updatedAt"`
-		VersionNumber int   `json:"versionNumber"`
+		Path          string `json:"path"`
+		ContentType   string `json:"contentType"`
+		ContentHash   string `json:"contentHash"`
+		Size          int    `json:"size"`
+		UpdatedAt     string `json:"updatedAt"`
+		VersionNumber int    `json:"versionNumber"`
 	}
 
 	var entries []docEntry
 	if err := json.Unmarshal(bodyBytes, &entries); err != nil {
-		return nil, fmt.Errorf("unmarshal document list: %w", err)
+		return nil, "", fmt.Errorf("unmarshal document list: %w", err)
 	}
 
 	infos := make([]core.DocumentInfo, 0, len(entries))
@@ -1176,5 +1202,12 @@ func (c *Client) ListDocuments(ctx context.Context, ownerPeerID peer.ID, opts ..
 		})
 	}
 
-	return infos, nil
+	// A server that predates paging sends neither header; the absent Has-More
+	// reads as false and the loop terminates after one page, as it always did.
+	next, _ := resp.Headers["Next-Cursor"].(string)
+	if hasMore, _ := resp.Headers["Has-More"].(bool); !hasMore {
+		next = ""
+	}
+
+	return infos, next, nil
 }

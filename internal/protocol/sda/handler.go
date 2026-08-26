@@ -72,6 +72,11 @@ type DocRequest struct {
 	MaxVersions   *int `json:"maxVersions,omitempty"`
 	VersionNumber *int `json:"versionNumber,omitempty"`
 
+	// LIST-specific pagination. Absent cursor means the first page; absent
+	// limit means the server default.
+	ListCursor string `json:"listCursor,omitempty"`
+	ListLimit  *int   `json:"listLimit,omitempty"`
+
 	// DIRECTORY-specific
 	DirectoryAction string `json:"directoryAction,omitempty"`
 	DirectoryQuery  string `json:"directoryQuery,omitempty"`
@@ -457,15 +462,25 @@ func handleDelete(sc *forge.StreamContext, next func()) {
 	sc.Response = &DocResponse{Status: StatusNoContent}
 }
 
-// handleList returns all documents for an owner.
+// handleList returns one page of document metadata for an owner.
+//
+// The body stays a bare JSON array so existing clients keep parsing it
+// unchanged; paging is advertised through the response headers, which clients
+// that do not understand them simply ignore.
 func handleList(sc *forge.StreamContext, next func()) {
 	store, _ := forge.ServiceFrom[storage.Storage](sc, "storage")
 	ownerID, _ := sc.Get("ownerID")
+	req := sc.Request.(*DocRequest)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	docs, err := store.ListDocuments(ctx, ownerID.(peer.ID))
+	limit := 0
+	if req.ListLimit != nil {
+		limit = *req.ListLimit
+	}
+
+	docs, hasMore, err := store.ListDocuments(ctx, ownerID.(peer.ID), req.ListCursor, limit)
 	if err != nil {
 		sc.Logger.Error("failed to list documents", "error", err)
 		sc.Response = &DocResponse{Status: StatusInternalError}
@@ -488,7 +503,7 @@ func handleList(sc *forge.StreamContext, next func()) {
 			Path:        d.Path,
 			ContentType: d.ContentType,
 			ContentHash: d.ContentHash,
-			Size:        len(d.Content),
+			Size:        d.Size,
 			UpdatedAt:   d.UpdatedAt.Format(time.RFC3339),
 			Version:     d.VersionNumber,
 		})
@@ -500,12 +515,18 @@ func handleList(sc *forge.StreamContext, next func()) {
 		return
 	}
 
+	headers := map[string]any{
+		"Content-Type": "application/json",
+		"Has-More":     hasMore,
+	}
+	if hasMore && len(entries) > 0 {
+		headers["Next-Cursor"] = entries[len(entries)-1].Path
+	}
+
 	sc.Response = &DocResponse{
-		Status: StatusOK,
-		Headers: map[string]any{
-			"Content-Type": "application/json",
-		},
-		Body: base64.StdEncoding.EncodeToString(bodyBytes),
+		Status:  StatusOK,
+		Headers: headers,
+		Body:    base64.StdEncoding.EncodeToString(bodyBytes),
 	}
 }
 
