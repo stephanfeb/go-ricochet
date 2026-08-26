@@ -1,0 +1,25 @@
+# Compiled binaries produced by `go build` in the repo root, named after cmd/.
+/ricochet
+/ricochet-bench
+
+# Packaging output (build-deb.sh / docker-build.sh write here).
+/build/
+
+# Go test and coverage artifacts.
+*.test
+*.out
+coverage.html
+
+# Local server state and credentials.
+*.key
+config.local.yaml
+
+# Editor and tooling state.
+/.idea/
+/go-ricochet.iml
+.vscode/
+.DS_Store
+
+# Claude Code local state (shared .claude/settings.json stays tracked).
+/.claude/settings.local.json
+/.claude/worktrees/
