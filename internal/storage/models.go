@@ -246,6 +246,7 @@ var (
 	ErrDirectoryEntryNotFound = fmt.Errorf("directory entry not found")
 	ErrFeedNotFound           = fmt.Errorf("feed not found")
 	ErrCollectionNotFound     = fmt.Errorf("collection not found")
+	ErrMailboxNotFound        = fmt.Errorf("mailbox not found")
 )
 
 // DocumentSizeExceededError indicates a document exceeds the size limit.

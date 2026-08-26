@@ -18,6 +18,15 @@ import (
 	"github.com/twostack/go-ricochet/internal/storage"
 )
 
+const (
+	// expiryDeleteBatchSize bounds each DELETE in the expired-message sweep.
+	expiryDeleteBatchSize = 5000
+
+	// maxExpiryDeleteBatches caps one sweep so maintenance cannot run
+	// unboundedly if messages expire as fast as they are deleted.
+	maxExpiryDeleteBatches = 200
+)
+
 // PostgresStorage implements the storage.Storage interface using PostgreSQL.
 type PostgresStorage struct {
 	pool   *pgxpool.Pool
@@ -185,13 +194,39 @@ func (s *PostgresStorage) UpdateMailboxAccess(ctx context.Context, mailboxID int
 // Message Operations
 // =============================================================================
 
+// StoreMessage assigns the next sequence number and inserts the message in one
+// transaction. The counter is incremented with UPDATE ... RETURNING, which locks
+// the mailbox row for the rest of the transaction, so two concurrent deliveries
+// to the same mailbox serialise rather than both reading the same value.
+//
+// The previous implementation read SELECT MAX(sequence_number) + 1 in a separate
+// statement, which two deliveries could both execute before either inserted.
+// Nothing enforces uniqueness on (mailbox_id, sequence_number), so the duplicate
+// was accepted -- it corrupted retrieval order and reader cursors instead of
+// raising an error.
 func (s *PostgresStorage) StoreMessage(ctx context.Context, mailbox *storage.MailboxRecord, msg *core.Message) (int, error) {
-	seq, err := s.GetNextSequence(ctx, mailbox.ID)
+	tx, err := s.pool.Begin(ctx)
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("begin store message: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	var seq int
+	err = tx.QueryRow(ctx, `
+		UPDATE mailboxes
+		SET current_sequence = current_sequence + 1
+		WHERE id = $1
+		RETURNING current_sequence`,
+		mailbox.ID,
+	).Scan(&seq)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return 0, storage.ErrMailboxNotFound
+		}
+		return 0, fmt.Errorf("increment mailbox sequence: %w", err)
 	}
 
-	_, err = s.pool.Exec(ctx, `
+	_, err = tx.Exec(ctx, `
 		INSERT INTO stored_messages (
 			mailbox_id, sequence_number, message_id, recipient_peer_id,
 			sender_peer_id, payload, priority, created_at, expires_at,
@@ -205,6 +240,10 @@ func (s *PostgresStorage) StoreMessage(ctx context.Context, mailbox *storage.Mai
 	)
 	if err != nil {
 		return 0, fmt.Errorf("store message: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return 0, fmt.Errorf("commit store message: %w", err)
 	}
 
 	s.logger.Debug("Stored message", "messageId", msg.MessageID, "sequence", seq)
@@ -271,16 +310,6 @@ func (s *PostgresStorage) DeleteMessages(ctx context.Context, messageIDs []strin
 	}
 	_, err := s.pool.Exec(ctx, `DELETE FROM stored_messages WHERE message_id = ANY($1)`, messageIDs)
 	return err
-}
-
-func (s *PostgresStorage) GetNextSequence(ctx context.Context, mailboxID int64) (int, error) {
-	var seq int
-	err := s.pool.QueryRow(ctx, `
-		SELECT COALESCE(MAX(sequence_number), 0) + 1
-		FROM stored_messages WHERE mailbox_id = $1`,
-		mailboxID,
-	).Scan(&seq)
-	return seq, err
 }
 
 func (s *PostgresStorage) GetMessageCount(ctx context.Context, mailboxID int64) (int, error) {
@@ -910,16 +939,48 @@ func (s *PostgresStorage) BrowseDirectory(ctx context.Context, query string, cur
 // Cleanup Operations
 // =============================================================================
 
+// DeleteExpiredMessages removes expired messages in bounded batches.
+//
+// A single unbounded DELETE over a large table holds one long transaction: a
+// wide lock footprint, a WAL spike, and bloat for autovacuum to chase
+// afterwards. Batching keeps each transaction short and lets maintenance be
+// cancelled between batches.
 func (s *PostgresStorage) DeleteExpiredMessages(ctx context.Context) (int, error) {
-	tag, err := s.pool.Exec(ctx, `DELETE FROM stored_messages WHERE expires_at < NOW()`)
-	if err != nil {
-		return 0, err
+	total := 0
+	for batch := 0; batch < maxExpiryDeleteBatches; batch++ {
+		if err := ctx.Err(); err != nil {
+			return total, err
+		}
+
+		tag, err := s.pool.Exec(ctx, `
+			DELETE FROM stored_messages
+			WHERE id IN (
+				SELECT id FROM stored_messages
+				WHERE expires_at < NOW()
+				LIMIT $1
+			)`,
+			expiryDeleteBatchSize,
+		)
+		if err != nil {
+			return total, err
+		}
+
+		deleted := int(tag.RowsAffected())
+		total += deleted
+		if deleted < expiryDeleteBatchSize {
+			if total > 0 {
+				s.logger.Info("Deleted expired messages", "count", total)
+			}
+			return total, nil
+		}
 	}
-	deleted := int(tag.RowsAffected())
-	if deleted > 0 {
-		s.logger.Info("Deleted expired messages", "count", deleted)
-	}
-	return deleted, nil
+
+	// Hit the batch ceiling with work still outstanding. Say so rather than
+	// reporting a clean sweep -- the next maintenance tick picks up the rest.
+	s.logger.Warn("Expired message sweep hit its batch ceiling; more remain",
+		"deleted", total, "max_batches", maxExpiryDeleteBatches,
+		"batch_size", expiryDeleteBatchSize)
+	return total, nil
 }
 
 func (s *PostgresStorage) EnforceRetentionPolicy(ctx context.Context, mailbox *storage.MailboxRecord) error {

@@ -15,6 +15,10 @@ CREATE TABLE IF NOT EXISTS mailboxes (
     max_messages INTEGER NOT NULL DEFAULT 1000,
     retention_days INTEGER NOT NULL DEFAULT 30,
     retention_count INTEGER,
+    -- Monotonic per-mailbox message counter. Incremented with UPDATE ... RETURNING
+    -- inside the same transaction as the message insert, so concurrent deliveries
+    -- to one mailbox cannot be handed the same sequence number.
+    current_sequence INTEGER NOT NULL DEFAULT 0,
     
     CONSTRAINT uq_mailbox_owner_folder UNIQUE(owner_peer_id, folder_path)
 );
@@ -328,6 +332,45 @@ ORDER BY priority DESC;
 
 -- Grant schema usage to ricochet user
 GRANT USAGE ON SCHEMA public TO ricochet;
+
+-- =============================================================================
+-- IN-PLACE UPGRADES
+-- =============================================================================
+-- This file is re-run against existing databases, so changes to tables that
+-- already exist go here rather than in the CREATE TABLE above (which is skipped
+-- by IF NOT EXISTS). Everything in this section must be idempotent.
+
+-- mailboxes.current_sequence (added 2026-08): replaces computing the next
+-- message sequence as SELECT MAX(sequence_number) + 1, which two concurrent
+-- deliveries could both read before either inserted, producing duplicates.
+-- Nothing enforced uniqueness on (mailbox_id, sequence_number), so the failure
+-- was silent -- it corrupted retrieval order and reader cursors rather than
+-- raising an error.
+ALTER TABLE mailboxes
+    ADD COLUMN IF NOT EXISTS current_sequence INTEGER NOT NULL DEFAULT 0;
+
+-- Backfill from existing messages. Without this, an upgraded mailbox restarts
+-- numbering at 1 and collides with the sequence numbers it already handed out.
+-- Idempotent: re-running only ever raises the counter to the true maximum.
+UPDATE mailboxes m
+SET current_sequence = GREATEST(
+        m.current_sequence,
+        COALESCE((SELECT MAX(sm.sequence_number) FROM stored_messages sm
+                  WHERE sm.mailbox_id = m.id), 0)
+    )
+WHERE m.current_sequence < COALESCE(
+        (SELECT MAX(sm.sequence_number) FROM stored_messages sm
+         WHERE sm.mailbox_id = m.id), 0);
+
+-- A UNIQUE constraint on (mailbox_id, sequence_number) would turn any future
+-- regression here into a loud error rather than silent corruption. It is
+-- deliberately not added: databases predating this change may already hold
+-- duplicates, and the constraint would fail to build against them. Add it once
+-- a deployment has verified it is clean.
+
+-- =============================================================================
+-- PERMISSIONS
+-- =============================================================================
 
 -- Grant table permissions to ricochet user
 GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO ricochet;

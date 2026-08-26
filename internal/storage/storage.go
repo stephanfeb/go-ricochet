@@ -39,7 +39,6 @@ type Storage interface {
 	RetrieveMessages(ctx context.Context, mailbox *MailboxRecord, fromSequence *int, maxMessages *int, minPriority *core.MessagePriority) ([]*core.Message, error)
 	DeleteMessage(ctx context.Context, messageID string) error
 	DeleteMessages(ctx context.Context, messageIDs []string) error
-	GetNextSequence(ctx context.Context, mailboxID int64) (int, error)
 	GetMessageCount(ctx context.Context, mailboxID int64) (int, error)
 
 	// Flag operations (IMAP-style)

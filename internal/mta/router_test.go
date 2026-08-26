@@ -77,10 +77,6 @@ func (m *mockStorage) RetrieveMessages(_ context.Context, _ *storage.MailboxReco
 	return m.messages, nil
 }
 
-func (m *mockStorage) GetNextSequence(_ context.Context, _ int64) (int, error) {
-	return m.nextSeq, nil
-}
-
 // --- Lifecycle ---
 
 func (m *mockStorage) Initialize(_ context.Context) error { return nil }

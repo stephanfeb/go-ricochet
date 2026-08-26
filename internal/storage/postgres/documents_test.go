@@ -289,3 +289,140 @@ func TestPutDocumentArchivesPreviousVersion(t *testing.T) {
 		t.Fatalf("current body is %q, want %q", current.Content, "v2-body")
 	}
 }
+
+// TestStoreMessageSequencesAreUnique is the regression test for the sequence
+// race: the next sequence number was read with SELECT MAX(...) + 1 in a separate
+// statement from the insert, so concurrent deliveries to one mailbox could all
+// read the same value. Nothing enforces uniqueness on (mailbox_id,
+// sequence_number), so the duplicates were accepted silently.
+func TestStoreMessageSequencesAreUnique(t *testing.T) {
+	store := newTestStorage(t)
+	ctx := context.Background()
+	owner := newTestPeer(t)
+
+	addr := &core.MailboxAddress{
+		OwnerID:    owner,
+		FolderPath: "inbox",
+		Type:       core.MailboxPrivate,
+	}
+	mailbox, err := store.GetOrCreateMailbox(ctx, addr, 1000, 30, nil)
+	if err != nil {
+		t.Fatalf("create mailbox: %v", err)
+	}
+
+	const senders = 16
+	var (
+		wg   sync.WaitGroup
+		mu   sync.Mutex
+		seqs []int
+	)
+	start := make(chan struct{})
+
+	for i := 0; i < senders; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+
+			msg := &core.Message{
+				// message_id is globally unique, so scope it to this run's mailbox.
+				MessageID:        fmt.Sprintf("msg-%d-%d", mailbox.ID, i),
+				RecipientPeerID:  owner.String(),
+				SenderPeerID:     owner.String(),
+				Payload:          []byte(fmt.Sprintf("payload-%d", i)),
+				Priority:         core.PriorityNormal,
+				CreatedTimestamp: time.Now().UnixMilli(),
+				ExpiryTimestamp:  time.Now().Add(time.Hour).UnixMilli(),
+			}
+			seq, err := store.StoreMessage(ctx, mailbox, msg)
+			if err != nil {
+				t.Errorf("sender %d: %v", i, err)
+				return
+			}
+			mu.Lock()
+			seqs = append(seqs, seq)
+			mu.Unlock()
+		}(i)
+	}
+
+	close(start)
+	wg.Wait()
+
+	if len(seqs) != senders {
+		t.Fatalf("stored %d messages, want %d", len(seqs), senders)
+	}
+
+	seen := make(map[int]int, len(seqs))
+	for _, seq := range seqs {
+		seen[seq]++
+	}
+	if len(seen) != senders {
+		t.Fatalf("%d concurrent deliveries produced %d distinct sequence numbers: %v",
+			senders, len(seen), seen)
+	}
+
+	// The assigned numbers must be exactly 1..senders with no gaps, so reader
+	// cursors can rely on them.
+	for want := 1; want <= senders; want++ {
+		if seen[want] != 1 {
+			t.Fatalf("sequence %d was assigned %d times, want exactly 1", want, seen[want])
+		}
+	}
+}
+
+// TestDeleteExpiredMessagesBatches checks the batched sweep removes everything
+// expired across more than one batch while leaving live messages alone.
+func TestDeleteExpiredMessagesBatches(t *testing.T) {
+	store := newTestStorage(t)
+	ctx := context.Background()
+	owner := newTestPeer(t)
+
+	addr := &core.MailboxAddress{
+		OwnerID:    owner,
+		FolderPath: "sweep",
+		Type:       core.MailboxPrivate,
+	}
+	mailbox, err := store.GetOrCreateMailbox(ctx, addr, 10000, 30, nil)
+	if err != nil {
+		t.Fatalf("create mailbox: %v", err)
+	}
+
+	const expired = 40
+	const live = 5
+	now := time.Now()
+
+	for i := 0; i < expired+live; i++ {
+		expiry := now.Add(time.Hour)
+		if i < expired {
+			expiry = now.Add(-time.Hour)
+		}
+		msg := &core.Message{
+			MessageID:        fmt.Sprintf("sweep-%d-%d", mailbox.ID, i),
+			RecipientPeerID:  owner.String(),
+			SenderPeerID:     owner.String(),
+			Payload:          []byte("x"),
+			Priority:         core.PriorityNormal,
+			CreatedTimestamp: now.UnixMilli(),
+			ExpiryTimestamp:  expiry.UnixMilli(),
+		}
+		if _, err := store.StoreMessage(ctx, mailbox, msg); err != nil {
+			t.Fatalf("store %d: %v", i, err)
+		}
+	}
+
+	deleted, err := store.DeleteExpiredMessages(ctx)
+	if err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+	if deleted < expired {
+		t.Fatalf("swept %d messages, want at least %d", deleted, expired)
+	}
+
+	remaining, err := store.GetMessageCount(ctx, mailbox.ID)
+	if err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if remaining != live {
+		t.Fatalf("%d messages remain in the mailbox, want %d", remaining, live)
+	}
+}
