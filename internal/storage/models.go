@@ -176,6 +176,21 @@ type FeedEntryRecord struct {
 	EntryType       string    `json:"entryType,omitempty"`
 }
 
+// MultiFeedQuery describes a single feed to retrieve in a batch request.
+type MultiFeedQuery struct {
+	OwnerPeerID  string
+	Path         string
+	FromSequence *int
+	Limit        int
+}
+
+// MultiFeedResult holds the entries returned for one feed in a batch request.
+type MultiFeedResult struct {
+	Entries []*FeedEntryRecord
+	HasMore bool
+	Error   string // per-feed error (non-fatal)
+}
+
 // CollectionRecord represents a stored collection.
 type CollectionRecord struct {
 	ID             int64     `json:"id"`

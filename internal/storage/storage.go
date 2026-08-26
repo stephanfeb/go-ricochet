@@ -69,6 +69,7 @@ type Storage interface {
 	GetFeedEntry(ctx context.Context, feedID int64, sequenceNumber int) (*FeedEntryRecord, error)
 	GetFeedEntries(ctx context.Context, feedID int64, fromSeq, toSeq *int, entryType string, limit int) ([]*FeedEntryRecord, bool, error)
 	EnforceFeedRetention(ctx context.Context, feed *FeedRecord) (int, error)
+	GetMultiFeedEntries(ctx context.Context, queries []MultiFeedQuery) (map[string]*MultiFeedResult, error)
 
 	// Collection operations
 	CreateCollection(ctx context.Context, ownerID peer.ID, path, name string) (*CollectionRecord, error)

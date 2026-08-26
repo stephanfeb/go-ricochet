@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -17,11 +18,22 @@ import (
 // Feed Operations
 // =============================================================================
 
+// CreateFeed creates a feed, or returns the existing one if (owner, path) is
+// already taken. The upsert is what makes the SFA auto-create path safe: two
+// concurrent non-owner APPENDs can both see no feed and both try to create it,
+// and the loser of that race would otherwise get a unique violation. Title and
+// description are only overwritten when non-empty, since the auto-create path
+// passes "" for both and must not wipe an existing feed's metadata.
+// collaborative_mode is deliberately left alone on conflict — a re-create must
+// not silently flip an existing feed's access model.
 func (s *PostgresStorage) CreateFeed(ctx context.Context, ownerID peer.ID, path, title, description string, collaborative bool) (*storage.FeedRecord, error) {
 	var r storage.FeedRecord
 	err := s.pool.QueryRow(ctx, `
 		INSERT INTO feeds (owner_peer_id, path, title, description, collaborative_mode)
 		VALUES ($1, $2, $3, $4, $5)
+		ON CONFLICT ON CONSTRAINT uq_feed_owner_path DO UPDATE SET
+			title = COALESCE(NULLIF(EXCLUDED.title, ''), feeds.title),
+			description = COALESCE(NULLIF(EXCLUDED.description, ''), feeds.description)
 		RETURNING id, owner_peer_id, path, title, description, entry_content_type,
 				  created_at, last_entry_at, current_sequence, max_entries, max_age_days,
 				  collaborative_mode`,
@@ -231,6 +243,93 @@ func (s *PostgresStorage) GetFeedEntries(ctx context.Context, feedID int64, from
 	}
 
 	return records, hasMore, nil
+}
+
+// =============================================================================
+// Batch Feed Retrieval
+// =============================================================================
+
+// maxConcurrentFeedQueries bounds how many feeds in one batch are read from the
+// database at once, so a large batch can't starve the rest of the pool.
+const maxConcurrentFeedQueries = 10
+
+// GetMultiFeedEntries retrieves entries from multiple feeds, fetching each
+// feed's entries in parallel. Results are keyed by "ownerPeerID/path".
+//
+// A per-feed failure is reported in that feed's MultiFeedResult.Error rather
+// than failing the whole batch, so one bad path can't sink the request.
+func (s *PostgresStorage) GetMultiFeedEntries(ctx context.Context, queries []storage.MultiFeedQuery) (map[string]*storage.MultiFeedResult, error) {
+	results := make(map[string]*storage.MultiFeedResult, len(queries))
+
+	type feedRef struct {
+		key   string
+		id    int64
+		query storage.MultiFeedQuery
+	}
+
+	// Resolve each (owner, path) to a feed ID, recording per-feed errors as we go.
+	refs := make([]feedRef, 0, len(queries))
+	for _, q := range queries {
+		key := q.OwnerPeerID + "/" + q.Path
+		ownerID, err := peer.Decode(q.OwnerPeerID)
+		if err != nil {
+			results[key] = &storage.MultiFeedResult{Error: "invalid ownerPeerId"}
+			continue
+		}
+
+		feed, err := s.GetFeed(ctx, ownerID, q.Path)
+		if err != nil {
+			results[key] = &storage.MultiFeedResult{Error: err.Error()}
+			continue
+		}
+		if feed == nil {
+			results[key] = &storage.MultiFeedResult{Error: "feed not found"}
+			continue
+		}
+
+		refs = append(refs, feedRef{key: key, id: feed.ID, query: q})
+	}
+
+	// Fetch each feed's entries concurrently, bounded by a semaphore so a large
+	// batch can't monopolise the connection pool.
+	type indexedResult struct {
+		key    string
+		result *storage.MultiFeedResult
+	}
+	ch := make(chan indexedResult, len(refs))
+
+	sem := make(chan struct{}, maxConcurrentFeedQueries)
+	var wg sync.WaitGroup
+
+	for _, ref := range refs {
+		wg.Add(1)
+		go func(r feedRef) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
+			limit := r.query.Limit
+			if limit <= 0 {
+				limit = 50
+			}
+
+			entries, hasMore, err := s.GetFeedEntries(ctx, r.id, r.query.FromSequence, nil, "", limit)
+			if err != nil {
+				ch <- indexedResult{key: r.key, result: &storage.MultiFeedResult{Error: err.Error()}}
+				return
+			}
+			ch <- indexedResult{key: r.key, result: &storage.MultiFeedResult{Entries: entries, HasMore: hasMore}}
+		}(ref)
+	}
+
+	wg.Wait()
+	close(ch)
+
+	for ir := range ch {
+		results[ir.key] = ir.result
+	}
+
+	return results, nil
 }
 
 // =============================================================================

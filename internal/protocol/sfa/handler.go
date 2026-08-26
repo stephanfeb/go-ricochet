@@ -25,11 +25,12 @@ const ProtocolID = protocol.ID("/ricochet/store/feed/1.0.0")
 
 // Feed operation constants.
 const (
-	OpCREATE = "CREATE"
-	OpGET    = "GET"
-	OpAPPEND = "APPEND"
-	OpDELETE = "DELETE"
-	OpLIST   = "LIST"
+	OpCREATE    = "CREATE"
+	OpGET       = "GET"
+	OpAPPEND    = "APPEND"
+	OpDELETE    = "DELETE"
+	OpLIST      = "LIST"
+	OpBATCH_GET = "BATCH_GET"
 )
 
 // Path validation constants.
@@ -73,6 +74,17 @@ type FeedRequest struct {
 	FromSequence *int `json:"fromSequence,omitempty"`
 	ToSequence   *int `json:"toSequence,omitempty"`
 	Limit        *int `json:"limit,omitempty"`
+
+	// BATCH_GET parameters
+	BatchQueries []BatchQuery `json:"batchQueries,omitempty"`
+}
+
+// BatchQuery describes a single feed to retrieve in a BATCH_GET request.
+type BatchQuery struct {
+	OwnerPeerID  string `json:"ownerPeerId"`
+	Path         string `json:"path"`
+	FromSequence *int   `json:"fromSequence,omitempty"`
+	Limit        *int   `json:"limit,omitempty"`
 }
 
 // FeedResponse is the JSON response format for feed operations.
@@ -94,11 +106,12 @@ func NewPipeline(logger *slog.Logger, pool *codec.BufferPool, reg *forge.Registr
 		forge.JSONDeserialize[FeedRequest](),
 		commonValidation(),
 		middleware.OperationRouter("operation", map[string]forge.Middleware{
-			OpCREATE: createHandler,
-			OpGET:    getHandler,
-			OpAPPEND: appendHandler,
-			OpDELETE: deleteHandler,
-			OpLIST:   listHandler,
+			OpCREATE:    createHandler,
+			OpGET:       getHandler,
+			OpAPPEND:    appendHandler,
+			OpDELETE:    deleteHandler,
+			OpLIST:      listHandler,
+			OpBATCH_GET: batchGetHandler,
 		}),
 	).WithRegistry(reg)
 }
@@ -158,6 +171,12 @@ func feedResponseWriter() forge.Middleware {
 func commonValidation() forge.Middleware {
 	return func(sc *forge.StreamContext, next func()) {
 		req := sc.Request.(*FeedRequest)
+
+		// BATCH_GET has its own validation (multiple owners/paths in batchQueries).
+		if req.Operation == OpBATCH_GET {
+			next()
+			return
+		}
 
 		// Parse owner peer ID
 		if req.OwnerPeerID == "" {
@@ -518,6 +537,102 @@ func listHandler(sc *forge.StreamContext, next func()) {
 	}
 
 	bodyBytes, err := json.Marshal(entries)
+	if err != nil {
+		sc.Response = &FeedResponse{Status: StatusInternalError}
+		return
+	}
+
+	sc.Response = &FeedResponse{
+		Status: StatusOK,
+		Headers: map[string]any{
+			"Content-Type": "application/json",
+		},
+		Body: base64.StdEncoding.EncodeToString(bodyBytes),
+	}
+}
+
+// batchGetHandler handles the BATCH_GET operation: retrieves entries from multiple feeds in one request.
+func batchGetHandler(sc *forge.StreamContext, next func()) {
+	store, _ := forge.ServiceFrom[storage.Storage](sc, "storage")
+	req := sc.Request.(*FeedRequest)
+
+	if len(req.BatchQueries) == 0 {
+		sc.Response = &FeedResponse{Status: StatusBadRequest,
+			Headers: map[string]any{"Error": "batchQueries is required"}}
+		return
+	}
+	if len(req.BatchQueries) > 50 {
+		sc.Response = &FeedResponse{Status: StatusBadRequest,
+			Headers: map[string]any{"Error": "batchQueries exceeds maximum of 50"}}
+		return
+	}
+
+	// Validate all paths and build storage queries.
+	queries := make([]storage.MultiFeedQuery, 0, len(req.BatchQueries))
+	for _, bq := range req.BatchQueries {
+		if bq.OwnerPeerID == "" || bq.Path == "" {
+			continue
+		}
+		if err := validatePath(bq.Path); err != nil {
+			continue
+		}
+		limit := 50
+		if bq.Limit != nil && *bq.Limit > 0 {
+			limit = *bq.Limit
+		}
+		queries = append(queries, storage.MultiFeedQuery{
+			OwnerPeerID:  bq.OwnerPeerID,
+			Path:         bq.Path,
+			FromSequence: bq.FromSequence,
+			Limit:        limit,
+		})
+	}
+
+	ctx := context.Background()
+	results, err := store.GetMultiFeedEntries(ctx, queries)
+	if err != nil {
+		sc.Logger.Error("failed to batch get feed entries", "error", err)
+		sc.Response = &FeedResponse{Status: StatusInternalError}
+		return
+	}
+
+	// Build response: {"feeds": {"owner/path": {"entries": [...], "hasMore": bool}}}
+	type entryJSON struct {
+		Seq       int    `json:"seq"`
+		Type      string `json:"type,omitempty"`
+		Content   string `json:"content"`
+		Hash      string `json:"hash"`
+		CreatedAt int64  `json:"createdAt"`
+		CreatedBy string `json:"createdBy,omitempty"`
+	}
+
+	type feedResult struct {
+		Entries []entryJSON `json:"entries"`
+		HasMore bool        `json:"hasMore"`
+		Error   string      `json:"error,omitempty"`
+	}
+
+	feeds := make(map[string]*feedResult, len(results))
+	for key, mr := range results {
+		fr := &feedResult{
+			HasMore: mr.HasMore,
+			Error:   mr.Error,
+			Entries: make([]entryJSON, 0, len(mr.Entries)),
+		}
+		for _, e := range mr.Entries {
+			fr.Entries = append(fr.Entries, entryJSON{
+				Seq:       e.SequenceNumber,
+				Type:      e.EntryType,
+				Content:   base64.StdEncoding.EncodeToString(e.Content),
+				Hash:      e.ContentHash,
+				CreatedAt: e.CreatedAt.UnixMilli(),
+				CreatedBy: e.CreatedByPeerID,
+			})
+		}
+		feeds[key] = fr
+	}
+
+	bodyBytes, err := json.Marshal(map[string]any{"feeds": feeds})
 	if err != nil {
 		sc.Response = &FeedResponse{Status: StatusInternalError}
 		return

@@ -250,6 +250,10 @@ func (m *mockStorage) EnforceFeedRetention(_ context.Context, _ *storage.FeedRec
 	panic("not implemented")
 }
 
+func (m *mockStorage) GetMultiFeedEntries(_ context.Context, _ []storage.MultiFeedQuery) (map[string]*storage.MultiFeedResult, error) {
+	panic("not implemented")
+}
+
 // --- Cleanup operations ---
 
 func (m *mockStorage) DeleteExpiredMessages(_ context.Context) (int, error) {

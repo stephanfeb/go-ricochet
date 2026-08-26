@@ -348,6 +348,106 @@ func (c *Client) GetFeedEntries(ctx context.Context, ownerPeerID peer.ID, path s
 	return entries, hasMore, nil
 }
 
+// BatchFeedQuery describes a single feed to retrieve in a batch request.
+type BatchFeedQuery struct {
+	OwnerPeerID  peer.ID
+	Path         string
+	FromSequence *int
+	Limit        *int
+}
+
+// BatchFeedResult holds the entries returned for one feed in a batch request.
+type BatchFeedResult struct {
+	Entries []*FeedEntry
+	HasMore bool
+	Error   string
+}
+
+// GetMultiFeedEntries retrieves entries from multiple feeds in a single request.
+// Results are keyed by "ownerPeerID/path".
+func (c *Client) GetMultiFeedEntries(ctx context.Context, queries []BatchFeedQuery, opts ...FeedOption) (map[string]*BatchFeedResult, error) {
+	batchQueries := make([]sfa.BatchQuery, 0, len(queries))
+	for _, q := range queries {
+		batchQueries = append(batchQueries, sfa.BatchQuery{
+			OwnerPeerID:  q.OwnerPeerID.String(),
+			Path:         q.Path,
+			FromSequence: q.FromSequence,
+			Limit:        q.Limit,
+		})
+	}
+
+	req := &sfa.FeedRequest{
+		Operation:    sfa.OpBATCH_GET,
+		BatchQueries: batchQueries,
+	}
+
+	resp, err := c.doFeed(ctx, req, opts)
+	if err != nil {
+		return nil, err
+	}
+
+	if resp.Status != sfa.StatusOK {
+		errMsg, _ := resp.Headers["Error"].(string)
+		if errMsg == "" {
+			errMsg = fmt.Sprintf("batch get failed with status %d", resp.Status)
+		}
+		return nil, fmt.Errorf("batch get feed entries: %s", errMsg)
+	}
+
+	if resp.Body == "" {
+		return nil, nil
+	}
+
+	bodyBytes, err := base64.StdEncoding.DecodeString(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("decode batch body: %w", err)
+	}
+
+	var raw struct {
+		Feeds map[string]struct {
+			Entries []struct {
+				Seq       int    `json:"seq"`
+				Type      string `json:"type"`
+				Content   string `json:"content"`
+				Hash      string `json:"hash"`
+				CreatedAt int64  `json:"createdAt"`
+				CreatedBy string `json:"createdBy"`
+			} `json:"entries"`
+			HasMore bool   `json:"hasMore"`
+			Error   string `json:"error"`
+		} `json:"feeds"`
+	}
+	if err := json.Unmarshal(bodyBytes, &raw); err != nil {
+		return nil, fmt.Errorf("unmarshal batch response: %w", err)
+	}
+
+	results := make(map[string]*BatchFeedResult, len(raw.Feeds))
+	for key, fr := range raw.Feeds {
+		result := &BatchFeedResult{
+			HasMore: fr.HasMore,
+			Error:   fr.Error,
+			Entries: make([]*FeedEntry, 0, len(fr.Entries)),
+		}
+		for _, e := range fr.Entries {
+			content, err := base64.StdEncoding.DecodeString(e.Content)
+			if err != nil {
+				return nil, fmt.Errorf("decode entry content in %s: %w", key, err)
+			}
+			result.Entries = append(result.Entries, &FeedEntry{
+				Seq:       e.Seq,
+				Type:      e.Type,
+				Content:   content,
+				Hash:      e.Hash,
+				CreatedAt: e.CreatedAt,
+				CreatedBy: e.CreatedBy,
+			})
+		}
+		results[key] = result
+	}
+
+	return results, nil
+}
+
 // DeleteFeed deletes a feed. Returns true if the feed existed and was deleted.
 func (c *Client) DeleteFeed(ctx context.Context, path string, opts ...FeedOption) (bool, error) {
 	req := &sfa.FeedRequest{
