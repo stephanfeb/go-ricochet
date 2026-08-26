@@ -132,7 +132,7 @@ func DefaultConfig() *ServerConfig {
 				Database:       "ricochet",
 				Username:       "ricochet",
 				Password:       "",
-				PoolSize:       10,
+				PoolSize:       25,
 				SSLMode:        "require",
 				ConnectTimeout: 30 * time.Second,
 			},
@@ -186,6 +186,7 @@ func ProductionConfig() *ServerConfig {
 	cfg := DefaultConfig()
 	cfg.MaxStorageBytes = 50 * 1024 * 1024 * 1024 // 50GB
 	cfg.MaxConcurrentConnections = 10000
+	cfg.Storage.Postgres.PoolSize = 50
 	cfg.EnableAuthentication = true
 	return cfg
 }

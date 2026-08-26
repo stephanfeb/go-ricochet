@@ -68,6 +68,22 @@ type MailboxInfo struct {
 	CreatedAt     int64  `json:"createdAt"`
 }
 
+// MailboxDetail is the live state of a single mailbox as returned by
+// GetMailboxInfo. Unlike MailboxInfo (from ListMailboxes) it carries the current
+// MessageCount, so MessageCount vs MaxMessages tells you whether a mailbox has
+// hit its cap — once they're equal the server rejects new deposits
+// (MailboxFullError), which surfaces to senders as a failed delivery.
+type MailboxDetail struct {
+	Address        string `json:"address"`
+	Type           string `json:"type"`
+	MessageCount   int    `json:"messageCount"`
+	MaxMessages    int    `json:"maxMessages"`
+	RetentionDays  int    `json:"retentionDays"`
+	RetentionCount *int   `json:"retentionCount,omitempty"`
+	CreatedAt      int64  `json:"createdAt"`
+	LastAccessedAt int64  `json:"lastAccessedAt"`
+}
+
 // New creates a new Client with the given libp2p host and configuration.
 func New(h host.Host, cfg Config) *Client {
 	if cfg.ConnectionTimeout == 0 {
@@ -123,7 +139,7 @@ func (c *Client) openStream(ctx context.Context, serverID peer.ID, pid protocol.
 // specified recipient. The server is selected from the preferred server list.
 func (c *Client) SendMessage(ctx context.Context, recipient peer.ID, payload []byte, opts ...SendOption) (*SendResult, error) {
 	cfg := sendConfig{
-		Priority: core.PriorityNormal,
+		Priority: PriorityNormal,
 	}
 	for _, o := range opts {
 		o(&cfg)
@@ -463,8 +479,11 @@ func (c *Client) DeleteMessages(ctx context.Context, messageIDs []string) (*core
 // MMA operations
 // ---------------------------------------------------------------------------
 
-// doAdmin is the shared helper for all MMA admin operations.
-func (c *Client) doAdmin(ctx context.Context, req *mma.AdminRequest) (*mma.AdminResponse, error) {
+// doAdminRaw performs one MMA request/response round-trip and returns the raw
+// response frame. Most callers want doAdmin (which decodes the standard
+// AdminResponse envelope); getMailboxInfo returns a non-standard {success,data}
+// envelope, so it decodes the raw bytes itself.
+func (c *Client) doAdminRaw(ctx context.Context, req *mma.AdminRequest) ([]byte, error) {
 	reqData, err := json.Marshal(req)
 	if err != nil {
 		return nil, fmt.Errorf("marshal admin request: %w", err)
@@ -488,6 +507,17 @@ func (c *Client) doAdmin(ctx context.Context, req *mma.AdminRequest) (*mma.Admin
 	respData, err := frame.ReadFrame(s)
 	if err != nil {
 		return nil, fmt.Errorf("read admin response: %w", err)
+	}
+
+	return respData, nil
+}
+
+// doAdmin is the shared helper for MMA admin operations that return the standard
+// AdminResponse envelope.
+func (c *Client) doAdmin(ctx context.Context, req *mma.AdminRequest) (*mma.AdminResponse, error) {
+	respData, err := c.doAdminRaw(ctx, req)
+	if err != nil {
+		return nil, err
 	}
 
 	var resp mma.AdminResponse
@@ -611,6 +641,46 @@ func (c *Client) ListMailboxes(ctx context.Context) ([]MailboxInfo, error) {
 	}
 
 	return infos, nil
+}
+
+// GetMailboxInfo returns the live state of one of the caller's mailboxes,
+// including its current MessageCount. This is the observability call for
+// diagnosing a mailbox that may have hit its MaxMessages cap: once
+// MessageCount == MaxMessages the server rejects new deposits, so senders see
+// their deliveries fail. folderPath is the mailbox folder (e.g. "vault/<id>").
+//
+// The mailbox must be owned by this client's peer — the server resolves it
+// against the caller's identity, so query a mailbox from the peer that owns it.
+func (c *Client) GetMailboxInfo(ctx context.Context, folderPath string) (*MailboxDetail, error) {
+	req := &mma.AdminRequest{
+		OperationType: mma.OpGetMailboxInfo,
+		OwnerPeerID:   c.host.ID().String(),
+		FolderPath:    folderPath,
+	}
+
+	// getMailboxInfo replies with a non-standard {success, data} envelope (to
+	// match the Dart client), so decode the raw frame rather than AdminResponse.
+	respData, err := c.doAdminRaw(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+
+	var envelope struct {
+		Success      bool           `json:"success"`
+		ErrorMessage string         `json:"errorMessage"`
+		Data         *MailboxDetail `json:"data"`
+	}
+	if err := json.Unmarshal(respData, &envelope); err != nil {
+		return nil, fmt.Errorf("unmarshal mailbox info: %w", err)
+	}
+	if !envelope.Success {
+		return nil, fmt.Errorf("admin operation %s failed: %s", req.OperationType, envelope.ErrorMessage)
+	}
+	if envelope.Data == nil {
+		return nil, fmt.Errorf("mailbox info response had no data")
+	}
+
+	return envelope.Data, nil
 }
 
 // ---------------------------------------------------------------------------

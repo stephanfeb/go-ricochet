@@ -7,12 +7,22 @@ import (
 	"github.com/twostack/go-ricochet/internal/core"
 )
 
+// MessagePriority is the priority level for a message.
+type MessagePriority = core.MessagePriority
+
+const (
+	PriorityLow    = core.PriorityLow
+	PriorityNormal = core.PriorityNormal
+	PriorityHigh   = core.PriorityHigh
+	PriorityUrgent = core.PriorityUrgent
+)
+
 // SendOption configures SendMessage behavior.
 type SendOption func(*sendConfig)
 
 type sendConfig struct {
 	FolderPath           string
-	Priority             core.MessagePriority
+	Priority             MessagePriority
 	Expiry               time.Duration
 	Persistent           bool
 	Compress             bool
@@ -28,7 +38,7 @@ func WithFolderPath(path string) SendOption {
 }
 
 // WithPriority sets the message priority level.
-func WithPriority(p core.MessagePriority) SendOption {
+func WithPriority(p MessagePriority) SendOption {
 	return func(c *sendConfig) {
 		c.Priority = p
 	}
@@ -77,7 +87,7 @@ type retrieveConfig struct {
 	FolderPath   string
 	FromSequence *uint64
 	MaxMessages  *int
-	MinPriority  *core.MessagePriority
+	MinPriority  *MessagePriority
 	TargetPeerID *peer.ID
 	ServerPeerID *peer.ID
 }
@@ -104,7 +114,7 @@ func WithMaxMessages(n int) RetrieveOption {
 }
 
 // WithMinPriority sets the minimum priority filter for retrieval.
-func WithMinPriority(p core.MessagePriority) RetrieveOption {
+func WithMinPriority(p MessagePriority) RetrieveOption {
 	return func(c *retrieveConfig) {
 		c.MinPriority = &p
 	}
