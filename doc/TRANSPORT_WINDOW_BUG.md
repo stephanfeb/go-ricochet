@@ -1,9 +1,82 @@
 # Transport stalls after ~256KB per connection
 
-**Status:** open, unfixed — blocks the scale roadmap
+**Status:** **RESOLVED** — fixed in `go-udx` `d9b1dc7`, verified from go-ricochet 2026-08-27
 **Found:** 2026-08-27, while measuring `BATCH_PUT` (`98216e6`)
 **Layer:** `go-udx` / `go-libp2p-udx-transport`, not go-ricochet
-**Severity:** caps every connection's lifetime transfer at roughly a quarter of a megabyte
+**Was:** capped every connection's lifetime transfer at roughly a quarter of a megabyte
+
+## Resolution
+
+Three independent defects were stacked behind the single symptom.
+
+**The ceiling itself.** The receiver advertised a window size and the sender
+applied it as an absolute limit against a *lifetime-cumulative* `dataSent`, so
+the advertised window doubled as a lifetime transfer cap. Auto-tuning then
+converged to a hard stop: each round granted about `W/4` while raising the
+trigger to `(W×1.25)/4`, so after roughly seven updates the grant could never
+reach the threshold again. End to end it stalled at exactly 262,144 bytes.
+
+Fixed with QUIC `MAX_STREAM_DATA` semantics — `WINDOW_UPDATE` now carries
+`dataConsumed + recvWindow` as an absolute offset, driven by `Read` rather than
+`DeliverData`, triggering at half-window. Absolute offsets matter beyond
+correctness: control packets use `seq=0` and are never retransmitted, so a delta
+scheme would lose credit permanently on a single drop. `Write` also emits
+`STREAM_DATA_BLOCKED` when stalled, which the peer answers by re-advertising.
+
+**ACK amplification**, previously masked by the cap. Every packet with a nonzero
+stream ID was ACKed, including ack-only packets, so each ACK drew an ACK in
+return without end. 64KB of payload produced 183,751 ack-only datagrams for 48
+data packets; now 49.
+
+**The congestion controller had never run.** `HandleAckFrame` deleted the packet
+it acknowledged, then `connection.go` called `GetPacket(seq)` on that deleted
+entry, got nil, and skipped `OnPacketAcked` — always. CUBIC, cwnd, pacing and RTT
+sampling were all implemented and completely unreachable. With ACKs wired
+through and the send path gated, 8MB now transfers in 2.17s using 12,299
+datagrams; 64MB sustains 54MB/s. Before, an 8MB transfer wedged permanently at
+1.6MB delivered after 2.3 million datagrams.
+
+### Verified from go-ricochet
+
+Re-running the exact reproductions from this document against the fixed
+transport:
+
+| Repro | Before | After |
+|-------|--------|-------|
+| `GET` 32KB in a loop | stalled at read 7, 229,376 bytes | 90 reads, 2.8MB, 132ms, contents intact |
+| `PUT` 205KB in a loop | stalled on the 2nd write | 15 writes, 2.9MB, 191ms |
+| 500-document vault sync | could not complete | 10 requests, ~300ms |
+
+### Consequences for go-ricochet
+
+- `pkg/client.RecommendedBatchBytes` came off its 128KB workaround. It is now
+  2MB, chosen from the vault-sync measurement rather than from this ceiling.
+- **A stall now surfaces as `ErrDeadlineExceeded` rather than a 40s yamux
+  keepalive timeout.** `go-udx` deadlines were previously checked only on entry
+  and then waited on a condition variable with no timer, which is why the symptom
+  looked like a keepalive failure. `pkg/client` already sets stream deadlines
+  from the caller's context (`client.go:127`), so nothing needed changing here —
+  but error text seen by clients differs.
+
+### Known, still open in go-udx
+
+- **Concurrent streams on one connection are broken**, and were before this work.
+  `sendPacket` allocates one connection-wide sequence number, but `DeliverData`
+  uses it as a per-stream ordering key, so with multiple streams everything after
+  the first packet sits in `recvOOO` forever. The fix needs a per-stream offset
+  in `StreamFrame` — a wire change requiring Dart coordination — and is carried
+  as a skipped test.
+
+  **This does not affect go-ricochet**, which runs a single UDX stream with yamux
+  multiplexing above it. Verified: `go-libp2p-udx-transport/transport.go:122`
+  opens exactly one stream per connection.
+- **Connection-level flow control is unenforced.** Enforcing a 1MB cap with no
+  `MAX_DATA` sender would only relocate the cliff.
+
+---
+
+## Original report
+
 
 ## Symptom
 
@@ -91,10 +164,6 @@ at 20 requests, so reads (100/min) are the easier path.
 
 ## Next steps
 
-1. Add a flow-control test in `go-udx` that pushes several megabytes through one
-   stream and asserts it completes — the existing `flow_control_test.go` covers
-   the accounting, not sustained transfer.
-2. Instrument window updates on both sides to find whether they stop being sent
-   or stop being applied.
-3. Once fixed, raise `RecommendedBatchBytes` in `pkg/client` and re-run the
-   vault-sync measurement.
+All resolved. Retained for the reproductions, which are now regression tests:
+`TestVaultSyncBatched` in `test/integration/batch_document_test.go` pushes ~1MB
+of documents over one connection, which is where this used to fail.

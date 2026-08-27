@@ -285,3 +285,90 @@ func TestBatchSendRejectsForgedSender(t *testing.T) {
 		t.Fatalf("honest message rejected: %s", results[0].ErrorMessage)
 	}
 }
+
+// TestVaultSyncBatched is the end-to-end shape of sumi's workload: a
+// 500-document vault where each document is one SDA write plus one mailbox
+// pointer message. Unbatched that is 1000 requests, and SDA's 20 writes/minute
+// puts a ~25 minute floor under the writes alone.
+//
+// It also guards the transport fix: ~1MB of documents crosses one connection,
+// which used to stall permanently at ~256KB (doc/TRANSPORT_WINDOW_BUG.md).
+func TestVaultSyncBatched(t *testing.T) {
+	server := newTestServer(t)
+	cl := newTestClient(t, server)
+	peerCl := newTestClient(t, server)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Second)
+	defer cancel()
+
+	ownerID := cl.PeerID()
+	const vaultSize = 500
+	body := make([]byte, 2048)
+
+	docs := make([]client.BatchDocumentPut, 0, vaultSize)
+	msgs := make([]client.BatchMessage, 0, vaultSize)
+	for i := 0; i < vaultSize; i++ {
+		docs = append(docs, client.BatchDocumentPut{
+			Path:        fmt.Sprintf("vault/note-%04d", i),
+			Content:     body,
+			ContentType: "application/octet-stream",
+		})
+		msgs = append(msgs, client.BatchMessage{
+			Recipient: peerCl.PeerID(),
+			Payload:   []byte(fmt.Sprintf("ptr:vault/note-%04d", i)),
+		})
+	}
+
+	requests := 0
+	for _, chunk := range client.BatchDocuments(docs) {
+		results, err := cl.PutDocuments(ctx, ownerID, chunk)
+		if err != nil {
+			t.Fatalf("batch put: %v", err)
+		}
+		requests++
+		for _, r := range results {
+			if !r.OK() {
+				t.Fatalf("document %s: status %d %s", r.Path, r.Status, r.Error)
+			}
+		}
+	}
+
+	for i := 0; i < len(msgs); i += client.MaxBatchMessages {
+		end := i + client.MaxBatchMessages
+		if end > len(msgs) {
+			end = len(msgs)
+		}
+		results, err := cl.SendMessages(ctx, msgs[i:end])
+		if err != nil {
+			t.Fatalf("batch send: %v", err)
+		}
+		requests++
+		for _, r := range results {
+			if !r.Success {
+				t.Fatalf("message: %s", r.ErrorMessage)
+			}
+		}
+	}
+
+	// The whole point is that request count tracks batches, not documents. The
+	// SDA write limiter allows 20 per minute, so exceeding that would reintroduce
+	// exactly the throttling this replaced.
+	const maxRequests = 15
+	if requests > maxRequests {
+		t.Fatalf("syncing %d documents took %d requests, want at most %d",
+			vaultSize, requests, maxRequests)
+	}
+
+	// Spot-check that documents at both ends of the vault really landed.
+	for _, i := range []int{0, vaultSize / 2, vaultSize - 1} {
+		doc, err := cl.GetDocument(ctx, ownerID, fmt.Sprintf("vault/note-%04d", i))
+		if err != nil {
+			t.Fatalf("get note %d: %v", i, err)
+		}
+		if len(doc.Content) != len(body) {
+			t.Errorf("note %d: %d bytes, want %d", i, len(doc.Content), len(body))
+		}
+	}
+
+	t.Logf("%d documents + %d pointer messages in %d requests", vaultSize, vaultSize, requests)
+}

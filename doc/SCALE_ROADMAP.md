@@ -50,6 +50,11 @@ one just exposes the next, which is why the ordering in §7 matters.
 | 4. Data plane | document bodies are `BYTEA` **inline in Postgres** — every byte through WAL, replication, backups | `schema.sql:113` |
 | 5. Deployment | **one process, one primary** | architectural |
 
+A sixth ceiling turned up while measuring A3 and is not in the table because it
+was a defect rather than a design limit: the UDX transport stalled once ~256KB
+had crossed a connection, in either direction. It capped everything above it and
+is now fixed (`go-udx` `d9b1dc7`).
+
 Layer 1 is what sumi hit and what their batch-write ask addresses. Layer 2 is the
 one nobody has named yet, and it is the reason a batch write alone will not get us
 to the target: `Pipeline.HandleStream` runs the middleware chain exactly once and
@@ -283,8 +288,8 @@ Each stage names the ceiling it removes and the ceiling that becomes binding nex
 That last column is the point of the table: it is how we know the stage worked, and
 it is what stage `n+1` is aimed at.
 
-### Stage 1 — Fix the write path
-Correctness and waste. Prerequisite for everything; no protocol change.
+### Stage 1 — Fix the write path ✅ complete
+Correctness and waste. Prerequisite for everything.
 
 - Single-statement conditional `PUT` — folds `If-Match` into the upsert, removes
   both redundant body reads, and closes the lost-update bug (`SCALABILITY.md` N2, N3).
@@ -295,6 +300,23 @@ Correctness and waste. Prerequisite for everything; no protocol change.
 
 **Removes:** ceiling layers 1 (partially) and 3. **Next binding:** per-document
 request count — ceiling layer 2.
+
+**Landed** in `e0be9b6` (conditional `PUT`, `LIST`), `c8b0c4a` (sequence
+assignment, expiry sweep) and `98216e6` (`BATCH_PUT`, batch submit). Measured
+result for the workload that prompted this: a 500-document vault, previously
+1,000 requests with a ~25 minute floor from the 20/min write limiter, now syncs
+in **10 requests and about 300ms** (`TestVaultSyncBatched`).
+
+A3 also surfaced a transport ceiling that had nothing to do with batching — every
+connection stalled after ~256KB — which is now fixed in `go-udx` `d9b1dc7`. See
+[`TRANSPORT_WINDOW_BUG.md`](./TRANSPORT_WINDOW_BUG.md). It mattered more than the
+stage it was found in: Stage 2 moves blobs in bulk and could not have worked at
+all underneath it. Measured after the fix, one connection now sustains 2.8MB of
+reads in 132ms where it previously died at 229KB.
+
+Still open from this stage: **A4**, config-driven limiters with burst. Batching
+made the write limiter far less binding for clients that use it, but the six
+per-protocol limits remain hardcoded literals with no config path.
 
 ### Stage 2 — Content-addressed sync
 The core refactor. This is where the shape of the workload changes.

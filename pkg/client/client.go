@@ -1267,19 +1267,19 @@ const (
 	// so the budget leaves room for that overhead.
 	MaxBatchContentBytes = 6 * 1024 * 1024
 
-	// RecommendedBatchBytes is what BatchDocuments actually targets, and it is
-	// far below MaxBatchContentBytes on purpose.
+	// RecommendedBatchBytes is what BatchDocuments targets, below
+	// MaxBatchContentBytes so one request stays a sensible unit of retry.
 	//
-	// The UDX transport currently stalls once roughly 256KB has crossed a
-	// connection, in either direction, after which yamux's writer blocks and the
-	// connection dies on a keepalive timeout. Measured: 32KB x4 succeeds, 64KB x4
-	// stalls on the fourth write, and reads stall at ~224KB. It is unrelated to
-	// batching -- plain single-document PUTs and GETs hit it identically -- but
-	// it means an over-large batch reliably kills the connection.
+	// Chosen from measurement rather than guessed. Syncing a 500-document vault
+	// of ~2KB documents takes 13 requests at a 128KB target, and 10 at both
+	// 512KB and 2MB -- beyond ~512KB the byte budget stops binding for that
+	// shape and MaxBatchDocuments does. 2MB keeps it that way for documents up
+	// to ~20KB, which covers ordinary text documents, while bounding how much a
+	// single failed request costs to retry.
 	//
-	// Raise this to MaxBatchContentBytes once the transport replenishes its
-	// flow-control window correctly.
-	RecommendedBatchBytes = 128 * 1024
+	// This was 128KB while the UDX transport stalled after ~256KB per
+	// connection; that ceiling is fixed (see doc/TRANSPORT_WINDOW_BUG.md).
+	RecommendedBatchBytes = 2 * 1024 * 1024
 )
 
 // PutDocuments writes many documents in one request.
