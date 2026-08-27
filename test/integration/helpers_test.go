@@ -98,6 +98,9 @@ func newTestServer(t *testing.T) *testServer {
 	msaPipeline := msa.NewPipeline(logger, pool, reg)
 	h.SetStreamHandler(msa.ProtocolID, msaPipeline.StreamHandler())
 
+	msaBatchPipeline := msa.NewBatchPipeline(logger, pool, reg)
+	h.SetStreamHandler(msa.BatchProtocolID, msaBatchPipeline.StreamHandler())
+
 	maaPipeline := maa.NewPipeline(logger, pool, reg)
 	h.SetStreamHandler(maa.ProtocolID, maaPipeline.StreamHandler())
 

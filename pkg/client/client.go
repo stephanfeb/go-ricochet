@@ -135,9 +135,10 @@ func (c *Client) openStream(ctx context.Context, serverID peer.ID, pid protocol.
 // MSA operations
 // ---------------------------------------------------------------------------
 
-// SendMessage submits a message to a Ricochet server for delivery to the
-// specified recipient. The server is selected from the preferred server list.
-func (c *Client) SendMessage(ctx context.Context, recipient peer.ID, payload []byte, opts ...SendOption) (*SendResult, error) {
+// prepareMessage builds the wire message for a submission, applying the send
+// options along with compression and encryption. Shared by SendMessage and
+// SendMessages so a batched submission is byte-identical to an individual one.
+func (c *Client) prepareMessage(recipient peer.ID, payload []byte, opts []SendOption) (*core.Message, error) {
 	cfg := sendConfig{
 		Priority: PriorityNormal,
 	}
@@ -176,6 +177,17 @@ func (c *Client) SendMessage(ctx context.Context, recipient peer.ID, payload []b
 		msg.Flags |= encFlags
 	}
 
+	return msg, nil
+}
+
+// SendMessage submits a message to a Ricochet server for delivery to the
+// specified recipient. The server is selected from the preferred server list.
+func (c *Client) SendMessage(ctx context.Context, recipient peer.ID, payload []byte, opts ...SendOption) (*SendResult, error) {
+	msg, err := c.prepareMessage(recipient, payload, opts)
+	if err != nil {
+		return nil, err
+	}
+
 	msgData, err := frame.EncodeMessage(msg)
 	if err != nil {
 		return nil, fmt.Errorf("encode message: %w", err)
@@ -212,6 +224,104 @@ func (c *Client) SendMessage(ctx context.Context, recipient peer.ID, payload []b
 		StoredAtServer: serverID,
 		ErrorMessage:   ack.ErrorMessage,
 	}, nil
+}
+
+// BatchMessage is one submission in a SendMessages call.
+type BatchMessage struct {
+	Recipient peer.ID
+	Payload   []byte
+	Options   []SendOption
+}
+
+// BatchSendResult is the outcome of one message in a SendMessages call.
+type BatchSendResult struct {
+	Success      bool
+	MessageID    string
+	ErrorMessage string
+}
+
+// MaxBatchMessages is the most messages one SendMessages call may carry,
+// mirrored from the server so callers can chunk before sending.
+const MaxBatchMessages = 100
+
+// SendMessages submits many messages in one request.
+//
+// A document sync that delivers a pointer message per document pays one
+// rate-limited request per message; this collapses that to one per batch. The
+// returned slice is in the same order as msgs, one entry per message.
+//
+// A message that the server rejects does not fail the call: check each result's
+// Success rather than the error return, which is reserved for failures of the
+// request as a whole.
+func (c *Client) SendMessages(ctx context.Context, msgs []BatchMessage) ([]BatchSendResult, error) {
+	if len(msgs) == 0 {
+		return nil, nil
+	}
+	if len(msgs) > MaxBatchMessages {
+		return nil, fmt.Errorf("batch holds %d messages, maximum is %d", len(msgs), MaxBatchMessages)
+	}
+
+	raw := make([]json.RawMessage, 0, len(msgs))
+	for i, bm := range msgs {
+		msg, err := c.prepareMessage(bm.Recipient, bm.Payload, bm.Options)
+		if err != nil {
+			return nil, fmt.Errorf("message %d: %w", i, err)
+		}
+		data, err := frame.EncodeMessage(msg)
+		if err != nil {
+			return nil, fmt.Errorf("encode message %d: %w", i, err)
+		}
+		raw = append(raw, data)
+	}
+
+	reqData, err := json.Marshal(msa.BatchSubmitRequest{Messages: raw})
+	if err != nil {
+		return nil, fmt.Errorf("marshal batch submit: %w", err)
+	}
+
+	serverID, err := c.selectServer()
+	if err != nil {
+		return nil, err
+	}
+
+	s, err := c.openStream(ctx, serverID, msa.BatchProtocolID)
+	if err != nil {
+		return nil, err
+	}
+	defer s.Close()
+
+	if err := frame.WriteFrame(s, reqData); err != nil {
+		return nil, fmt.Errorf("write batch submit frame: %w", err)
+	}
+
+	respData, err := frame.ReadFrame(s)
+	if err != nil {
+		return nil, fmt.Errorf("read batch ack frame: %w", err)
+	}
+
+	var resp msa.BatchSubmitResponse
+	if err := json.Unmarshal(respData, &resp); err != nil {
+		return nil, fmt.Errorf("decode batch ack: %w", err)
+	}
+	if len(resp.Acks) != len(msgs) {
+		// A whole-request rejection comes back as a single ack; surface its
+		// message rather than a confusing length mismatch.
+		if len(resp.Acks) == 1 && !resp.Acks[0].Success {
+			return nil, fmt.Errorf("batch submit: %s", resp.Acks[0].ErrorMessage)
+		}
+		return nil, fmt.Errorf("batch submit returned %d acks for %d messages",
+			len(resp.Acks), len(msgs))
+	}
+
+	results := make([]BatchSendResult, 0, len(resp.Acks))
+	for _, ack := range resp.Acks {
+		results = append(results, BatchSendResult{
+			Success:      ack.Success,
+			MessageID:    ack.MessageID,
+			ErrorMessage: ack.ErrorMessage,
+		})
+	}
+	return results, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -1119,6 +1229,167 @@ func (c *Client) DeleteDocument(ctx context.Context, ownerPeerID peer.ID, path s
 	}
 
 	return resp.Status != sda.StatusNotFound, nil
+}
+
+// BatchDocumentPut is one document in a PutDocuments call. IfMatch is optional;
+// when set, that document is written only if the server's current ETag matches.
+type BatchDocumentPut struct {
+	Path        string
+	Content     []byte
+	ContentType string
+	IfMatch     string
+}
+
+// BatchDocumentResult is the outcome of one document in a PutDocuments call.
+// Status carries that document's own result -- 201 created, 200 replaced, 409
+// conflict, and so on -- so a batch where some documents conflict is reported
+// per document rather than as a whole-batch failure.
+type BatchDocumentResult struct {
+	Path       string
+	Status     int
+	ETag       string
+	Created    bool
+	Error      string
+	ActualETag string // on 409, the server's current ETag
+}
+
+// OK reports whether this document was written.
+func (r BatchDocumentResult) OK() bool { return r.Status == 200 || r.Status == 201 }
+
+// Batch write limits, mirrored from the server so callers can chunk before
+// sending rather than discovering the limit as a rejected request.
+const (
+	// MaxBatchDocuments is the most documents one PutDocuments call may carry.
+	MaxBatchDocuments = 100
+
+	// MaxBatchContentBytes is the most total content one call may carry. The
+	// request must fit in a single 10MB frame and bodies travel base64-encoded,
+	// so the budget leaves room for that overhead.
+	MaxBatchContentBytes = 6 * 1024 * 1024
+
+	// RecommendedBatchBytes is what BatchDocuments actually targets, and it is
+	// far below MaxBatchContentBytes on purpose.
+	//
+	// The UDX transport currently stalls once roughly 256KB has crossed a
+	// connection, in either direction, after which yamux's writer blocks and the
+	// connection dies on a keepalive timeout. Measured: 32KB x4 succeeds, 64KB x4
+	// stalls on the fourth write, and reads stall at ~224KB. It is unrelated to
+	// batching -- plain single-document PUTs and GETs hit it identically -- but
+	// it means an over-large batch reliably kills the connection.
+	//
+	// Raise this to MaxBatchContentBytes once the transport replenishes its
+	// flow-control window correctly.
+	RecommendedBatchBytes = 128 * 1024
+)
+
+// PutDocuments writes many documents in one request.
+//
+// This is the call that decouples request count from document count: syncing N
+// documents costs one request per batch rather than one per document, which is
+// what takes a bulk sync out from under the per-request write rate limit.
+//
+// The returned slice is in the same order as docs, one entry per document. A
+// document that fails does not fail the batch -- check each result's Status (or
+// OK) rather than relying on the error return, which is reserved for failures
+// of the request as a whole.
+//
+// Callers with more than MaxBatchDocuments documents, or more than
+// MaxBatchContentBytes of content, should chunk with BatchDocuments.
+func (c *Client) PutDocuments(ctx context.Context, ownerPeerID peer.ID, docs []BatchDocumentPut, opts ...DocOption) ([]BatchDocumentResult, error) {
+	if len(docs) == 0 {
+		return nil, nil
+	}
+	if len(docs) > MaxBatchDocuments {
+		return nil, fmt.Errorf("batch holds %d documents, maximum is %d", len(docs), MaxBatchDocuments)
+	}
+
+	batch := make([]sda.BatchDocument, 0, len(docs))
+	total := 0
+	for _, d := range docs {
+		total += len(d.Content)
+		batch = append(batch, sda.BatchDocument{
+			Path:        d.Path,
+			Body:        base64.StdEncoding.EncodeToString(d.Content),
+			ContentType: d.ContentType,
+			IfMatch:     d.IfMatch,
+		})
+	}
+	if total > MaxBatchContentBytes {
+		return nil, fmt.Errorf("batch content is %d bytes, maximum is %d", total, MaxBatchContentBytes)
+	}
+
+	req := &sda.DocRequest{
+		Operation:      sda.OpBATCH_PUT,
+		OwnerPeerID:    ownerPeerID.String(),
+		BatchDocuments: batch,
+	}
+
+	resp, err := c.doDoc(ctx, req, opts)
+	if err != nil {
+		return nil, err
+	}
+	if resp.Status != sda.StatusOK {
+		errMsg, _ := resp.Headers["Error"].(string)
+		if errMsg == "" {
+			errMsg = fmt.Sprintf("batch put failed with status %d", resp.Status)
+		}
+		return nil, fmt.Errorf("batch put: %s", errMsg)
+	}
+
+	bodyBytes, err := base64.StdEncoding.DecodeString(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("decode batch put body: %w", err)
+	}
+
+	var raw struct {
+		Results []sda.BatchDocumentResult `json:"results"`
+	}
+	if err := json.Unmarshal(bodyBytes, &raw); err != nil {
+		return nil, fmt.Errorf("unmarshal batch put results: %w", err)
+	}
+	if len(raw.Results) != len(docs) {
+		return nil, fmt.Errorf("batch put returned %d results for %d documents",
+			len(raw.Results), len(docs))
+	}
+
+	results := make([]BatchDocumentResult, 0, len(raw.Results))
+	for _, r := range raw.Results {
+		results = append(results, BatchDocumentResult{
+			Path:       r.Path,
+			Status:     r.Status,
+			ETag:       r.ETag,
+			Created:    r.Created,
+			Error:      r.Error,
+			ActualETag: r.ActualETag,
+		})
+	}
+	return results, nil
+}
+
+// BatchDocuments splits docs into chunks that each satisfy both batch limits,
+// so a caller with a whole vault can feed the chunks to PutDocuments in turn.
+func BatchDocuments(docs []BatchDocumentPut) [][]BatchDocumentPut {
+	var (
+		batches []([]BatchDocumentPut)
+		current []BatchDocumentPut
+		bytes   int
+	)
+	for _, d := range docs {
+		// A single document over the byte budget still gets its own batch; the
+		// server rejects it with a clear error rather than it being dropped here.
+		overCount := len(current)+1 > MaxBatchDocuments
+		overBytes := len(current) > 0 && bytes+len(d.Content) > RecommendedBatchBytes
+		if overCount || overBytes {
+			batches = append(batches, current)
+			current, bytes = nil, 0
+		}
+		current = append(current, d)
+		bytes += len(d.Content)
+	}
+	if len(current) > 0 {
+		batches = append(batches, current)
+	}
+	return batches
 }
 
 // ListDocuments lists all documents for the given owner peer.

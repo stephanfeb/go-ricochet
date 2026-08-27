@@ -352,6 +352,11 @@ func (s *Server) registerProtocolHandlers() {
 	h.SetStreamHandler(msa.ProtocolID, msaPipeline.StreamHandler())
 	s.logger.Info("registered MSA handler", "protocol", msa.ProtocolID)
 
+	// MSA batch — many submissions in one request
+	msaBatchPipeline := msa.NewBatchPipeline(s.logger, pool, reg)
+	h.SetStreamHandler(msa.BatchProtocolID, msaBatchPipeline.StreamHandler())
+	s.logger.Info("registered MSA batch handler", "protocol", msa.BatchProtocolID)
+
 	// MAA — Mail Access Agent (read path)
 	maaPipeline := maa.NewPipeline(s.logger, pool, reg)
 	h.SetStreamHandler(maa.ProtocolID, maaPipeline.StreamHandler())

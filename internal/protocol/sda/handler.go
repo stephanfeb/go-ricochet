@@ -33,6 +33,19 @@ const (
 	OpLIST      = "LIST"
 	OpHISTORY   = "HISTORY"
 	OpDIRECTORY = "DIRECTORY"
+	OpBATCH_PUT = "BATCH_PUT"
+)
+
+// Batch write limits.
+const (
+	// maxBatchDocuments bounds how many documents one BATCH_PUT may carry.
+	maxBatchDocuments = 100
+
+	// maxBatchContentBytes bounds the batch's total decoded content. The
+	// request must fit in a single frame (codec.MaxFrameSize, 10MB) and bodies
+	// travel base64-encoded, so the decoded budget is well under that to leave
+	// room for the ~33% encoding overhead plus the surrounding JSON.
+	maxBatchContentBytes = 6 * 1024 * 1024
 )
 
 // Path validation constants.
@@ -72,6 +85,9 @@ type DocRequest struct {
 	MaxVersions   *int `json:"maxVersions,omitempty"`
 	VersionNumber *int `json:"versionNumber,omitempty"`
 
+	// BATCH_PUT-specific: the documents to write. All belong to OwnerPeerID.
+	BatchDocuments []BatchDocument `json:"batchDocuments,omitempty"`
+
 	// LIST-specific pagination. Absent cursor means the first page; absent
 	// limit means the server default.
 	ListCursor string `json:"listCursor,omitempty"`
@@ -82,6 +98,26 @@ type DocRequest struct {
 	DirectoryQuery  string `json:"directoryQuery,omitempty"`
 	DirectoryCursor string `json:"directoryCursor,omitempty"`
 	DirectoryLimit  *int   `json:"directoryLimit,omitempty"`
+}
+
+// BatchDocument is a single document within a BATCH_PUT request.
+type BatchDocument struct {
+	Path        string `json:"path"`
+	Body        string `json:"body"` // base64
+	ContentType string `json:"contentType,omitempty"`
+	IfMatch     string `json:"ifMatch,omitempty"`
+}
+
+// BatchDocumentResult reports the outcome of one document in a BATCH_PUT. The
+// results array is in request order, so a client can correlate by index even
+// when the same path appears twice.
+type BatchDocumentResult struct {
+	Path       string `json:"path"`
+	Status     int    `json:"status"`
+	ETag       string `json:"etag,omitempty"`
+	Created    bool   `json:"created,omitempty"`
+	Error      string `json:"error,omitempty"`
+	ActualETag string `json:"actualEtag,omitempty"` // on 409, the server's current ETag
 }
 
 // DocResponse is the JSON response format for document operations.
@@ -105,6 +141,7 @@ func NewPipeline(logger *slog.Logger, pool *codec.BufferPool, reg *forge.Registr
 		OpHEAD:      middleware.Chain(forge.JSONDeserialize[DocRequest](), handleHead),
 		OpDELETE:    middleware.Chain(forge.JSONDeserialize[DocRequest](), handleDelete),
 		OpLIST:      middleware.Chain(forge.JSONDeserialize[DocRequest](), handleList),
+		OpBATCH_PUT: middleware.Chain(forge.JSONDeserialize[DocRequest](), handleBatchPut),
 		OpHISTORY:   middleware.Chain(forge.JSONDeserialize[DocRequest](), handleHistory),
 		OpDIRECTORY: middleware.Chain(forge.JSONDeserialize[DocRequest](), handleDirectory),
 	}
@@ -129,7 +166,7 @@ func isWriteClassifier(raw []byte) bool {
 		return false
 	}
 	switch envelope.Operation {
-	case OpPUT, OpPATCH, OpDELETE:
+	case OpPUT, OpPATCH, OpDELETE, OpBATCH_PUT:
 		return true
 	case OpDIRECTORY:
 		return envelope.DirectoryAction == "join" || envelope.DirectoryAction == "leave"
@@ -214,8 +251,10 @@ func commonValidation() forge.Middleware {
 		}
 		sc.Set("ownerID", ownerID)
 
-		// Validate path for operations that require it.
-		if envelope.Operation != OpLIST && envelope.Operation != OpDIRECTORY {
+		// Validate path for operations that require it. BATCH_PUT carries its
+		// paths per document, so it validates them itself.
+		if envelope.Operation != OpLIST && envelope.Operation != OpDIRECTORY &&
+			envelope.Operation != OpBATCH_PUT {
 			if err := validatePath(envelope.Path); err != nil {
 				sc.Response = &DocResponse{Status: StatusBadRequest,
 					Headers: map[string]any{"Error": err.Error()}}
@@ -224,7 +263,8 @@ func commonValidation() forge.Middleware {
 		}
 
 		// Enforce owner-only access for write operations.
-		isWrite := envelope.Operation == OpPUT || envelope.Operation == OpPATCH || envelope.Operation == OpDELETE
+		isWrite := envelope.Operation == OpPUT || envelope.Operation == OpPATCH ||
+			envelope.Operation == OpDELETE || envelope.Operation == OpBATCH_PUT
 		if envelope.Operation == OpDIRECTORY {
 			isWrite = envelope.DirectoryAction == "join" || envelope.DirectoryAction == "leave"
 		}
@@ -460,6 +500,153 @@ func handleDelete(sc *forge.StreamContext, next func()) {
 	maybeRemoveDirectoryListing(ctx, sc.Logger, store, ownerID.(peer.ID), req.Path)
 
 	sc.Response = &DocResponse{Status: StatusNoContent}
+}
+
+// handleBatchPut writes many documents in one request.
+//
+// This is the operation that decouples request count from document count: a
+// vault sync that cost one rate-limited request per document now costs one per
+// batch. Each document is written independently and reports its own status, so
+// one conflicting document does not sink the rest of the batch -- a partial
+// success is the normal outcome, not an error case.
+//
+// Writes are sequential rather than concurrent. Each PutDocument takes a row
+// lock, and a batch frequently contains several revisions of the same path, so
+// fanning out would contend on exactly the rows it is trying to write.
+func handleBatchPut(sc *forge.StreamContext, next func()) {
+	req := sc.Request.(*DocRequest)
+	store, _ := forge.ServiceFrom[storage.Storage](sc, "storage")
+	ownerID, _ := sc.Get("ownerID")
+
+	if len(req.BatchDocuments) == 0 {
+		sc.Response = &DocResponse{Status: StatusBadRequest,
+			Headers: map[string]any{"Error": "batchDocuments is required"}}
+		return
+	}
+	if len(req.BatchDocuments) > maxBatchDocuments {
+		sc.Response = &DocResponse{Status: StatusBadRequest,
+			Headers: map[string]any{"Error": fmt.Sprintf(
+				"batchDocuments holds %d documents, maximum is %d",
+				len(req.BatchDocuments), maxBatchDocuments)}}
+		return
+	}
+
+	// Decode and validate everything before writing anything, so a malformed
+	// batch is rejected outright rather than half-applied.
+	type pending struct {
+		path        string
+		content     []byte
+		contentType string
+		ifMatch     *string
+	}
+	decoded := make([]pending, 0, len(req.BatchDocuments))
+	results := make([]BatchDocumentResult, len(req.BatchDocuments))
+	totalBytes := 0
+
+	for i, bd := range req.BatchDocuments {
+		results[i].Path = bd.Path
+
+		if err := validatePath(bd.Path); err != nil {
+			results[i].Status = StatusBadRequest
+			results[i].Error = err.Error()
+			decoded = append(decoded, pending{})
+			continue
+		}
+
+		content, err := base64.StdEncoding.DecodeString(bd.Body)
+		if err != nil {
+			results[i].Status = StatusBadRequest
+			results[i].Error = "invalid base64 body"
+			decoded = append(decoded, pending{})
+			continue
+		}
+
+		totalBytes += len(content)
+		if totalBytes > maxBatchContentBytes {
+			sc.Response = &DocResponse{Status: StatusPayloadTooLarge,
+				Headers: map[string]any{"Error": fmt.Sprintf(
+					"batch content exceeds %d bytes", maxBatchContentBytes)}}
+			return
+		}
+
+		contentType := bd.ContentType
+		if contentType == "" {
+			contentType = "application/octet-stream"
+		}
+		var ifMatch *string
+		if bd.IfMatch != "" {
+			im := bd.IfMatch
+			ifMatch = &im
+		}
+
+		decoded = append(decoded, pending{
+			path:        bd.Path,
+			content:     content,
+			contentType: contentType,
+			ifMatch:     ifMatch,
+		})
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	applied := 0
+	for i, p := range decoded {
+		if results[i].Status != 0 {
+			continue // rejected during decoding
+		}
+
+		result, err := store.PutDocument(ctx, ownerID.(peer.ID), p.path,
+			p.content, p.contentType, sc.PeerID, p.ifMatch)
+		if err != nil {
+			// Reuse the single-document error mapping so batch and non-batch
+			// writes cannot report the same failure differently.
+			errResp := writeErrorResponse(sc.Logger, err)
+			results[i].Status = errResp.Status
+			if msg, ok := errResp.Headers["Error"].(string); ok {
+				results[i].Error = msg
+			}
+			if actual, ok := errResp.Headers["Actual-ETag"].(string); ok {
+				results[i].ActualETag = actual
+			}
+			continue
+		}
+
+		results[i].Status = StatusOK
+		if result.Created {
+			results[i].Status = StatusCreated
+			results[i].Created = true
+		}
+		results[i].ETag = result.ContentHash
+		applied++
+
+		maybeUpdateDirectoryListing(ctx, sc.Logger, store, ownerID.(peer.ID), p.path)
+	}
+
+	bodyBytes, err := json.Marshal(map[string]any{"results": results})
+	if err != nil {
+		sc.Response = &DocResponse{Status: StatusInternalError}
+		return
+	}
+
+	sc.Logger.Info("batch put complete",
+		"owner", ownerID.(peer.ID).String(),
+		"documents", len(req.BatchDocuments),
+		"applied", applied,
+	)
+
+	// The envelope status is 200 whenever the batch was processed; per-document
+	// outcomes live in the body. A partial success is normal here, so a single
+	// envelope status cannot describe the result on its own.
+	sc.Response = &DocResponse{
+		Status: StatusOK,
+		Headers: map[string]any{
+			"Content-Type": "application/json",
+			"Applied":      applied,
+			"Total":        len(req.BatchDocuments),
+		},
+		Body: base64.StdEncoding.EncodeToString(bodyBytes),
+	}
 }
 
 // handleList returns one page of document metadata for an owner.
