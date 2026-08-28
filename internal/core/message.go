@@ -11,7 +11,7 @@ import (
 )
 
 const (
-	MaxHopCount   = 10
+	MaxHopCount    = 10
 	MaxPayloadSize = 10 * 1024 * 1024 // 10MB
 )
 
@@ -25,7 +25,7 @@ type Message struct {
 	ExpiryTimestamp  int64           `json:"expiryTimestamp"`
 	HopCount         int             `json:"hopCount"`
 	Flags            SFMessageFlags  `json:"flags"`
-	CreatedTimestamp  int64           `json:"createdTimestamp"`
+	CreatedTimestamp int64           `json:"createdTimestamp"`
 	FolderPath       string          `json:"folderPath,omitempty"`
 	SequenceNumber   uint64          `json:"sequenceNumber,omitempty"`
 	MsgFlags         MessageFlags    `json:"messageFlags,omitempty"`
@@ -35,13 +35,13 @@ type Message struct {
 // NewMessage creates a new message with a generated UUID and current timestamp.
 func NewMessage(senderID, recipientID peer.ID, payload []byte) *Message {
 	return &Message{
-		MessageID:       uuid.New().String(),
-		SenderPeerID:    senderID.String(),
-		RecipientPeerID: recipientID.String(),
-		Payload:         payload,
-		Priority:        PriorityNormal,
-		HopCount:        0,
-		Flags:           FlagNone,
+		MessageID:        uuid.New().String(),
+		SenderPeerID:     senderID.String(),
+		RecipientPeerID:  recipientID.String(),
+		Payload:          payload,
+		Priority:         PriorityNormal,
+		HopCount:         0,
+		Flags:            FlagNone,
 		CreatedTimestamp: time.Now().UnixMilli(),
 	}
 }
@@ -130,18 +130,18 @@ func MessageFromJSON(data []byte) (*Message, error) {
 // ToMap returns a lightweight map representation (no payload).
 func (m *Message) ToMap() map[string]any {
 	return map[string]any{
-		"messageId":       m.MessageID,
-		"recipientPeerId": m.RecipientPeerID,
-		"senderPeerId":    m.SenderPeerID,
-		"priority":        m.Priority,
+		"messageId":        m.MessageID,
+		"recipientPeerId":  m.RecipientPeerID,
+		"senderPeerId":     m.SenderPeerID,
+		"priority":         m.Priority,
 		"expiryTimestamp":  m.ExpiryTimestamp,
-		"hopCount":        m.HopCount,
-		"flags":           uint32(m.Flags),
+		"hopCount":         m.HopCount,
+		"flags":            uint32(m.Flags),
 		"createdTimestamp": m.CreatedTimestamp,
-		"folderPath":      m.FolderPath,
-		"sequenceNumber":  m.SequenceNumber,
-		"messageFlags":    uint32(m.MsgFlags),
-		"persistent":      m.Persistent,
+		"folderPath":       m.FolderPath,
+		"sequenceNumber":   m.SequenceNumber,
+		"messageFlags":     uint32(m.MsgFlags),
+		"persistent":       m.Persistent,
 	}
 }
 
@@ -155,10 +155,10 @@ type StoreAck struct {
 
 // RetrieveRequest represents a request to retrieve messages.
 type RetrieveRequest struct {
-	PeerID      string          `json:"peerId"`
-	FolderPath  string          `json:"folderPath,omitempty"`
-	FromSequence *uint64        `json:"fromSequence,omitempty"`
-	MaxMessages  *int           `json:"maxMessages,omitempty"`
+	PeerID       string           `json:"peerId"`
+	FolderPath   string           `json:"folderPath,omitempty"`
+	FromSequence *uint64          `json:"fromSequence,omitempty"`
+	MaxMessages  *int             `json:"maxMessages,omitempty"`
 	MinPriority  *MessagePriority `json:"minPriority,omitempty"`
 }
 
@@ -215,9 +215,9 @@ type UpdateFlagsRequest struct {
 
 // UpdateFlagsAck is the response for flag updates.
 type UpdateFlagsAck struct {
-	Success      bool   `json:"success"`
+	Success      bool    `json:"success"`
 	NewFlags     *uint32 `json:"newFlags,omitempty"`
-	ErrorMessage string `json:"errorMessage,omitempty"`
+	ErrorMessage string  `json:"errorMessage,omitempty"`
 }
 
 // ExpungeRequest deletes messages with the \Deleted flag.
@@ -269,8 +269,10 @@ type DocumentPutResponse struct {
 	Created      bool   `json:"created"`
 }
 
-func (r *DocumentPutResponse) IsSuccess() bool  { return r.Status == 200 || r.Status == 201 || r.Status == 204 }
-func (r *DocumentPutResponse) IsConflict() bool { return r.Status == 409 }
+func (r *DocumentPutResponse) IsSuccess() bool {
+	return r.Status == 200 || r.Status == 201 || r.Status == 204
+}
+func (r *DocumentPutResponse) IsConflict() bool  { return r.Status == 409 }
 func (r *DocumentPutResponse) IsForbidden() bool { return r.Status == 403 }
 
 // DocumentMetadata contains document metadata (HEAD response).
