@@ -136,6 +136,8 @@ func TestExampleValuesActuallyApply(t *testing.T) {
 	cfg.Storage.Postgres.PoolSize = 2
 	cfg.Admission.MaxInFlightPerPeer = 5
 	cfg.Ops.Port = 1
+	cfg.Ops.QueryTimeout = time.Second
+	cfg.NearCapacityRatio = 0.11
 
 	if err := LoadConfigFromFile(examplePath, cfg); err != nil {
 		t.Fatalf("load example: %v", err)
@@ -157,6 +159,8 @@ func TestExampleValuesActuallyApply(t *testing.T) {
 		{"database.pool_size", cfg.Storage.Postgres.PoolSize, 10},
 		{"admission_control.max_in_flight_per_peer", cfg.Admission.MaxInFlightPerPeer, 64},
 		{"ops.port", cfg.Ops.Port, 9090},
+		{"ops.query_timeout", cfg.Ops.QueryTimeout, 10 * time.Second},
+		{"storage.near_capacity_ratio", cfg.NearCapacityRatio, 0.9},
 	}
 	for _, c := range checks {
 		if c.got != c.want {

@@ -103,7 +103,7 @@ func newTestServer(t *testing.T, configure ...func(*core.ServerConfig)) *testSer
 	// The aggregate sampler, wired as server.go wires it. Sampled on demand
 	// by the tests rather than on a timer.
 	sampler := capacity.New(store, cfg.MaxStorageBytes,
-		postgres.DefaultNearCapacityRatio, logger)
+		cfg.EffectiveNearCapacityRatio(), logger)
 
 	// Metrics are wired the way server.go wires them, so the integration
 	// tests exercise the middleware rather than a pipeline that quietly has

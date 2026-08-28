@@ -216,6 +216,13 @@ things differ from the plan:
   hardcoded to zero precisely because the name invites reading it as an overall
   verdict.
 
+**Follow-up.** The near-capacity threshold reached the configuration later, in
+the config audit after B4: it was a parameter at every layer beneath
+`server.go` and a compiled-in constant at the line that chose it, so
+`ricochet_mailboxes_near_capacity` could not be tuned. It is now
+`storage.near_capacity_ratio`. Same shape as the hardcoded mailbox cap —
+plumbed for configuration right up to the one place that mattered.
+
 **A real bug surfaced while testing this.** The near-capacity filter was
 `n >= $1 * max_messages`. Postgres infers `$1` from the integer column it
 multiplies, so the 0.9 ratio was truncated to 0 and *every* mailbox counted as
@@ -288,6 +295,11 @@ mounted on the B0 listener. Five things differ from the plan:
   and it always carries `sampledAt` and `ageSeconds`. On a live server this is
   visible and correct: the totals move as data arrives while the sampled block
   states its own age until the next maintenance tick.
+
+**Follow-up.** The per-query timeout became `ops.query_timeout` in the config
+audit after B4. `opsview.Options.Timeout` existed from the start and nothing
+ever set it, so every deployment ran on the ten-second constant regardless of
+how long its own scans took.
 
 `/ops/mailboxes/top` also accepts `sort=count` alongside the default
 `sort=fill`. "Fullest" and "biggest" are different questions — an uncapped

@@ -226,6 +226,17 @@ func (s *Server) IsRunning() bool {
 	return s.isRunning
 }
 
+// newCapacitySampler builds the storage-aggregate sampler.
+//
+// Like mailboxDefaults, it is a method so the wiring can be tested. The
+// near-capacity ratio is a parameter at every layer beneath this line, and
+// this is the only place it is chosen — passing a constant here would leave
+// the setting reachable in the config and inert in practice.
+func (s *Server) newCapacitySampler() *capacity.Sampler {
+	return capacity.New(s.storage, s.config.MaxStorageBytes,
+		s.config.EffectiveNearCapacityRatio(), s.logger)
+}
+
 // mailboxDefaults are the settings given to a mailbox that message delivery
 // brings into existence.
 //
@@ -384,8 +395,7 @@ func (s *Server) initializeServices(ctx context.Context) {
 
 	// The aggregate sampler answers capacity questions. It scans, so it is
 	// refreshed on the maintenance tick rather than per request.
-	s.capacity = capacity.New(s.storage, s.config.MaxStorageBytes,
-		postgres.DefaultNearCapacityRatio, s.logger)
+	s.capacity = s.newCapacitySampler()
 
 	// Publish the live counters admission control, the connection pool and
 	// the buffer pool already keep. Registered here, after the controller

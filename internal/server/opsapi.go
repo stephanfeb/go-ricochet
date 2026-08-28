@@ -89,6 +89,7 @@ func (s *Server) opsRoutes() map[string]http.Handler {
 		Capacity: s.capacity,
 		Config:   s.config,
 		PoolSize: poolSize,
+		Timeout:  s.config.Ops.EffectiveQueryTimeout(),
 		Logger:   s.logger,
 	})
 }

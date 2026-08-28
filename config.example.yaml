@@ -63,6 +63,13 @@ storage:
 
   max_mailboxes: 100000              # default: 100000
 
+  # The fill fraction at which a mailbox counts as "near capacity". It drives
+  # the ricochet_mailboxes_near_capacity gauge and the figure /ops/storage
+  # returns, so it is the threshold you alert on: how much warning you want
+  # before a mailbox starts rejecting depends on how quickly you can act on it.
+  # Must be between 0 and 1; zero means the default.
+  near_capacity_ratio: 0.9           # default: 0.9
+
 # PostgreSQL configuration
 database:
   host: localhost
@@ -168,6 +175,13 @@ ops:
   # How long /readyz waits on its checks. A probe that hangs is worse than one
   # that fails.
   readiness_timeout: 2s
+
+  # How long an /ops/* query may run. Those endpoints scan every mailbox, and
+  # how long that takes is a property of the database rather than something a
+  # constant can know — raise it on a large server, but note that an operator
+  # surface which can be wedged by its own diagnostic query is worse than one
+  # that admits it timed out.
+  query_timeout: 10s
 
   # How long shutdown waits for in-flight ops requests.
   shutdown_timeout: 5s

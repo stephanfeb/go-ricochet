@@ -331,6 +331,12 @@ curl -s "$OPS/ops/storage" | jq '{server, top: (.owners[:5])}'
 curl -s "$OPS/ops/limits" | jq .admission
 ```
 
+Two knobs matter here: `storage.near_capacity_ratio` sets how full a mailbox
+must be before it counts toward `mailboxesNearCapacity` and the matching
+Prometheus gauge — that is the number to alert on, so pick it from how quickly
+you can act rather than leaving it at 0.9 — and `ops.query_timeout` bounds each
+of these queries, which scan every mailbox.
+
 Two things to know when reading the output. `/ops/storage` reports per-owner
 totals live but takes the server-wide block from a sample refreshed on the
 maintenance tick, so that block carries `sampledAt` and `ageSeconds` and is

@@ -174,3 +174,48 @@ func TestValidate_RejectsBadOpsPort(t *testing.T) {
 		t.Errorf("Validate rejected an ephemeral ops port: %v", err)
 	}
 }
+
+// A near-capacity ratio above 1 makes the gauge it drives unreachable for a
+// mailbox that is merely full, which is the state it exists to warn about. A
+// threshold that silently never fires is worse than no threshold.
+func TestNearCapacityRatioIsBounded(t *testing.T) {
+	for _, ratio := range []float64{-0.1, 1.5, 90} {
+		cfg := core.DefaultConfig()
+		cfg.NearCapacityRatio = ratio
+		if err := cfg.Validate(); err == nil {
+			t.Errorf("a ratio of %v was accepted", ratio)
+		}
+	}
+
+	for _, ratio := range []float64{0, 0.5, 0.9, 1} {
+		cfg := core.DefaultConfig()
+		cfg.NearCapacityRatio = ratio
+		if err := cfg.Validate(); err != nil {
+			t.Errorf("a ratio of %v was rejected: %v", ratio, err)
+		}
+	}
+}
+
+// Zero means "use the default", not "warn about every mailbox". The sampler
+// treats a non-positive ratio as unset, so the effective value has to be the
+// one the storage layer would pick anyway.
+func TestUnsetNearCapacityRatioResolvesToTheDefault(t *testing.T) {
+	cfg := core.DefaultConfig()
+	cfg.NearCapacityRatio = 0
+
+	if got := cfg.EffectiveNearCapacityRatio(); got != 0.9 {
+		t.Errorf("EffectiveNearCapacityRatio = %v, want 0.9", got)
+	}
+}
+
+func TestOpsQueryTimeoutHasAnEffectiveValue(t *testing.T) {
+	var ops core.OpsConfig
+	if got := ops.EffectiveQueryTimeout(); got != 10*time.Second {
+		t.Errorf("EffectiveQueryTimeout = %v on a zero config, want 10s", got)
+	}
+
+	ops.QueryTimeout = 45 * time.Second
+	if got := ops.EffectiveQueryTimeout(); got != 45*time.Second {
+		t.Errorf("EffectiveQueryTimeout = %v, want the configured 45s", got)
+	}
+}

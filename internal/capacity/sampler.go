@@ -91,6 +91,19 @@ func (s *Sampler) Latest() *storage.ServerStats {
 	return s.latest
 }
 
+// NearCapacityRatio returns the threshold this sampler was built with.
+//
+// It is exposed so the wiring can be asserted without taking a sample: the
+// ratio reaches the database only through a query, so a sampler built with the
+// wrong one looks identical to a correct one until an operator notices their
+// threshold did nothing.
+func (s *Sampler) NearCapacityRatio() float64 {
+	if s == nil {
+		return 0
+	}
+	return s.nearRatio
+}
+
 // MaxStorageBytes returns the configured budget.
 func (s *Sampler) MaxStorageBytes() int64 {
 	if s == nil {

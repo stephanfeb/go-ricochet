@@ -26,6 +26,14 @@ type ServerConfig struct {
 	MaxMessagesPerMailbox int                  `yaml:"max_messages_per_mailbox" json:"maxMessagesPerMailbox"`
 	MaxMailboxes          int                  `yaml:"max_mailboxes" json:"maxMailboxes"`
 
+	// NearCapacityRatio is the fill fraction at which a mailbox counts as
+	// near capacity, driving ricochet_mailboxes_near_capacity and the figure
+	// /ops/storage reports. It is the threshold an operator alerts on, so it
+	// belongs to them rather than to the code: how much warning you want
+	// before a mailbox starts rejecting depends on how quickly you can act.
+	// Zero means the built-in 0.9.
+	NearCapacityRatio float64 `yaml:"near_capacity_ratio" json:"nearCapacityRatio"`
+
 	// Performance
 	MaxConcurrentConnections int           `yaml:"max_concurrent_connections" json:"maxConcurrentConnections"`
 	ConnectionTimeout        time.Duration `yaml:"connection_timeout" json:"connectionTimeout"`
@@ -75,6 +83,14 @@ type ServerConfig struct {
 
 	// Identity
 	IdentityFile string `yaml:"identity_file" json:"identityFile,omitempty"`
+}
+
+// EffectiveNearCapacityRatio returns the configured threshold, or 0.9.
+func (c *ServerConfig) EffectiveNearCapacityRatio() float64 {
+	if c.NearCapacityRatio <= 0 {
+		return 0.9
+	}
+	return c.NearCapacityRatio
 }
 
 // AdmissionControl bounds how much work is in flight at once instead of
@@ -164,6 +180,11 @@ type OpsConfig struct {
 	// readiness probe that hangs is worse than one that fails.
 	ReadinessTimeout time.Duration `yaml:"readiness_timeout" json:"readinessTimeout"`
 
+	// QueryTimeout bounds each /ops/* query. Those endpoints scan every
+	// mailbox, and how long that takes is a property of the database, not
+	// something a constant can know. Zero means ten seconds.
+	QueryTimeout time.Duration `yaml:"query_timeout" json:"queryTimeout"`
+
 	// ShutdownTimeout bounds how long Stop waits for in-flight ops requests.
 	ShutdownTimeout time.Duration `yaml:"shutdown_timeout" json:"shutdownTimeout"`
 
@@ -184,6 +205,7 @@ func DefaultOpsConfig() OpsConfig {
 		Port:             9090,
 		EnablePprof:      false,
 		ReadinessTimeout: 2 * time.Second,
+		QueryTimeout:     10 * time.Second,
 		ShutdownTimeout:  5 * time.Second,
 		DrainDelay:       0,
 	}
@@ -203,6 +225,15 @@ func (o OpsConfig) Address() string {
 }
 
 // EffectiveReadinessTimeout returns the readiness deadline, or two seconds.
+// EffectiveQueryTimeout returns the configured bound on an /ops/* query, or
+// ten seconds.
+func (o OpsConfig) EffectiveQueryTimeout() time.Duration {
+	if o.QueryTimeout <= 0 {
+		return 10 * time.Second
+	}
+	return o.QueryTimeout
+}
+
 func (o OpsConfig) EffectiveReadinessTimeout() time.Duration {
 	if o.ReadinessTimeout <= 0 {
 		return 2 * time.Second
@@ -377,6 +408,7 @@ func DefaultConfig() *ServerConfig {
 		RetentionPolicy:       30 * 24 * time.Hour,     // 30 days
 		MaxMessagesPerMailbox: 1000,
 		MaxMailboxes:          100000,
+		NearCapacityRatio:     0.9,
 
 		Storage: StorageBackendConfig{
 			Backend: "postgres",
@@ -468,6 +500,12 @@ func (c *ServerConfig) Validate() error {
 	if c.MaxMessagesPerMailbox <= 0 {
 		return fmt.Errorf("max_messages_per_mailbox must be positive")
 	}
+	// A ratio above 1 would make the near-capacity count silently unreachable
+	// for a mailbox that is merely full, which is the state it exists to warn
+	// about. Zero means "use the default" and is handled downstream.
+	if c.NearCapacityRatio < 0 || c.NearCapacityRatio > 1 {
+		return fmt.Errorf("storage.near_capacity_ratio must be between 0 and 1, got %v", c.NearCapacityRatio)
+	}
 	if c.Admission.MaxInFlight < 0 {
 		return fmt.Errorf("admission_control.max_in_flight must not be negative")
 	}
@@ -542,6 +580,8 @@ type yamlFileConfig struct {
 		RetentionDays int    `yaml:"retention_days"`
 		MaxMessages   int    `yaml:"max_messages_per_mailbox"`
 		MaxMailboxes  int    `yaml:"max_mailboxes"`
+
+		NearCapacityRatio float64 `yaml:"near_capacity_ratio"`
 	} `yaml:"storage"`
 
 	Database struct {
@@ -619,6 +659,7 @@ type yamlFileConfig struct {
 		Port             *int   `yaml:"port"`
 		EnablePprof      *bool  `yaml:"enable_pprof"`
 		ReadinessTimeout string `yaml:"readiness_timeout"`
+		QueryTimeout     string `yaml:"query_timeout"`
 		ShutdownTimeout  string `yaml:"shutdown_timeout"`
 		DrainDelay       string `yaml:"drain_delay"`
 	} `yaml:"ops"`
@@ -673,6 +714,9 @@ func LoadConfigFromFile(path string, base *ServerConfig) error {
 	}
 	if yc.Storage.MaxMailboxes > 0 {
 		base.MaxMailboxes = yc.Storage.MaxMailboxes
+	}
+	if yc.Storage.NearCapacityRatio != 0 {
+		base.NearCapacityRatio = yc.Storage.NearCapacityRatio
 	}
 
 	// Database section
@@ -829,6 +873,16 @@ func applyOps(yc yamlFileConfig, base *ServerConfig) error {
 			return fmt.Errorf("ops.readiness_timeout must be positive, got %s", yc.Ops.ReadinessTimeout)
 		}
 		ops.ReadinessTimeout = d
+	}
+	if yc.Ops.QueryTimeout != "" {
+		d, err := time.ParseDuration(yc.Ops.QueryTimeout)
+		if err != nil {
+			return fmt.Errorf("parse ops.query_timeout: %w", err)
+		}
+		if d <= 0 {
+			return fmt.Errorf("ops.query_timeout must be positive, got %s", yc.Ops.QueryTimeout)
+		}
+		ops.QueryTimeout = d
 	}
 	if yc.Ops.ShutdownTimeout != "" {
 		d, err := time.ParseDuration(yc.Ops.ShutdownTimeout)

@@ -322,3 +322,48 @@ func scrapeCapacity(t *testing.T, server *testServer) capacitySnapshot {
 	}
 	return snap
 }
+
+// The near-capacity threshold has to be the operator's, not the code's.
+//
+// It was a parameter at every layer — Storage.ServerStats takes it, the
+// sampler takes it, /ops/storage reports it back — and then server.go passed
+// a compiled-in constant, so there was no way to set it. That is the same
+// shape as the hardcoded mailbox cap: plumbed for configuration right up to
+// the one place that mattered.
+func TestNearCapacityThresholdIsConfigurable(t *testing.T) {
+	const cap = 10
+
+	// At 0.5, a mailbox half full already counts; at the default 0.9 it does
+	// not. One mailbox, two thresholds, opposite answers.
+	server := newTestServer(t, func(cfg *core.ServerConfig) {
+		cfg.MaxMessagesPerMailbox = cap
+		cfg.NearCapacityRatio = 0.5
+	})
+	ctx := context.Background()
+
+	baseline, err := server.Storage.ServerStats(ctx, server.Config.EffectiveNearCapacityRatio())
+	if err != nil {
+		t.Fatalf("stats baseline: %v", err)
+	}
+
+	fillMailbox(t, server, "threshold/half", cap/2)
+
+	lenient, err := server.Storage.ServerStats(ctx, server.Config.EffectiveNearCapacityRatio())
+	if err != nil {
+		t.Fatalf("stats at the configured ratio: %v", err)
+	}
+	if lenient.NearCapacityRatio != 0.5 {
+		t.Fatalf("ratio = %v, want the configured 0.5", lenient.NearCapacityRatio)
+	}
+	if got := lenient.MailboxesNearCapacity - baseline.MailboxesNearCapacity; got != 1 {
+		t.Errorf("a mailbox at 5 of 10 moved nearCapacity by %d at a 0.5 threshold, want 1", got)
+	}
+
+	// The sampler must use the configured value too, not re-derive a default.
+	if _, err := server.Capacity.Sample(ctx); err != nil {
+		t.Fatalf("sample: %v", err)
+	}
+	if got := server.Capacity.Latest().NearCapacityRatio; got != 0.5 {
+		t.Errorf("sampler ratio = %v, want the configured 0.5", got)
+	}
+}
