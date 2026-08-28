@@ -357,14 +357,30 @@ at metadata" — an error that reads like a codec bug and sends the reader to th
 framing rather than to the limiter. The client now checks for the envelope
 first.
 
-**One bug found and deliberately not fixed.** `internal/mda/delivery.go:58`
-creates delivery mailboxes with a hardcoded cap of 1000, ignoring
-`max_messages_per_mailbox` entirely — the same class of problem as sumi's
-Finding A, a configured knob that does not reach the code. Changing it alters
-the effective cap for every existing deployment, which is a decision in its own
-right rather than a side effect of adding typed errors. 507 is reachable today
-through mailboxes created explicitly via MMA, which is how the regression test
-drives it.
+**A third bug found and, on Stephan's call, fixed here.**
+`internal/mda/delivery.go:58` created delivery mailboxes with the hardcoded
+literals 1000 and 30, ignoring `max_messages_per_mailbox` and
+`retention_policy` entirely — the same class of problem as sumi's Finding A, a
+configured knob that never reaches the code that would honour it. It was
+initially left alone because changing it alters the effective cap for existing
+deployments; with the project still in development that concern does not apply.
+
+The literals became `mda.MailboxDefaults`, derived by `DefaultsFromConfig` and
+passed to `NewMailboxServer` as a parameter rather than a setter, so a caller
+cannot forget them — forgetting is exactly what the literals amounted to, and
+it failed silently.
+
+Two hazards fell out of the conversion. A cap of zero is not "unlimited": the
+check is `count >= max`, so zero makes every mailbox full on its first message.
+And retention is enforced as "delete anything older than N days", so a
+sub-day `retention_policy` truncating to zero days would delete every message
+on the next sweep. Both now fall back rather than pass through, and a partial
+day rounds up. The default configuration still yields 1000 and 30, so a
+deployment that never set the knobs sees no change at all.
+
+The wiring in `server.go` has its own test. It pins a single line, deliberately:
+that line was wrong for the life of the codebase and nothing failed or logged,
+because the only symptom of this bug class is a setting quietly not applying.
 
 **Done when:** a client can branch on error type, and the integration tests
 stop matching on strings. **Both verified.** `isRateLimited` and `isOverloaded`

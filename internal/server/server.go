@@ -226,6 +226,18 @@ func (s *Server) IsRunning() bool {
 	return s.isRunning
 }
 
+// mailboxDefaults are the settings given to a mailbox that message delivery
+// brings into existence.
+//
+// It is a method rather than an inline expression so the wiring can be tested
+// on its own. That matters more here than it looks: this path previously
+// passed hardcoded literals, so max_messages_per_mailbox and retention_policy
+// reached only mailboxes created explicitly through MMA, and nothing failed —
+// the configuration was simply ignored.
+func (s *Server) mailboxDefaults() mda.MailboxDefaults {
+	return mda.DefaultsFromConfig(s.config)
+}
+
 // ForgeServer returns the underlying forge server (available after Start).
 func (s *Server) ForgeServer() *forge.Server {
 	return s.forgeServer
@@ -381,7 +393,7 @@ func (s *Server) initializeServices(ctx context.Context) {
 	s.registerCollectors()
 
 	// Create MDA
-	s.mdaSrv = mda.NewMailboxServer(s.storage, s.logger)
+	s.mdaSrv = mda.NewMailboxServer(s.storage, s.mailboxDefaults(), s.logger)
 	s.logger.Info("MDA initialized")
 
 	// Create MTA

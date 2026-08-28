@@ -126,7 +126,9 @@ func newTestServer(t *testing.T, configure ...func(*core.ServerConfig)) *testSer
 		t.Fatalf("register pool collector: %v", err)
 	}
 
-	mdaSrv := mda.NewMailboxServer(store, logger)
+	// Wired as server.go wires it, so the configured mailbox cap reaches the
+	// delivery path in tests too.
+	mdaSrv := mda.NewMailboxServer(store, mda.DefaultsFromConfig(cfg), logger)
 	mtaRtr := mta.NewRouter(mdaSrv, limiters.MTA, logger)
 
 	// Register protocol handlers — mirrors server.go registerProtocolHandlers.

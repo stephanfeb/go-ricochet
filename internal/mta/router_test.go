@@ -335,7 +335,7 @@ func newTestRouter(t *testing.T, maxRequests int) (*mta.Router, *mockStorage) {
 	t.Helper()
 	store := newMockStorage()
 	logger := slog.Default()
-	mailboxServer := mda.NewMailboxServer(store, logger)
+	mailboxServer := mda.NewMailboxServer(store, mda.MailboxDefaults{}, logger)
 	limiter := middleware.NewTokenBucket(1*time.Minute, maxRequests, maxRequests)
 	t.Cleanup(limiter.Close)
 	router := mta.NewRouter(mailboxServer, limiter, logger)

@@ -35,8 +35,22 @@ server:
 storage:
   data_directory: /var/lib/ricochet/sf_storage
   max_storage_gb: 50
+
+  # These two are applied when a mailbox is created — by an explicit
+  # createMailbox, or by the first message delivered to an address that has
+  # none. An existing mailbox keeps the settings it was created with, so
+  # changing these affects new mailboxes only.
+  #
+  # A mailbox at max_messages_per_mailbox rejects further deliveries with a
+  # 507; watch ricochet_mailboxes_near_capacity, or ask
+  # /ops/mailboxes/top?n=20 which ones are closest.
+  #
+  # retention_days is enforced as "delete anything older than N days". A
+  # retention shorter than one day is rounded up to one rather than truncated
+  # to zero, which would delete everything on the next sweep.
   retention_days: 30
   max_messages_per_mailbox: 1000
+
   max_mailboxes: 100000
 
 # PostgreSQL configuration

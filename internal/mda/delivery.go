@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"time"
 
 	"github.com/libp2p/go-libp2p/core/peer"
 
@@ -20,6 +21,75 @@ type RetrieveOpts struct {
 	MinPriority  *core.MessagePriority
 }
 
+// Fallbacks for a MailboxDefaults built without values. They mirror
+// core.DefaultConfig, so a server assembled by hand behaves like a configured
+// one rather than like something with no limits at all.
+const (
+	fallbackMaxMessages   = 1000
+	fallbackRetentionDays = 30
+)
+
+// MailboxDefaults are the settings given to a mailbox created implicitly by
+// message delivery.
+//
+// They exist as a type rather than as two arguments because both values are
+// dangerous when zero and the guard belongs with them: a cap of zero makes
+// every mailbox instantly full, and a retention of zero days deletes every
+// message older than this instant on the next sweep.
+type MailboxDefaults struct {
+	MaxMessages   int
+	RetentionDays int
+}
+
+// DefaultsFromConfig derives the delivery-time defaults from the server
+// configuration.
+//
+// This is the whole point of the type: before it, getMailbox passed the
+// literals 1000 and 30, so max_messages_per_mailbox and retention_policy
+// applied only to mailboxes somebody created explicitly through MMA. An
+// operator could lower the cap, watch delivery keep filling mailboxes past it,
+// and have nothing in the logs to explain why.
+func DefaultsFromConfig(cfg *core.ServerConfig) MailboxDefaults {
+	if cfg == nil {
+		return MailboxDefaults{}.orFallbacks()
+	}
+	return MailboxDefaults{
+		MaxMessages:   cfg.MaxMessagesPerMailbox,
+		RetentionDays: retentionDays(cfg.RetentionPolicy),
+	}.orFallbacks()
+}
+
+// retentionDays converts a retention duration to whole days.
+//
+// It rounds a positive policy up rather than down. Retention is enforced as
+// "delete anything older than N days", so a twelve-hour policy truncating to
+// zero would delete every message on the next sweep — turning a short
+// retention window into immediate data loss. A policy shorter than a day
+// becomes one day; expressing anything finer needs a different mechanism than
+// a day count.
+func retentionDays(policy time.Duration) int {
+	if policy <= 0 {
+		return 0 // caller substitutes the fallback
+	}
+	days := int(policy / (24 * time.Hour))
+	if policy%(24*time.Hour) != 0 {
+		days++
+	}
+	return days
+}
+
+// orFallbacks replaces values that would be actively harmful rather than
+// merely unset.
+func (d MailboxDefaults) orFallbacks() MailboxDefaults {
+	if d.MaxMessages <= 0 {
+		d.MaxMessages = fallbackMaxMessages
+	}
+	if d.RetentionDays <= 0 {
+		d.RetentionDays = fallbackRetentionDays
+	}
+	return d
+}
+
 // MailboxServer is the Mail Delivery Agent — handles local message storage and retrieval.
 type MailboxServer struct {
 	Storage      storage.Storage
@@ -27,6 +97,7 @@ type MailboxServer struct {
 	mu           sync.RWMutex
 	logger       *slog.Logger
 	notifier     *Notifier
+	defaults     MailboxDefaults
 }
 
 // SetNotifier sets the push notification sender for the MDA.
@@ -35,12 +106,23 @@ func (s *MailboxServer) SetNotifier(n *Notifier) {
 }
 
 // NewMailboxServer creates a new MDA.
-func NewMailboxServer(store storage.Storage, logger *slog.Logger) *MailboxServer {
+//
+// The defaults are a parameter rather than a setter so that a caller cannot
+// forget them: forgetting is what the previous hardcoded literals amounted to,
+// and it failed silently.
+func NewMailboxServer(store storage.Storage, defaults MailboxDefaults, logger *slog.Logger) *MailboxServer {
 	return &MailboxServer{
 		Storage:      store,
 		mailboxCache: make(map[string]mailboxes.Mailbox),
 		logger:       logger,
+		defaults:     defaults.orFallbacks(),
 	}
+}
+
+// MailboxDefaults reports the settings applied to mailboxes created on the
+// delivery path.
+func (s *MailboxServer) MailboxDefaults() MailboxDefaults {
+	return s.defaults
 }
 
 // getMailbox gets or creates a mailbox, using the stored type from the database.
@@ -54,8 +136,11 @@ func (s *MailboxServer) getMailbox(ctx context.Context, addr *core.MailboxAddres
 	}
 	s.mu.RUnlock()
 
-	// Get or create mailbox in storage
-	record, err := s.Storage.GetOrCreateMailbox(ctx, addr, 1000, 30, nil)
+	// Get or create mailbox in storage. An existing mailbox keeps the settings
+	// it was created with; these apply only when delivery is what brings the
+	// mailbox into existence.
+	record, err := s.Storage.GetOrCreateMailbox(ctx, addr,
+		s.defaults.MaxMessages, s.defaults.RetentionDays, nil)
 	if err != nil {
 		return nil, fmt.Errorf("get or create mailbox: %w", err)
 	}

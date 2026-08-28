@@ -197,32 +197,19 @@ func TestConflictIsTypedAndCarriesTheServerETag(t *testing.T) {
 // client that reads it as "retry later" retries against something that will
 // not change until somebody else acts.
 func TestMailboxFullIsTypedAndNotRetryable(t *testing.T) {
-	const (
-		cap    = 2
-		folder = "full/inbox"
-	)
+	const cap = 2
 
-	server := newTestServer(t)
+	server := newTestServer(t, func(cfg *core.ServerConfig) {
+		cfg.MaxMessagesPerMailbox = cap
+	})
 	cl := newTestClient(t, server)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	self := cl.PeerID()
 
-	// The cap is set on the mailbox rather than through
-	// cfg.MaxMessagesPerMailbox, because a mailbox created on the delivery
-	// path does not read that setting — see mda/delivery.go, which passes a
-	// hardcoded 1000. That is a separate bug; this test is about the error a
-	// full mailbox produces, so it creates one with a cap it will actually
-	// honour.
-	if err := cl.CreateMailbox(ctx, folder, core.MailboxPrivate,
-		client.WithMailboxMaxMessages(cap)); err != nil {
-		t.Fatalf("create capped mailbox: %v", err)
-	}
-
 	for i := 0; i < cap; i++ {
-		res, err := cl.SendMessage(ctx, self, []byte("filling"),
-			client.WithFolderPath(folder))
+		res, err := cl.SendMessage(ctx, self, []byte("filling"))
 		if err != nil {
 			t.Fatalf("send %d: %v", i, err)
 		}
@@ -234,8 +221,7 @@ func TestMailboxFullIsTypedAndNotRetryable(t *testing.T) {
 		}
 	}
 
-	res, err := cl.SendMessage(ctx, self, []byte("one too many"),
-		client.WithFolderPath(folder))
+	res, err := cl.SendMessage(ctx, self, []byte("one too many"))
 	if err != nil {
 		t.Fatalf("send past the cap: %v", err)
 	}
