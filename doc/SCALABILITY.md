@@ -210,12 +210,18 @@ Ordered so that each phase makes the next one measurable.
 Nothing after this phase should be tuned by guessing. Sumi spent days reverse-engineering a
 rate limit from client-side `429`s; that must not be the debugging experience again.
 
+**Planned in detail: [`PHASE_B_PLAN.md`](./PHASE_B_PLAN.md).** Two items were added to the
+table below after checking the code: an operator HTTP view (sumi's #3, decided against a
+protocol-level operator credential) and the client error surface, which still collapses every
+status into a string.
+
 | | Item | Notes |
 |---|------|-------|
 | B1 | Prometheus `MetricsCollector` + install `MetricsMiddleware` | The forge hook already exists |
 | B2 | HTTP listener: `/metrics`, `/healthz`, `/debug/pprof` | Also unblocks D6 |
-| B3 | Per-protocol throttle counters, mailbox-depth gauge | The two numbers sumi could not see |
-| B4 | Baseline runs with `cmd/ricochet-bench` | Already supports per-protocol, concurrency, percentiles |
+| B3 | Per-protocol throttle counters, mailbox-depth gauge, operator HTTP view | The two numbers sumi could not see. Needs the first non-owner-scoped storage queries in the codebase |
+| B4 | Typed client errors + `Retry-After` on 429/503 | `pkg/client` has no error types at all; sumi paced by guesswork because we never said when to retry |
+| B5 | Baseline runs with `cmd/ricochet-bench` | Already supports per-protocol, concurrency, percentiles; needs batch and re-sync scenarios |
 
 ### Phase C — bound and shed load (the "large connection counts" half)
 
