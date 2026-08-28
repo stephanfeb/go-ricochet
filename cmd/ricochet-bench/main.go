@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -40,6 +41,12 @@ type benchConfig struct {
 	Duration     time.Duration
 	WarmupCount  int
 	Verbose      bool
+
+	// BatchSize is how many documents or messages one batched request carries.
+	BatchSize int
+
+	// DocCount is the vault size a sync scenario covers.
+	DocCount int
 }
 
 // requestResult captures the outcome of a single benchmarked operation.
@@ -50,7 +57,15 @@ type requestResult struct {
 
 // benchResults holds aggregated benchmark output.
 type benchResults struct {
-	Protocol  string
+	Protocol string
+
+	// Unit names what one request accomplishes, and UnitsPerRequest says how
+	// many. Requests per second stops being the interesting number once one
+	// request carries a hundred documents -- quoting it would report batching
+	// as a slowdown.
+	Unit            string
+	UnitsPerRequest int
+
 	Completed int
 	Failed    int
 	TotalTime time.Duration
@@ -75,6 +90,46 @@ var validProtocols = map[string]string{
 	"sfa":   "SFA (Feed Store)",
 	"sca":   "SCA (Collection Store)",
 	"mixed": "Mixed (All Protocols)",
+
+	"sda-batch": "SDA BATCH_PUT (batched document writes)",
+	"msa-batch": "MSA batch submit (batched message submission)",
+
+	"sync-cold": "Sync: first upload of a vault (all creates)",
+	"sync-warm": "Sync: re-upload after edits (all replaces)",
+	"sync-noop": "Sync: nothing changed (list and compare)",
+}
+
+// scenarioUnit names the work one request of each scenario carries. Absent
+// means one request is one unit and the request count is the whole story.
+var scenarioUnit = map[string]string{
+	"sda-batch": "documents",
+	"msa-batch": "messages",
+	"sync-cold": "documents",
+	"sync-warm": "documents",
+	"sync-noop": "documents",
+}
+
+// isSyncScenario reports whether one request of this scenario is a whole sync
+// pass rather than a single operation.
+func isSyncScenario(protocol string) bool {
+	switch protocol {
+	case "sync-cold", "sync-warm", "sync-noop":
+		return true
+	}
+	return false
+}
+
+// unitsPerRequest reports how many items of work one request of this scenario
+// accomplishes.
+func unitsPerRequest(cfg *benchConfig) int {
+	switch cfg.Protocol {
+	case "sda-batch", "msa-batch":
+		return cfg.BatchSize
+	case "sync-cold", "sync-warm", "sync-noop":
+		return cfg.DocCount
+	default:
+		return 1
+	}
 }
 
 func main() {
@@ -84,13 +139,20 @@ func main() {
 	payloadSize := flag.Int("payload-size", 1024, "Payload size in bytes")
 	duration := flag.Duration("duration", 0, "Run for duration instead of fixed count (e.g. 30s, 1m)")
 	warmup := flag.Int("warmup", 10, "Warmup requests before measuring")
+	batchSize := flag.Int("batch-size", 100, "Documents or messages per request, for the -batch scenarios")
+	docCount := flag.Int("docs", 500, "Vault size for the sync scenarios")
 	verbose := flag.Bool("v", false, "Verbose output (show libp2p/UDX diagnostic logs)")
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: ricochet-bench [flags] <server-multiaddr> <server-peer-id>\n\n")
 		fmt.Fprintf(os.Stderr, "Stress test tool for Ricochet servers (like Apache Bench for libp2p).\n\n")
 		fmt.Fprintf(os.Stderr, "Example:\n")
 		fmt.Fprintf(os.Stderr, "  ricochet-bench -n 5000 -c 20 -protocol sda /ip4/127.0.0.1/udp/55223/udx 12D3KooW...\n\n")
-		fmt.Fprintf(os.Stderr, "Protocols: msa, maa, sda, sfa, sca, mixed\n\n")
+		fmt.Fprintf(os.Stderr, "Per-operation:  msa, maa, sda, sfa, sca, mixed\n")
+		fmt.Fprintf(os.Stderr, "Batched:        sda-batch, msa-batch  (see -batch-size)\n")
+		fmt.Fprintf(os.Stderr, "Sync shapes:    sync-cold, sync-warm, sync-noop  (see -docs)\n\n")
+		fmt.Fprintf(os.Stderr, "  sync-cold  first upload of a vault, every document new\n")
+		fmt.Fprintf(os.Stderr, "  sync-warm  re-upload after edits, every document replaced\n")
+		fmt.Fprintf(os.Stderr, "  sync-noop  nothing changed: list and compare ETags, write nothing\n\n")
 		fmt.Fprintf(os.Stderr, "Flags:\n")
 		flag.PrintDefaults()
 	}
@@ -109,7 +171,7 @@ func main() {
 	}
 
 	if _, ok := validProtocols[*proto]; !ok {
-		fmt.Fprintf(os.Stderr, "Error: unknown protocol %q. Valid: msa, maa, sda, sfa, sca, mixed\n", *proto)
+		fmt.Fprintf(os.Stderr, "Error: unknown scenario %q. Run with -h for the list.\n", *proto)
 		os.Exit(1)
 	}
 
@@ -123,6 +185,24 @@ func main() {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: invalid server peer ID: %v\n", err)
 		os.Exit(1)
+	}
+
+	// A sync pass is a whole vault, not one request, so the per-operation
+	// defaults are wrong for it by three orders of magnitude: -n 1000 against
+	// -docs 500 would write half a million documents before reporting
+	// anything. Adjust only what the caller did not ask for.
+	if isSyncScenario(*proto) {
+		set := map[string]bool{}
+		flag.Visit(func(f *flag.Flag) { set[f.Name] = true })
+		if !set["n"] {
+			*n = 10
+		}
+		if !set["warmup"] {
+			*warmup = 1
+		}
+		if !set["c"] {
+			*c = 1
+		}
 	}
 
 	if *c > *n && *duration == 0 {
@@ -139,6 +219,17 @@ func main() {
 		Duration:     *duration,
 		WarmupCount:  *warmup,
 		Verbose:      *verbose,
+		BatchSize:    *batchSize,
+		DocCount:     *docCount,
+	}
+
+	if cfg.BatchSize < 1 {
+		fmt.Fprintln(os.Stderr, "Error: -batch-size must be at least 1")
+		os.Exit(1)
+	}
+	if cfg.DocCount < 1 {
+		fmt.Fprintln(os.Stderr, "Error: -docs must be at least 1")
+		os.Exit(1)
 	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
@@ -207,11 +298,23 @@ func run(ctx context.Context, cfg *benchConfig) error {
 	if cfg.WarmupCount > 0 {
 		fmt.Printf("[3/4] Warming up (%d requests)...", cfg.WarmupCount)
 		warmupFailed := 0
+		var lastWarmupErr error
 		for i := 0; i < cfg.WarmupCount; i++ {
 			wIdx := i % cfg.Concurrency
 			if err := benchFn(ctx, workers[wIdx].client, wIdx, -(i + 1)); err != nil {
 				warmupFailed++
+				lastWarmupErr = err
 			}
+		}
+		if warmupFailed == cfg.WarmupCount {
+			// Every warmup request failed, so whatever follows would be a
+			// table of zeros dressed up as a measurement. This tool exists to
+			// produce numbers somebody will commit and regress against; a
+			// baseline taken from a run that never worked is worse than no
+			// baseline. Fail here, with the reason.
+			closeWorkers(workers)
+			return fmt.Errorf("all %d warmup requests failed; last error: %v",
+				cfg.WarmupCount, lastWarmupErr)
 		}
 		if warmupFailed > 0 {
 			fmt.Printf(" done (%d/%d failed)\n", warmupFailed, cfg.WarmupCount)
@@ -235,6 +338,8 @@ func run(ctx context.Context, cfg *benchConfig) error {
 	fmt.Println()
 	printResults(cfg, results)
 
+	failed := results.Completed == 0 && results.Failed > 0
+
 	// Close workers with a timeout — host.Close() can hang due to UDX
 	// readLoop blocking on ReadFrom(). If it doesn't finish quickly,
 	// just exit since we already have our results.
@@ -250,6 +355,9 @@ func run(ctx context.Context, cfg *benchConfig) error {
 		// UDX close is hanging — force exit since results are already printed.
 	}
 
+	if failed {
+		return fmt.Errorf("every request failed; the numbers above measure nothing")
+	}
 	return nil
 }
 
@@ -353,7 +461,7 @@ func setupBench(ctx context.Context, cfg *benchConfig, workers []*workerState, p
 		// Create a feed per worker.
 		fmt.Printf("     Creating feeds for SFA benchmark...")
 		for i, ws := range workers {
-			feedPath := fmt.Sprintf("/bench/feed-w%d", i)
+			feedPath := fmt.Sprintf("bench/feed-w%d", i)
 			if err := ws.client.CreateFeed(ctx, feedPath, "Bench Feed", "stress test"); err != nil {
 				return nil, fmt.Errorf("create feed for worker %d: %w", i, err)
 			}
@@ -365,13 +473,35 @@ func setupBench(ctx context.Context, cfg *benchConfig, workers []*workerState, p
 		// Create a collection per worker.
 		fmt.Printf("     Creating collections for SCA benchmark...")
 		for i, ws := range workers {
-			collPath := fmt.Sprintf("/bench/coll-w%d", i)
+			collPath := fmt.Sprintf("bench/coll-w%d", i)
 			if err := ws.client.CreateCollection(ctx, collPath, "Bench Collection"); err != nil {
 				return nil, fmt.Errorf("create collection for worker %d: %w", i, err)
 			}
 		}
 		fmt.Println(" done")
 		return benchSCA(payload), nil
+
+	case "sda-batch":
+		return benchSDABatch(cfg, payload), nil
+
+	case "msa-batch":
+		return benchMSABatch(workers, cfg, payload), nil
+
+	case "sync-cold":
+		// Nothing to seed: every pass writes documents that do not exist yet.
+		return benchSyncCold(cfg, payload), nil
+
+	case "sync-warm":
+		if err := setupSync(ctx, cfg, workers, payload); err != nil {
+			return nil, err
+		}
+		return benchSyncWarm(cfg, payload), nil
+
+	case "sync-noop":
+		if err := setupSync(ctx, cfg, workers, payload); err != nil {
+			return nil, err
+		}
+		return benchSyncNoop(cfg), nil
 
 	case "mixed":
 		// Setup for all protocols.
@@ -382,11 +512,11 @@ func setupBench(ctx context.Context, cfg *benchConfig, workers []*workerState, p
 					return nil, fmt.Errorf("seed message for worker %d: %w", i, err)
 				}
 			}
-			feedPath := fmt.Sprintf("/bench/feed-w%d", i)
+			feedPath := fmt.Sprintf("bench/feed-w%d", i)
 			if err := ws.client.CreateFeed(ctx, feedPath, "Bench Feed", "stress test"); err != nil {
 				return nil, fmt.Errorf("create feed for worker %d: %w", i, err)
 			}
-			collPath := fmt.Sprintf("/bench/coll-w%d", i)
+			collPath := fmt.Sprintf("bench/coll-w%d", i)
 			if err := ws.client.CreateCollection(ctx, collPath, "Bench Collection"); err != nil {
 				return nil, fmt.Errorf("create collection for worker %d: %w", i, err)
 			}
@@ -424,7 +554,7 @@ func benchMAA() benchFunc {
 
 func benchSDA(payload []byte) benchFunc {
 	return func(ctx context.Context, c *client.Client, workerID, reqID int) error {
-		path := fmt.Sprintf("/bench/w%d/doc-%d", workerID, reqID)
+		path := fmt.Sprintf("bench/w%d/doc-%d", workerID, reqID)
 		ownerID := c.PeerID()
 		if _, err := c.PutDocument(ctx, ownerID, path, payload); err != nil {
 			return fmt.Errorf("put: %w", err)
@@ -438,7 +568,7 @@ func benchSDA(payload []byte) benchFunc {
 
 func benchSFA(payload []byte) benchFunc {
 	return func(ctx context.Context, c *client.Client, workerID, reqID int) error {
-		feedPath := fmt.Sprintf("/bench/feed-w%d", workerID)
+		feedPath := fmt.Sprintf("bench/feed-w%d", workerID)
 		seq, err := c.AppendFeedEntry(ctx, feedPath, payload, "bench")
 		if err != nil {
 			return fmt.Errorf("append: %w", err)
@@ -452,10 +582,14 @@ func benchSFA(payload []byte) benchFunc {
 }
 
 func benchSCA(payload []byte) benchFunc {
-	jsonPayload, _ := json.Marshal(map[string]string{"data": string(payload)})
+	// Hex-encode rather than casting the random bytes to a string. Raw binary
+	// in a JSON string field marshals any NUL byte as \u0000, which Postgres
+	// rejects for jsonb -- so the benchmark measured an error path instead of
+	// the collection write it was meant to time.
+	jsonPayload, _ := json.Marshal(map[string]string{"data": hex.EncodeToString(payload)})
 
 	return func(ctx context.Context, c *client.Client, workerID, reqID int) error {
-		collPath := fmt.Sprintf("/bench/coll-w%d", workerID)
+		collPath := fmt.Sprintf("bench/coll-w%d", workerID)
 		key := fmt.Sprintf("item-%d", reqID)
 		if _, err := c.PutCollectionItem(ctx, collPath, key, jsonPayload); err != nil {
 			return fmt.Errorf("put item: %w", err)
@@ -584,9 +718,11 @@ func runBench(ctx context.Context, cfg *benchConfig, workers []*workerState, fn 
 
 	// Aggregate results.
 	res := &benchResults{
-		Protocol:  cfg.Protocol,
-		TotalTime: totalTime,
-		Errors:    make(map[string]int),
+		Protocol:        cfg.Protocol,
+		TotalTime:       totalTime,
+		Errors:          make(map[string]int),
+		Unit:            scenarioUnit[cfg.Protocol],
+		UnitsPerRequest: unitsPerRequest(cfg),
 	}
 
 	for _, wr := range workerResults {
@@ -657,6 +793,17 @@ func printResults(cfg *benchConfig, res *benchResults) {
 	if res.TotalTime > 0 && res.Completed > 0 {
 		rps := float64(res.Completed) / res.TotalTime.Seconds()
 		fmt.Printf("  Requests/sec:         %.2f\n", rps)
+
+		// When one request carries many documents, requests per second
+		// understates throughput by exactly the batch factor. Report what the
+		// client actually cares about alongside it.
+		if res.UnitsPerRequest > 1 && res.Unit != "" {
+			units := res.Completed * res.UnitsPerRequest
+			fmt.Printf("  %-21s %.2f\n", res.Unit+"/sec:",
+				float64(units)/res.TotalTime.Seconds())
+			fmt.Printf("  %-21s %d (%d per request)\n", "total "+res.Unit+":",
+				units, res.UnitsPerRequest)
+		}
 	}
 
 	if len(res.Latencies) > 0 {

@@ -402,18 +402,47 @@ given and succeeds on the retry, and `TestOverloadedErrorIsDistinctFromRateLimit
 drives a real admission shed and asserts it does *not* match the throttling
 sentinel.
 
-### B5 — Baselines
+### B5 — Baselines — **done**
 
-`cmd/ricochet-bench` already supports per-protocol, concurrency, duration,
-warmup and percentiles. Missing:
+All three landed. `doc/BASELINES.md` holds the numbers, the conditions and the
+commands to reproduce them.
 
-- Batch scenarios (`BATCH_PUT`, batch submit) — the dominant workload now.
-- Cold sync, warm re-sync, no-op re-sync — the three shapes Stage 2 will be
-  judged against.
-- Recorded baseline numbers committed to `doc/`, with the hardware stated.
+- **Batch scenarios**: `sda-batch` and `msa-batch`, with `-batch-size`.
+- **Sync shapes**: `sync-cold`, `sync-warm`, `sync-noop`, with `-docs`.
+- **Recorded numbers** with hardware, server commit and configuration stated.
+
+Three things differ from the plan:
+
+- **The tool now reports work units, not just requests.** Once one request
+  carries a hundred documents, requests per second understates throughput by
+  exactly the batch factor — a benchmark that only counted requests would
+  report the batching work as a slowdown. Each scenario declares what one
+  request accomplishes and the results print both.
+- **A sync pass is one request, not one operation.** "How long does a sync
+  take" is the question a client asks, and it is not answerable by multiplying
+  a per-document latency, because batching, pagination and the no-op path each
+  change the request count. The sync scenarios therefore pick their own
+  defaults for `-n`, `-c` and `-warmup`; the per-operation default of `-n 1000`
+  against `-docs 500` would have written half a million documents.
+- **The tool refuses to report a run that never worked.** It used to print a
+  results table from a run with a 100% error rate, which for a tool whose
+  output gets committed as a baseline is worse than crashing.
+
+**Two bugs in the benchmark itself, both of which made it useless for the thing
+it exists for.** Every SDA, SFA and SCA path began with `/`, which all three
+protocols reject — so those scenarios had a 100% failure rate and had never
+produced a number. And the SCA payload put raw random bytes in a JSON string
+field, where any NUL byte marshals to `\u0000`, which Postgres rejects for
+`jsonb`; it hex-encodes now.
+
+**One server-side finding, recorded and not fixed:** that `\u0000` case comes
+back as a 500. It is a malformed request and should be a 400 — a 500 sends an
+operator hunting a server fault that is not there. Noted in `BASELINES.md`.
 
 **Done when:** there is a committed number to regress against, and Stage 2 has
-a before-figure.
+a before-figure. **Both.** The headline figure for Stage 2 to beat: a
+500-document vault syncs cold in **117ms over 5 requests**, and a no-op re-sync
+of the same vault costs **4.4ms over 1 request**.
 
 ## 5. Out of scope
 

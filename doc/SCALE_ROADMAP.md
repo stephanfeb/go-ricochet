@@ -368,14 +368,32 @@ The core refactor. This is where the shape of the workload changes.
 change. **Next binding:** Postgres as the blob data plane — WAL and replication
 throughput on `block_store`.
 
+**The figures to beat** (`doc/BASELINES.md`, taken at `ca32f10`): a 500-document
+vault syncs cold in 117ms over 5 requests, warm in 121ms over 5, and no-op in
+4.4ms over 1. The interesting one is warm: it currently costs what cold costs,
+because a replace does the same work as a create. Making re-sync proportional to
+change is precisely the gap between the warm and no-op rows.
+
 ### Stage 3 — Measure, then bound by capacity
 No numbers in this roadmap should survive contact with measurement. This stage is
 where they get replaced.
 
-- Prometheus `MetricsCollector` + `MetricsMiddleware` (the forge hook already
-  exists), `/metrics`, `/healthz`, `/debug/pprof`.
-- Throughput, commit latency, pool saturation, blob hit rate, dedup ratio.
-- `cmd/ricochet-bench` scenarios for cold sync, warm re-sync, and no-op re-sync.
+**Most of it landed early, as Phase B** (`doc/PHASE_B_PLAN.md`), because Stage 2
+needed a before-figure and none existed:
+
+- ~~Prometheus `MetricsCollector` + `MetricsMiddleware`, `/metrics`,
+  `/healthz`, `/debug/pprof`.~~ **Done** (B0, B1). Note the forge hook the plan
+  counted on is called by nothing inside forge, so `internal/metrics` publishes
+  its own series rather than implementing it.
+- ~~Throughput, commit latency, pool saturation.~~ **Done** (B1, B2) — request
+  counts and latency by protocol × operation × outcome, admission, pool and
+  buffer-pool series, plus storage aggregates and mailbox depth. Blob hit rate
+  and dedup ratio wait for Stage 2, which is what creates blobs.
+- ~~`cmd/ricochet-bench` scenarios for cold sync, warm re-sync, and no-op
+  re-sync.~~ **Done** (B5). Numbers in `doc/BASELINES.md`.
+
+Still outstanding:
+
 - Adaptive admission bounds driven by those measurements — widen while commit
   latency is flat, narrow when it climbs. The bound and the shedding exist
   (§6); what is missing is the feedback loop that sets the bound.
