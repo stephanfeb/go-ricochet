@@ -77,6 +77,50 @@ features:
   enable_relay_service: true
   enable_autonat: true
 
+# Operator HTTP surface
+#
+# Liveness, readiness and (when features.enable_metrics is on) Prometheus
+# metrics, served on a plain HTTP listener separate from the libp2p protocols.
+# This is what lets a load balancer or orchestrator see the instance: without
+# it there is no health check, and an instance that cannot serve looks the same
+# as one that can.
+#
+# /healthz  liveness. Never touches the database, so a database outage does not
+#           get the process restarted for a fault a restart cannot fix.
+# /readyz   readiness. Pings PostgreSQL and returns 503 when it is unreachable
+#           or when the server is shutting down, which is how an instance
+#           drains. Saturation is NOT unreadiness -- a busy instance is
+#           working, and withdrawing it moves its load onto the busiest peers.
+#           The body also carries admission and connection-pool figures.
+# /metrics  Prometheus, gated on features.enable_metrics.
+#
+# Bound to loopback because readiness details, metrics and profiles all
+# disclose internal state. Reach it from off-host with an SSH tunnel, or set
+# bind explicitly if the network is already trusted.
+ops:
+  enabled: true
+  bind: 127.0.0.1
+  port: 9090
+
+  # Mounts /debug/pprof. Off by default: the profiles include goroutine stacks
+  # and heap contents. Turn it on to diagnose, then turn it off.
+  enable_pprof: false
+
+  # How long /readyz waits on its checks. A probe that hangs is worse than one
+  # that fails.
+  readiness_timeout: 2s
+
+  # How long shutdown waits for in-flight ops requests.
+  shutdown_timeout: 5s
+
+  # How long shutdown keeps serving after /readyz starts reporting unready.
+  # Behind a load balancer, set this to a couple of probe intervals so the
+  # instance is removed from rotation before it stops answering; without it the
+  # instance disappears in the same instant it announces its withdrawal, and
+  # the load balancer learns about the shutdown through failed requests.
+  # Zero (the default) skips the wait, which is right when nothing is probing.
+  drain_delay: 0s
+
 # Admission control
 #
 # This is what governs throughput. It bounds how much work is in flight at

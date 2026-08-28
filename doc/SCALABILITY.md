@@ -185,8 +185,14 @@ So the data plane is *already* horizontally scalable. What blocks it is a short,
 5. ~~**`GetNextSequence` (#3) escalates from a race to a guarantee-breaker.**~~ **Fixed**
    (`c8b0c4a`). Sequence assignment is now a single `UPDATE ... RETURNING` inside the delivery
    transaction, so it is correct across instances as well as within one.
-6. **No health check, no draining, no HTTP surface at all.** `grep` for `net/http` across
-   `internal/` and `cmd/` returns nothing. No load balancer can participate.
+6. ~~**No health check, no draining, no HTTP surface at all.**~~ **Fixed** (B0).
+   `internal/opsapi` serves `/healthz`, `/readyz` and, when `features.enable_metrics` is on,
+   `/metrics`, on a loopback listener configured under `ops`. `/readyz` pings PostgreSQL and
+   returns 503 when it is unreachable or when the instance is draining, which is the signal a
+   load balancer acts on. Liveness deliberately touches nothing: a probe that fails on a
+   database outage gets the process restarted for a fault a restart cannot fix. Saturation is
+   reported in the readiness body but is not unreadiness — withdrawing a busy instance moves
+   its load onto whichever instances are already busiest.
 
 ---
 

@@ -89,7 +89,28 @@ internal topology. Exposing it beyond the host is an explicit opt-in.
 
 ## 4. The work
 
-### B0 — HTTP surface
+### B0 — HTTP surface — **done**
+
+Landed in `internal/opsapi` with config under `ops`. Two things the plan did
+not anticipate:
+
+- **Saturation is not unreadiness.** The plan said `/readyz` "reports admission
+  saturation", which reads as though a full instance should report unready. It
+  must not: a busy instance is working, and taking it out of rotation moves its
+  load onto whichever instances are already busiest. Saturation and pool
+  figures are carried in the readiness *body*, and only a dependency failure or
+  a deliberate drain changes the verdict.
+- **Draining needs a delay to mean anything.** `Stop` marked the instance
+  unready and then tore it down in the same instant, so a load balancer never
+  observed the 503 — it would have learned of the shutdown through failed
+  requests. `ops.drain_delay` holds the listener open after the withdrawal.
+  It defaults to zero, since it is only useful when something is probing.
+
+`/metrics` is mounted in B0 already, gated on `features.enable_metrics`, over
+the Prometheus default registry — so it serves Go runtime and process metrics
+today. B1 adds the ricochet families to it.
+
+Original scope, for reference:
 
 New package `internal/opsapi`: a `*http.Server` with its own listener,
 lifecycle wired into `Server.Start`/`Server.Stop` alongside the other services.
@@ -104,7 +125,10 @@ lifecycle wired into `Server.Start`/`Server.Stop` alongside the other services.
 
 **Done when:** `curl localhost:<port>/healthz` works, killing Postgres flips
 `/readyz` to 503 without killing the process, and shutdown is clean under
-`Server.Stop`.
+`Server.Stop`. **All three verified** — the first and third against the real
+binary, the second in `TestOpsSurfaceReportsDatabaseLoss` against a real pool
+(pgx reports `closed pool`). Both readiness tests were confirmed to fail when
+the 503 path is removed.
 
 ### B1 — Prometheus collector
 

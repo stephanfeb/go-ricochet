@@ -22,6 +22,7 @@ import (
 	"github.com/twostack/go-ricochet/internal/core"
 	"github.com/twostack/go-ricochet/internal/mda"
 	"github.com/twostack/go-ricochet/internal/mta"
+	"github.com/twostack/go-ricochet/internal/opsapi"
 	"github.com/twostack/go-ricochet/internal/presence"
 	"github.com/twostack/go-ricochet/internal/protocol/maa"
 	"github.com/twostack/go-ricochet/internal/protocol/mma"
@@ -47,6 +48,7 @@ type Server struct {
 	mtaRtr      *mta.Router
 	limiters    *ratelimit.Limiters
 	admission   *admission.Controller
+	opsSrv      *opsapi.Server
 
 	// Services
 	registry        *registry.Registry
@@ -111,6 +113,12 @@ func (s *Server) Start(parentCtx context.Context) error {
 	// Start background services
 	s.startServices(s.ctx)
 
+	// Operator HTTP surface. Started last so /readyz only reports ready once
+	// everything it vouches for is actually up.
+	if err := s.startOpsAPI(); err != nil {
+		return fmt.Errorf("start ops api: %w", err)
+	}
+
 	s.isRunning = true
 
 	peerID := s.forgeServer.PeerID()
@@ -131,6 +139,18 @@ func (s *Server) Stop() error {
 
 	s.logger.Info("stopping server")
 	s.isRunning = false
+
+	// Withdraw from load balancing before anything is torn down, so traffic
+	// stops arriving while the instance can still serve what it has. The delay
+	// is what gives a load balancer time to observe the 503; without it the
+	// instance vanishes in the same instant it announces its withdrawal.
+	if s.opsSrv != nil {
+		s.opsSrv.Drain()
+		if delay := s.config.Ops.DrainDelay; delay > 0 {
+			s.logger.Info("draining before shutdown", "delay", delay)
+			time.Sleep(delay)
+		}
+	}
 
 	// Cancel context first so background goroutines exit promptly
 	if s.cancel != nil {
@@ -160,6 +180,16 @@ func (s *Server) Stop() error {
 	// Stop rate limiter eviction goroutines
 	if s.limiters != nil {
 		s.limiters.Close()
+	}
+
+	// Stop the operator surface before storage closes, so /readyz never
+	// answers with a pool that has already gone away.
+	if s.opsSrv != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), s.config.Ops.EffectiveShutdownTimeout())
+		if err := s.opsSrv.Shutdown(ctx); err != nil {
+			s.logger.Warn("error stopping ops server", "error", err)
+		}
+		cancel()
 	}
 
 	// Close MDA (which closes storage)

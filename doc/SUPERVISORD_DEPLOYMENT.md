@@ -261,26 +261,46 @@ sudo supervisorctl status
 
 ### Health Checks
 
+The server serves its own health endpoints on the operator HTTP surface, bound
+to loopback on port 9090 by default (see `ops` in `config.example.yaml`). Ask
+the server rather than inferring its state from the outside:
+
+- `/healthz` — the process is up. It touches no dependency on purpose, so a
+  database outage does not get the process restarted for a fault a restart
+  cannot fix.
+- `/readyz` — the server can actually serve. It pings PostgreSQL and returns
+  503 when the database is unreachable or when the server is shutting down.
+  The body also carries admission and connection-pool figures, which is where
+  to look first when the question is "why is it slow".
+
 Create a health check script (`/opt/ricochet/health_check.sh`):
 
 ```bash
 #!/bin/bash
 
-# Check if process is running
-if ! sudo supervisorctl status ricochet | grep -q RUNNING; then
-    echo "CRITICAL: Ricochet not running"
+OPS=http://127.0.0.1:9090
+
+# Liveness. A failure here means the process is gone or wedged.
+if ! curl -sf --max-time 5 "$OPS/healthz" >/dev/null; then
+    echo "CRITICAL: Ricochet not responding"
     exit 2
 fi
 
-# Check database connectivity
-if ! psql -U ricochet -d ricochet -c "SELECT 1" >/dev/null 2>&1; then
-    echo "WARNING: Database connection issue"
+# Readiness. 503 means it is up but cannot serve — usually the database.
+if ! curl -sf --max-time 5 "$OPS/readyz" >/dev/null; then
+    echo "WARNING: Ricochet is up but not ready"
+    curl -s --max-time 5 "$OPS/readyz"
     exit 1
 fi
 
 echo "OK: Ricochet is healthy"
 exit 0
 ```
+
+Behind a load balancer, point the pool's health check at `/readyz` and set
+`ops.drain_delay` to a couple of probe intervals. Without that delay the
+instance stops answering in the same moment it reports itself unready, and the
+load balancer discovers the shutdown through failed requests instead.
 
 Schedule with cron:
 ```bash

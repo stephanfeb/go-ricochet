@@ -2,7 +2,9 @@ package core
 
 import (
 	"fmt"
+	"net"
 	"os"
+	"strconv"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -64,6 +66,9 @@ type ServerConfig struct {
 
 	// Capacity
 	Admission AdmissionControl `yaml:"admission_control" json:"admissionControl"`
+
+	// Operator HTTP surface
+	Ops OpsConfig `yaml:"ops" json:"ops"`
 
 	// Relay limits
 	RelayLimits RelayLimits `yaml:"relay_limits" json:"relayLimits"`
@@ -133,6 +138,84 @@ func (a AdmissionControl) EffectiveAcquireTimeout() time.Duration {
 		return 5 * time.Second
 	}
 	return a.AcquireTimeout
+}
+
+// OpsConfig configures the operator HTTP surface: liveness, readiness, and
+// optionally pprof and Prometheus metrics.
+//
+// It binds to loopback by default. The surface exposes peer identifiers,
+// storage figures and internal topology, so reaching it from off-host is an
+// explicit decision rather than the default.
+type OpsConfig struct {
+	Enabled bool `yaml:"enabled" json:"enabled"`
+
+	// Bind is the interface to listen on. Empty means loopback.
+	Bind string `yaml:"bind" json:"bind"`
+
+	// Port is the TCP port. Zero binds an ephemeral port, which is useful in
+	// tests; the chosen port is logged at startup.
+	Port int `yaml:"port" json:"port"`
+
+	// EnablePprof mounts /debug/pprof. It is off by default: the profiles
+	// include goroutine stacks and heap contents.
+	EnablePprof bool `yaml:"enable_pprof" json:"enablePprof"`
+
+	// ReadinessTimeout bounds how long /readyz will wait on its checks. A
+	// readiness probe that hangs is worse than one that fails.
+	ReadinessTimeout time.Duration `yaml:"readiness_timeout" json:"readinessTimeout"`
+
+	// ShutdownTimeout bounds how long Stop waits for in-flight ops requests.
+	ShutdownTimeout time.Duration `yaml:"shutdown_timeout" json:"shutdownTimeout"`
+
+	// DrainDelay is how long shutdown keeps serving after /readyz starts
+	// reporting unready. Without it the instance disappears in the same
+	// instant it announces its withdrawal, and a load balancer never observes
+	// the 503 — it discovers the shutdown through failed requests instead.
+	// Set it to a couple of probe intervals. Zero, the default, skips the
+	// wait, which is right when nothing is probing.
+	DrainDelay time.Duration `yaml:"drain_delay" json:"drainDelay"`
+}
+
+// DefaultOpsConfig returns the built-in operator surface settings.
+func DefaultOpsConfig() OpsConfig {
+	return OpsConfig{
+		Enabled:          true,
+		Bind:             "127.0.0.1",
+		Port:             9090,
+		EnablePprof:      false,
+		ReadinessTimeout: 2 * time.Second,
+		ShutdownTimeout:  5 * time.Second,
+		DrainDelay:       0,
+	}
+}
+
+// EffectiveBind returns the configured bind address, defaulting to loopback.
+func (o OpsConfig) EffectiveBind() string {
+	if o.Bind == "" {
+		return "127.0.0.1"
+	}
+	return o.Bind
+}
+
+// Address returns the host:port the operator surface listens on.
+func (o OpsConfig) Address() string {
+	return net.JoinHostPort(o.EffectiveBind(), strconv.Itoa(o.Port))
+}
+
+// EffectiveReadinessTimeout returns the readiness deadline, or two seconds.
+func (o OpsConfig) EffectiveReadinessTimeout() time.Duration {
+	if o.ReadinessTimeout <= 0 {
+		return 2 * time.Second
+	}
+	return o.ReadinessTimeout
+}
+
+// EffectiveShutdownTimeout returns the shutdown deadline, or five seconds.
+func (o OpsConfig) EffectiveShutdownTimeout() time.Duration {
+	if o.ShutdownTimeout <= 0 {
+		return 5 * time.Second
+	}
+	return o.ShutdownTimeout
 }
 
 // Protocol keys for per-protocol rate limits. Each names one limiter.
@@ -337,6 +420,7 @@ func DefaultConfig() *ServerConfig {
 
 		RateLimits: DefaultRateLimits(),
 		Admission:  DefaultAdmissionControl(),
+		Ops:        DefaultOpsConfig(),
 	}
 }
 
@@ -389,6 +473,18 @@ func (c *ServerConfig) Validate() error {
 	}
 	if c.Admission.MaxInFlightPerPeer < 0 {
 		return fmt.Errorf("admission_control.max_in_flight_per_peer must not be negative")
+	}
+	if c.Ops.Port < 0 || c.Ops.Port > 65535 {
+		return fmt.Errorf("ops.port out of range: %d", c.Ops.Port)
+	}
+	if c.Ops.ReadinessTimeout < 0 {
+		return fmt.Errorf("ops.readiness_timeout must not be negative")
+	}
+	if c.Ops.ShutdownTimeout < 0 {
+		return fmt.Errorf("ops.shutdown_timeout must not be negative")
+	}
+	if c.Ops.DrainDelay < 0 {
+		return fmt.Errorf("ops.drain_delay must not be negative")
 	}
 	if c.RateLimits.Window < 0 {
 		return fmt.Errorf("rate limit window must not be negative")
@@ -516,6 +612,16 @@ type yamlFileConfig struct {
 		MaxInFlightPerPeer *int   `yaml:"max_in_flight_per_peer"`
 		AcquireTimeout     string `yaml:"acquire_timeout"`
 	} `yaml:"admission_control"`
+
+	Ops struct {
+		Enabled          *bool  `yaml:"enabled"`
+		Bind             string `yaml:"bind"`
+		Port             *int   `yaml:"port"`
+		EnablePprof      *bool  `yaml:"enable_pprof"`
+		ReadinessTimeout string `yaml:"readiness_timeout"`
+		ShutdownTimeout  string `yaml:"shutdown_timeout"`
+		DrainDelay       string `yaml:"drain_delay"`
+	} `yaml:"ops"`
 }
 
 // LoadConfigFromFile reads a YAML config file and applies its values on top of
@@ -681,6 +787,68 @@ func LoadConfigFromFile(path string, base *ServerConfig) error {
 	// Admission control section
 	if err := applyAdmissionControl(yc, base); err != nil {
 		return err
+	}
+
+	// Operator HTTP surface
+	if err := applyOps(yc, base); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// applyOps folds the file's ops section into base.
+//
+// Enabled, Port and EnablePprof are pointers in the YAML struct because their
+// zero values are meaningful: the surface is on by default, and port 0 is a
+// legitimate request for an ephemeral port.
+func applyOps(yc yamlFileConfig, base *ServerConfig) error {
+	ops := &base.Ops
+
+	if yc.Ops.Enabled != nil {
+		ops.Enabled = *yc.Ops.Enabled
+	}
+	if yc.Ops.Bind != "" {
+		ops.Bind = yc.Ops.Bind
+	}
+	if yc.Ops.Port != nil {
+		if *yc.Ops.Port < 0 || *yc.Ops.Port > 65535 {
+			return fmt.Errorf("ops.port out of range: %d", *yc.Ops.Port)
+		}
+		ops.Port = *yc.Ops.Port
+	}
+	if yc.Ops.EnablePprof != nil {
+		ops.EnablePprof = *yc.Ops.EnablePprof
+	}
+	if yc.Ops.ReadinessTimeout != "" {
+		d, err := time.ParseDuration(yc.Ops.ReadinessTimeout)
+		if err != nil {
+			return fmt.Errorf("parse ops.readiness_timeout: %w", err)
+		}
+		if d <= 0 {
+			return fmt.Errorf("ops.readiness_timeout must be positive, got %s", yc.Ops.ReadinessTimeout)
+		}
+		ops.ReadinessTimeout = d
+	}
+	if yc.Ops.ShutdownTimeout != "" {
+		d, err := time.ParseDuration(yc.Ops.ShutdownTimeout)
+		if err != nil {
+			return fmt.Errorf("parse ops.shutdown_timeout: %w", err)
+		}
+		if d <= 0 {
+			return fmt.Errorf("ops.shutdown_timeout must be positive, got %s", yc.Ops.ShutdownTimeout)
+		}
+		ops.ShutdownTimeout = d
+	}
+	if yc.Ops.DrainDelay != "" {
+		d, err := time.ParseDuration(yc.Ops.DrainDelay)
+		if err != nil {
+			return fmt.Errorf("parse ops.drain_delay: %w", err)
+		}
+		if d < 0 {
+			return fmt.Errorf("ops.drain_delay must not be negative, got %s", yc.Ops.DrainDelay)
+		}
+		ops.DrainDelay = d
 	}
 
 	return nil
