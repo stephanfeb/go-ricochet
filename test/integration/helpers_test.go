@@ -30,6 +30,7 @@ import (
 	"github.com/twostack/go-ricochet/internal/protocol/sca"
 	"github.com/twostack/go-ricochet/internal/protocol/sda"
 	"github.com/twostack/go-ricochet/internal/protocol/sfa"
+	"github.com/twostack/go-ricochet/internal/ratelimit"
 	"github.com/twostack/go-ricochet/internal/storage"
 	"github.com/twostack/go-ricochet/internal/storage/postgres"
 	client "github.com/twostack/go-ricochet/pkg/client"
@@ -46,7 +47,10 @@ type testServer struct {
 
 // newTestServer creates a fully wired server with PostgreSQL storage and all
 // 4 protocol handlers (MSA, MAA, MMA, SDA). Requires RICOCHET_TEST_POSTGRES_DSN.
-func newTestServer(t *testing.T) *testServer {
+//
+// Optional configure functions run after the defaults are set and before any
+// service reads them, so a test can tighten rate limits or raise a cap.
+func newTestServer(t *testing.T, configure ...func(*core.ServerConfig)) *testServer {
 	t.Helper()
 
 	dsn := os.Getenv("RICOCHET_TEST_POSTGRES_DSN")
@@ -78,14 +82,19 @@ func newTestServer(t *testing.T) *testServer {
 		t.Fatalf("initialize storage: %v", err)
 	}
 
-	// Server config with relaxed rate limits for testing.
+	// Server config. Rate limits are left at their defaults so the tests
+	// exercise the limits a deployment actually runs with.
 	cfg := core.DevelopmentConfig()
 	cfg.MaxMessagesPerMailbox = 10000
-	cfg.MaxRequestsPerWindow = 10000
-	cfg.RateLimitWindow = time.Minute
+	for _, apply := range configure {
+		apply(cfg)
+	}
+
+	limiters := ratelimit.New(cfg.RateLimits)
+	t.Cleanup(limiters.Close)
 
 	mdaSrv := mda.NewMailboxServer(store, logger)
-	mtaRtr := mta.NewRouter(mdaSrv, cfg.RateLimitWindow, cfg.MaxRequestsPerWindow, logger)
+	mtaRtr := mta.NewRouter(mdaSrv, limiters.MTA, logger)
 
 	// Register protocol handlers — mirrors server.go registerProtocolHandlers.
 	reg := forge.NewRegistry()
@@ -93,6 +102,7 @@ func newTestServer(t *testing.T) *testServer {
 	reg.Provide("mta", mtaRtr)
 	reg.Provide("mda", mdaSrv)
 	reg.Provide("config", cfg)
+	reg.Provide(ratelimit.RegistryKey, limiters)
 	pool := codec.NewBufferPool()
 
 	msaPipeline := msa.NewPipeline(logger, pool, reg)

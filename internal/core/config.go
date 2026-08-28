@@ -17,12 +17,12 @@ type ServerConfig struct {
 	BootstrapPeers    []string `yaml:"bootstrap_peers" json:"bootstrapPeers"`
 
 	// Storage
-	Storage              StorageBackendConfig `yaml:"storage" json:"storage"`
-	DataDirectory        string               `yaml:"data_directory" json:"dataDirectory"`
-	MaxStorageBytes      int64                `yaml:"max_storage_bytes" json:"maxStorageBytes"`
-	RetentionPolicy      time.Duration        `yaml:"retention_policy" json:"retentionPolicy"`
+	Storage               StorageBackendConfig `yaml:"storage" json:"storage"`
+	DataDirectory         string               `yaml:"data_directory" json:"dataDirectory"`
+	MaxStorageBytes       int64                `yaml:"max_storage_bytes" json:"maxStorageBytes"`
+	RetentionPolicy       time.Duration        `yaml:"retention_policy" json:"retentionPolicy"`
 	MaxMessagesPerMailbox int                  `yaml:"max_messages_per_mailbox" json:"maxMessagesPerMailbox"`
-	MaxMailboxes         int                  `yaml:"max_mailboxes" json:"maxMailboxes"`
+	MaxMailboxes          int                  `yaml:"max_mailboxes" json:"maxMailboxes"`
 
 	// Performance
 	MaxConcurrentConnections int           `yaml:"max_concurrent_connections" json:"maxConcurrentConnections"`
@@ -58,10 +58,9 @@ type ServerConfig struct {
 	PresenceBatchWindow       time.Duration `yaml:"presence_batch_window" json:"presenceBatchWindow"`
 
 	// Security
-	EnableAuthentication bool          `yaml:"enable_authentication" json:"enableAuthentication"`
-	TrustedPeers         []string      `yaml:"trusted_peers" json:"trustedPeers"`
-	RateLimitWindow      time.Duration `yaml:"rate_limit_window" json:"rateLimitWindow"`
-	MaxRequestsPerWindow int           `yaml:"max_requests_per_window" json:"maxRequestsPerWindow"`
+	EnableAuthentication bool       `yaml:"enable_authentication" json:"enableAuthentication"`
+	TrustedPeers         []string   `yaml:"trusted_peers" json:"trustedPeers"`
+	RateLimits           RateLimits `yaml:"rate_limits" json:"rateLimits"`
 
 	// Relay limits
 	RelayLimits RelayLimits `yaml:"relay_limits" json:"relayLimits"`
@@ -70,18 +69,114 @@ type ServerConfig struct {
 	IdentityFile string `yaml:"identity_file" json:"identityFile,omitempty"`
 }
 
+// Protocol keys for per-protocol rate limits. Each names one limiter.
+const (
+	RateLimitMSA      = "msa"       // message submission
+	RateLimitMSABatch = "msa_batch" // batch message submission
+	RateLimitMAA      = "maa"       // message access
+	RateLimitMMA      = "mma"       // mailbox administration
+	RateLimitSDA      = "sda"       // documents
+	RateLimitSFA      = "sfa"       // feeds
+	RateLimitSCA      = "sca"       // collections
+	RateLimitMTA      = "mta"       // routing backstop, charged per message
+)
+
+// Limit is one bucket's allowance: a sustained Rate replenished over
+// RateLimits.Window, plus a Burst that a peer may accumulate while idle and
+// spend at once.
+//
+// A Rate of zero disables the bucket. A Burst of zero defaults to Rate, which
+// reproduces the classic "N requests per window" behaviour. A Burst below Rate
+// paces a peer without lowering its sustained throughput.
+type Limit struct {
+	Rate  int `yaml:"rate" json:"rate"`
+	Burst int `yaml:"burst" json:"burst"`
+}
+
+// ProtocolLimits configures one protocol's limiter.
+//
+// Protocols with a single bucket (MSA, MAA, MMA, and the MTA backstop) use
+// Requests. Protocols that separate cheap reads from expensive writes (SDA,
+// SFA, SCA) use Read and Write instead.
+type ProtocolLimits struct {
+	Requests Limit `yaml:"requests" json:"requests"`
+	Read     Limit `yaml:"read" json:"read"`
+	Write    Limit `yaml:"write" json:"write"`
+}
+
+// RateLimits configures per-peer rate limiting across every protocol.
+//
+// Limits are counted per request, not per unit of work: one BATCH_PUT costs
+// the same as one PUT regardless of how many documents it carries. The batch
+// operations impose their own caps on size and count, so this is bounded, but
+// it does mean the effective ceiling in documents per minute depends on how
+// the client packages its writes.
+type RateLimits struct {
+	Window    time.Duration             `yaml:"window" json:"window"`
+	Protocols map[string]ProtocolLimits `yaml:"protocols" json:"protocols"`
+}
+
+// DefaultRateLimits returns the built-in per-protocol limits.
+//
+// Reads are set well above writes because retrieval is now paged — walking a
+// large mailbox or document set legitimately costs many requests. Write limits
+// assume a client with a backlog will use the batch operations rather than
+// issuing one request per item.
+func DefaultRateLimits() RateLimits {
+	read := Limit{Rate: 300, Burst: 600}
+	write := Limit{Rate: 60, Burst: 120}
+
+	return RateLimits{
+		Window: 1 * time.Minute,
+		Protocols: map[string]ProtocolLimits{
+			RateLimitMSA:      {Requests: Limit{Rate: 100, Burst: 200}},
+			RateLimitMSABatch: {Requests: Limit{Rate: 60, Burst: 120}},
+			RateLimitMAA:      {Requests: read},
+			RateLimitMMA:      {Requests: Limit{Rate: 50, Burst: 100}},
+			RateLimitSDA:      {Read: read, Write: write},
+			RateLimitSFA:      {Read: read, Write: write},
+			RateLimitSCA:      {Read: read, Write: write},
+			// The MTA is charged once per message, so a single batch
+			// submission of 100 messages costs 100 here while costing one at
+			// the MSA edge. It is a backstop against a handler forgetting to
+			// limit, not the binding constraint, so it is set high enough not
+			// to cut a legitimate batch short.
+			RateLimitMTA: {Requests: Limit{Rate: 6000, Burst: 12000}},
+		},
+	}
+}
+
+// For returns the limits configured for a protocol, falling back to the
+// built-in default for any protocol a partial configuration omits. Falling
+// back rather than returning a zero value matters: a zero Rate disables
+// limiting, so an unlisted protocol would otherwise be silently unprotected.
+func (r RateLimits) For(protocol string) ProtocolLimits {
+	if limits, ok := r.Protocols[protocol]; ok {
+		return limits
+	}
+	return DefaultRateLimits().Protocols[protocol]
+}
+
+// EffectiveWindow returns the configured window, or one minute if unset.
+func (r RateLimits) EffectiveWindow() time.Duration {
+	if r.Window <= 0 {
+		return 1 * time.Minute
+	}
+	return r.Window
+}
+
 // RelayLimits configures circuit relay v2 service resource limits.
 // Zero values mean "use go-libp2p defaults".
 type RelayLimits struct {
-	MaxReservations       int           `yaml:"max_reservations" json:"maxReservations"`
-	MaxCircuits           int           `yaml:"max_circuits" json:"maxCircuits"`
-	BufferSize            int           `yaml:"buffer_size" json:"bufferSize"`
-	MaxReservationsPerPeer int          `yaml:"max_reservations_per_peer" json:"maxReservationsPerPeer"`
-	MaxReservationsPerIP  int           `yaml:"max_reservations_per_ip" json:"maxReservationsPerIP"`
-	MaxReservationsPerASN int           `yaml:"max_reservations_per_asn" json:"maxReservationsPerASN"`
-	ReservationTTL        time.Duration `yaml:"reservation_ttl" json:"reservationTTL"`
-	ConnectionDuration    time.Duration `yaml:"connection_duration" json:"connectionDuration"`
-	ConnectionData        int64         `yaml:"connection_data" json:"connectionData"`
+	MaxReservations        int           `yaml:"max_reservations" json:"maxReservations"`
+	MaxCircuits            int           `yaml:"max_circuits" json:"maxCircuits"`
+	BufferSize             int           `yaml:"buffer_size" json:"bufferSize"`
+	MaxReservationsPerPeer int           `yaml:"max_reservations_per_peer" json:"maxReservationsPerPeer"`
+	MaxReservationsPerIP   int           `yaml:"max_reservations_per_ip" json:"maxReservationsPerIP"`
+	MaxReservationsPerASN  int           `yaml:"max_reservations_per_asn" json:"maxReservationsPerASN"`
+	ReservationTTL         time.Duration `yaml:"reservation_ttl" json:"reservationTTL"`
+	ConnectionDuration     time.Duration `yaml:"connection_duration" json:"connectionDuration"`
+	ConnectionData         int64         `yaml:"connection_data" json:"connectionData"`
 }
 
 // StorageBackendConfig configures the storage backend.
@@ -116,13 +211,13 @@ func (c *PostgresConfig) ConnectionURI() string {
 // DefaultConfig returns the default server configuration.
 func DefaultConfig() *ServerConfig {
 	return &ServerConfig{
-		Port:            55223,
-		ListenAddresses: []string{"/ip4/0.0.0.0/udp/55223/udx"},
-		DataDirectory:   "./sf_storage",
-		MaxStorageBytes: 10 * 1024 * 1024 * 1024, // 10GB
-		RetentionPolicy: 30 * 24 * time.Hour,      // 30 days
+		Port:                  55223,
+		ListenAddresses:       []string{"/ip4/0.0.0.0/udp/55223/udx"},
+		DataDirectory:         "./sf_storage",
+		MaxStorageBytes:       10 * 1024 * 1024 * 1024, // 10GB
+		RetentionPolicy:       30 * 24 * time.Hour,     // 30 days
 		MaxMessagesPerMailbox: 1000,
-		MaxMailboxes:         100000,
+		MaxMailboxes:          100000,
 
 		Storage: StorageBackendConfig{
 			Backend: "postgres",
@@ -164,8 +259,7 @@ func DefaultConfig() *ServerConfig {
 		EnableRelay:        true,
 		EnableRelayService: true,
 
-		RateLimitWindow:      1 * time.Minute,
-		MaxRequestsPerWindow: 100,
+		RateLimits: DefaultRateLimits(),
 	}
 }
 
@@ -213,8 +307,19 @@ func (c *ServerConfig) Validate() error {
 	if c.MaxMessagesPerMailbox <= 0 {
 		return fmt.Errorf("max_messages_per_mailbox must be positive")
 	}
-	if c.MaxRequestsPerWindow <= 0 {
-		return fmt.Errorf("max_requests_per_window must be positive")
+	if c.RateLimits.Window < 0 {
+		return fmt.Errorf("rate limit window must not be negative")
+	}
+	for name, limits := range c.RateLimits.Protocols {
+		for bucket, limit := range map[string]Limit{
+			"requests": limits.Requests,
+			"read":     limits.Read,
+			"write":    limits.Write,
+		} {
+			if limit.Burst < 0 {
+				return fmt.Errorf("rate limit %s.%s: burst must not be negative", name, bucket)
+			}
+		}
 	}
 	if c.Storage.UsePostgres() && c.Storage.Postgres == nil {
 		return fmt.Errorf("postgres config required when backend is 'postgres'")
@@ -301,20 +406,25 @@ type yamlFileConfig struct {
 	} `yaml:"features"`
 
 	RelayLimits struct {
-		MaxReservations       int    `yaml:"max_reservations"`
-		MaxCircuits           int    `yaml:"max_circuits"`
-		BufferSize            int    `yaml:"buffer_size"`
+		MaxReservations        int   `yaml:"max_reservations"`
+		MaxCircuits            int   `yaml:"max_circuits"`
+		BufferSize             int   `yaml:"buffer_size"`
 		MaxReservationsPerPeer int   `yaml:"max_reservations_per_peer"`
-		MaxReservationsPerIP  int    `yaml:"max_reservations_per_ip"`
-		MaxReservationsPerASN int    `yaml:"max_reservations_per_asn"`
-		ReservationTTLMin     int    `yaml:"reservation_ttl_min"`
-		ConnectionDurationSec int    `yaml:"connection_duration_sec"`
-		ConnectionData        int64  `yaml:"connection_data"`
+		MaxReservationsPerIP   int   `yaml:"max_reservations_per_ip"`
+		MaxReservationsPerASN  int   `yaml:"max_reservations_per_asn"`
+		ReservationTTLMin      int   `yaml:"reservation_ttl_min"`
+		ConnectionDurationSec  int   `yaml:"connection_duration_sec"`
+		ConnectionData         int64 `yaml:"connection_data"`
 	} `yaml:"relay_limits"`
 
 	RateLimiting struct {
+		// Legacy keys, still honoured. max_requests_per_window fed only the
+		// MTA router and continues to; per-protocol entries below supersede it.
 		WindowMinutes        int `yaml:"window_minutes"`
 		MaxRequestsPerWindow int `yaml:"max_requests_per_window"`
+
+		Window    string                    `yaml:"window"`
+		Protocols map[string]ProtocolLimits `yaml:"protocols"`
 	} `yaml:"rate_limiting"`
 }
 
@@ -474,12 +584,69 @@ func LoadConfigFromFile(path string, base *ServerConfig) error {
 	}
 
 	// Rate limiting section
-	if yc.RateLimiting.WindowMinutes > 0 {
-		base.RateLimitWindow = time.Duration(yc.RateLimiting.WindowMinutes) * time.Minute
-	}
-	if yc.RateLimiting.MaxRequestsPerWindow > 0 {
-		base.MaxRequestsPerWindow = yc.RateLimiting.MaxRequestsPerWindow
+	if err := applyRateLimits(yc, base); err != nil {
+		return err
 	}
 
 	return nil
+}
+
+// applyRateLimits folds the file's rate_limiting section into base, keeping
+// the built-in default for anything the file does not mention.
+func applyRateLimits(yc yamlFileConfig, base *ServerConfig) error {
+	rl := &base.RateLimits
+	if rl.Protocols == nil {
+		rl.Protocols = DefaultRateLimits().Protocols
+	}
+
+	if yc.RateLimiting.WindowMinutes > 0 {
+		rl.Window = time.Duration(yc.RateLimiting.WindowMinutes) * time.Minute
+	}
+	if yc.RateLimiting.Window != "" {
+		d, err := time.ParseDuration(yc.RateLimiting.Window)
+		if err != nil {
+			return fmt.Errorf("parse rate_limiting.window: %w", err)
+		}
+		if d <= 0 {
+			return fmt.Errorf("rate_limiting.window must be positive, got %s", yc.RateLimiting.Window)
+		}
+		rl.Window = d
+	}
+
+	// The legacy key only ever fed the MTA router, so it still only does.
+	if yc.RateLimiting.MaxRequestsPerWindow > 0 {
+		mta := rl.For(RateLimitMTA)
+		mta.Requests = Limit{
+			Rate:  yc.RateLimiting.MaxRequestsPerWindow,
+			Burst: 2 * yc.RateLimiting.MaxRequestsPerWindow,
+		}
+		rl.Protocols[RateLimitMTA] = mta
+	}
+
+	for name, override := range yc.RateLimiting.Protocols {
+		if _, known := DefaultRateLimits().Protocols[name]; !known {
+			// A typo here would silently leave the protocol at its default,
+			// which is the failure mode that cost the sumi team days.
+			return fmt.Errorf("unknown protocol %q in rate_limiting.protocols", name)
+		}
+		limits := rl.For(name)
+		limits.Requests = mergeLimit(limits.Requests, override.Requests)
+		limits.Read = mergeLimit(limits.Read, override.Read)
+		limits.Write = mergeLimit(limits.Write, override.Write)
+		rl.Protocols[name] = limits
+	}
+
+	return nil
+}
+
+// mergeLimit overlays the non-zero fields of override onto base. Zero means
+// "not specified"; a negative rate explicitly disables the bucket.
+func mergeLimit(base, override Limit) Limit {
+	if override.Rate != 0 {
+		base.Rate = override.Rate
+	}
+	if override.Burst != 0 {
+		base.Burst = override.Burst
+	}
+	return base
 }

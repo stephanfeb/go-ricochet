@@ -78,9 +78,73 @@ features:
   enable_autonat: true
 
 # Rate limiting
+#
+# Every limit is per peer. Each bucket has a sustained `rate` replenished over
+# `window`, plus a `burst` a peer may accumulate while idle and spend at once.
+# Setting `burst` above `rate` lets a client with a backlog catch up without
+# raising its sustained throughput; setting it below paces the client instead.
+#
+# Anything omitted keeps its built-in default, shown below. A protocol name
+# that is not recognised is a startup error rather than a silent no-op.
+# Set a rate to -1 to disable that bucket entirely.
+#
+# Limits are counted per request: one BATCH_PUT costs the same as one PUT
+# regardless of how many documents it carries. The batch operations cap their
+# own size, so this is bounded, but it does mean a client that batches gets
+# far more throughput than one that does not.
 rate_limiting:
-  window_minutes: 1
-  max_requests_per_window: 100
+  window: 1m
+
+  protocols:
+    # Message submission (/sf-network/submit/1.0.0)
+    msa:
+      requests: { rate: 100, burst: 200 }
+
+    # Batch message submission (/sf-network/submit/batch/1.0.0),
+    # up to 100 messages per request
+    msa_batch:
+      requests: { rate: 60, burst: 120 }
+
+    # Message access (/sf-network/access/1.0.0). Retrieval is paged, so
+    # walking a large mailbox legitimately costs many requests.
+    maa:
+      requests: { rate: 300, burst: 600 }
+
+    # Mailbox administration (/sf-network/admin/1.0.0)
+    mma:
+      requests: { rate: 50, burst: 100 }
+
+    # Documents (/ricochet/store/doc/1.0.0). BATCH_PUT carries up to 100
+    # documents, so a client with a backlog should batch rather than ask for
+    # a higher write rate.
+    sda:
+      read:  { rate: 300, burst: 600 }
+      write: { rate: 60, burst: 120 }
+
+    # Feeds (/ricochet/store/feed/1.0.0)
+    sfa:
+      read:  { rate: 300, burst: 600 }
+      write: { rate: 60, burst: 120 }
+
+    # Collections (/ricochet/store/collection/1.0.0)
+    sca:
+      read:  { rate: 300, burst: 600 }
+      write: { rate: 60, burst: 120 }
+
+    # Routing backstop, charged once per message. A batch submission costs
+    # one request at the MSA edge but one unit here per message it carries,
+    # so this sits well above the protocol limits and is not the binding
+    # constraint under normal load.
+    mta:
+      requests: { rate: 6000, burst: 12000 }
+
+  # Legacy keys, still honoured for existing deployments. `window_minutes` is
+  # an alias for `window`; `max_requests_per_window` only ever fed the MTA
+  # backstop and still only does, so it will not raise a protocol limit.
+  # Prefer the per-protocol entries above.
+  #
+  # window_minutes: 1
+  # max_requests_per_window: 6000
 
 # Logging
 logging:

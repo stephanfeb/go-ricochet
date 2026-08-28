@@ -22,9 +22,9 @@ path to horizontal scale.**
 | 2 | DB pool size of 10 | **Fixed** (`42948dc`) — 25 default / 50 production | `internal/core/config.go` |
 | 3 | `GetNextSequence` race | **Open** | `internal/storage/postgres/postgres.go:275` |
 | 4 | `MaxConcurrentConnections` never enforced | **Open** — parsed, never read | `internal/core/config.go` only |
-| 5 | Rate-limit memory leak | **Fixed for 6 handlers**, open for MTA | forge `middleware/ratelimit.go` / `internal/mta/router.go:21` |
+| 5 | Rate-limit memory leak | **Fixed** — MTA closed by A4 | forge `middleware/tokenbucket.go` / `internal/ratelimit/limiters.go` |
 | 6 | Mailbox cache has no eviction | **Open** | `internal/mda/delivery.go:26` |
-| 7 | Global mutex on MTA rate limiter | **Fixed for 6 handlers**, open for MTA | `internal/mta/router.go:22` |
+| 7 | Global mutex on MTA rate limiter | **Fixed** — MTA now uses the sharded limiter | `internal/mta/router.go` |
 | 8 | Unbounded notification goroutines | **Open** | `internal/mda/notifier.go:50,52` |
 | 9 | `WorkerThreads` defined but unused | **Open** | `internal/core/config.go` only |
 | 10 | No horizontal scaling path | **Open** — but closer than the old doc implies (§4) | architectural |
@@ -124,17 +124,17 @@ For a "large connection counts" target this is the first thing that has to chang
 ## 3. Sumi's five asks, re-scored
 
 Their code anchors all still resolve — the line numbers in their appendix are still exact.
-Finding A in particular is fully confirmed: `sda/handler.go:94` is still
-`NewDualBucket(time.Minute, 100, 20)`, and the six handler limits are still hardcoded literals
-with no config path.
+Finding A in particular was fully confirmed: `sda/handler.go:94` was
+`NewDualBucket(time.Minute, 100, 20)`, and the handler limits were hardcoded literals
+with no config path. **A4 has since closed this**; the row below records where it landed.
 
 | Their # | Ask | Re-scored |
 |---------|-----|-----------|
 | 1 | Batch/bulk write (SDA + mailbox deposit) | **Still the top item.** `590aa0a` shipped `BATCH_GET` for feeds — that is the template; extend the same shape to SDA `BATCH_PUT` and MSA batch deposit. |
-| 2 | Configurable per-protocol limits + burst | **Confirmed open.** Cheaper than they think for the memory-leak half (forge already evicts); what is missing is config plumbing and a token bucket with burst. |
+| 2 | Configurable per-protocol limits + burst | **Done** (A4). `rate_limiting.protocols.*` drives every limiter; forge gained `TokenBucket`/`DualTokenBucket` with rate, burst and `AllowN`. An unrecognised protocol name is a startup error, so a typo can no longer look like a no-op. |
 | 3 | Operator mailbox observability | **Partially advanced.** `42948dc` added `GetMailboxInfo` to `pkg/client` — but it is still owner-scoped, which is exactly the limitation they flagged. The operator view does not exist. |
 | 4 | Wire `enable_metrics` | **Much cheaper now.** forge's `MetricsCollector` + `MetricsMiddleware` are the hook; this is a Prometheus implementation plus an HTTP listener, not a design problem. |
-| 5 | Per-owner, shard-friendly rate-limit state | **Half done.** forge's limiter is already keyed by peer ID and already sharded. What is missing is *shared* state across instances. |
+| 5 | Per-owner, shard-friendly rate-limit state | **Half done.** Keyed by peer ID and sharded, and since A4 the MTA router no longer has its own global-mutex map. What is missing is *shared* state across instances. |
 
 Their pacing workaround (≤18 docs/pass, one pass per ~65s) means a 500-doc vault currently takes
 ~30 minutes. That number is a direct consequence of SDA's 20 writes/min: 500 writes ÷ 20/min ≈ 25

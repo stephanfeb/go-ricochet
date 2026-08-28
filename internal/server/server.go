@@ -14,8 +14,8 @@ import (
 	udxtransport "github.com/stephanfeb/go-libp2p-udx-transport"
 
 	forge "github.com/twostack/go-p2p-forge"
-	forgehost "github.com/twostack/go-p2p-forge/host"
 	"github.com/twostack/go-p2p-forge/codec"
+	forgehost "github.com/twostack/go-p2p-forge/host"
 	"github.com/twostack/go-p2p-forge/node"
 
 	"github.com/twostack/go-ricochet/internal/core"
@@ -28,6 +28,7 @@ import (
 	"github.com/twostack/go-ricochet/internal/protocol/sca"
 	"github.com/twostack/go-ricochet/internal/protocol/sda"
 	"github.com/twostack/go-ricochet/internal/protocol/sfa"
+	"github.com/twostack/go-ricochet/internal/ratelimit"
 	"github.com/twostack/go-ricochet/internal/registry"
 	"github.com/twostack/go-ricochet/internal/storage"
 	"github.com/twostack/go-ricochet/internal/storage/postgres"
@@ -43,6 +44,7 @@ type Server struct {
 	storage     storage.Storage
 	mdaSrv      *mda.MailboxServer
 	mtaRtr      *mta.Router
+	limiters    *ratelimit.Limiters
 
 	// Services
 	registry        *registry.Registry
@@ -98,6 +100,7 @@ func (s *Server) Start(parentCtx context.Context) error {
 	s.forgeServer.Provide("mda", s.mdaSrv)
 	s.forgeServer.Provide("mta", s.mtaRtr)
 	s.forgeServer.Provide("config", s.config)
+	s.forgeServer.Provide(ratelimit.RegistryKey, s.limiters)
 
 	// Register protocol handlers
 	s.registerProtocolHandlers()
@@ -149,6 +152,11 @@ func (s *Server) Stop() error {
 	// Stop forge server (closes node + host)
 	if s.forgeServer != nil {
 		s.forgeServer.Stop()
+	}
+
+	// Stop rate limiter eviction goroutines
+	if s.limiters != nil {
+		s.limiters.Close()
 	}
 
 	// Close MDA (which closes storage)
@@ -288,17 +296,18 @@ func (s *Server) buildForgeConfig() *forge.Config {
 }
 
 func (s *Server) initializeServices(ctx context.Context) {
+	// Build the per-protocol rate limiters before anything that uses them.
+	s.limiters = ratelimit.New(s.config.RateLimits)
+	s.logger.Info("rate limiters initialized",
+		"window", s.config.RateLimits.EffectiveWindow(),
+	)
+
 	// Create MDA
 	s.mdaSrv = mda.NewMailboxServer(s.storage, s.logger)
 	s.logger.Info("MDA initialized")
 
 	// Create MTA
-	s.mtaRtr = mta.NewRouter(
-		s.mdaSrv,
-		s.config.RateLimitWindow,
-		s.config.MaxRequestsPerWindow,
-		s.logger,
-	)
+	s.mtaRtr = mta.NewRouter(s.mdaSrv, s.limiters.MTA, s.logger)
 	s.logger.Info("MTA initialized")
 
 	// Create push notifier

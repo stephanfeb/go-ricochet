@@ -249,10 +249,10 @@ sees the difference: `GET` returns bytes either way.
 
 ## 6. Admission control, not rate limits
 
-The six hardcoded limiters are the wrong mechanism, not just the wrong numbers.
-Making `20/min` configurable (`SCALABILITY.md` A4) is a necessary interim step, but
-a configured constant is still a constant, and it still needs an operator to guess
-a number that our own measurements should be producing.
+The hardcoded limiters were the wrong mechanism, not just the wrong numbers.
+Making `20/min` configurable (`SCALABILITY.md` A4, landed) was a necessary interim
+step, but a configured constant is still a constant, and it still needs an operator
+to guess a number that our own measurements should be producing.
 
 Three layers replace it:
 
@@ -296,7 +296,7 @@ Correctness and waste. Prerequisite for everything.
 - `octet_length` + pagination for `LIST` — stops reading every body to compute a
   length (N1).
 - Transactional `GetNextSequence` (#3), batched expiry `DELETE` (N5).
-- Config-drive the six limiters with burst — the interim step before §6.
+- Config-drive the per-protocol limiters with burst — the interim step before §6.
 
 **Removes:** ceiling layers 1 (partially) and 3. **Next binding:** per-document
 request count — ceiling layer 2.
@@ -314,9 +314,25 @@ stage it was found in: Stage 2 moves blobs in bulk and could not have worked at
 all underneath it. Measured after the fix, one connection now sustains 2.8MB of
 reads in 132ms where it previously died at 229KB.
 
-Still open from this stage: **A4**, config-driven limiters with burst. Batching
-made the write limiter far less binding for clients that use it, but the six
-per-protocol limits remain hardcoded literals with no config path.
+**A4** completed the stage. Every limiter is now built from configuration
+(`rate_limiting.protocols.*` in the YAML) rather than from a literal, and each
+bucket carries a burst allowance separate from its sustained rate — a token
+bucket, where the old sliding window could only express "n per window". The MTA
+router's own unevicted `map[string][]time.Time` behind a global mutex is gone
+with it, closing the last instance of `SCALABILITY.md` #5 and #7.
+
+Note there were **seven** hardcoded sites by the time A4 ran, not six: batch
+submission added one in `98216e6`.
+
+Two things A4 deliberately did not do, both belonging to §6:
+
+- **Cost is still per request.** A `BATCH_PUT` of 100 documents costs one unit,
+  the same as a single `PUT`. That is bounded — the batch operations cap their
+  own size and count — but it means the effective ceiling in documents per
+  minute depends on how a client packages its writes. `AllowN` exists on the
+  limiters now so cost-based budgeting has something to build on.
+- **Limits are still per instance.** A fleet of five gives every client five
+  times its intended budget (§5, and `SCALABILITY.md` #4 in the fleet section).
 
 ### Stage 2 — Content-addressed sync
 The core refactor. This is where the shape of the workload changes.

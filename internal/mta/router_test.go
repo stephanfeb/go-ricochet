@@ -11,6 +11,8 @@ import (
 	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/peer"
 
+	"github.com/twostack/go-p2p-forge/middleware"
+
 	"github.com/twostack/go-ricochet/internal/core"
 	"github.com/twostack/go-ricochet/internal/mda"
 	"github.com/twostack/go-ricochet/internal/mta"
@@ -322,7 +324,9 @@ func newTestRouter(t *testing.T, maxRequests int) (*mta.Router, *mockStorage) {
 	store := newMockStorage()
 	logger := slog.Default()
 	mailboxServer := mda.NewMailboxServer(store, logger)
-	router := mta.NewRouter(mailboxServer, 1*time.Minute, maxRequests, logger)
+	limiter := middleware.NewTokenBucket(1*time.Minute, maxRequests, maxRequests)
+	t.Cleanup(limiter.Close)
+	router := mta.NewRouter(mailboxServer, limiter, logger)
 	return router, store
 }
 

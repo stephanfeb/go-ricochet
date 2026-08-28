@@ -17,6 +17,7 @@ import (
 	"github.com/twostack/go-p2p-forge/codec"
 	"github.com/twostack/go-p2p-forge/middleware"
 
+	"github.com/twostack/go-ricochet/internal/ratelimit"
 	"github.com/twostack/go-ricochet/internal/storage"
 )
 
@@ -132,7 +133,7 @@ const directoryListingPath = "directory-listing"
 
 // NewPipeline creates a forge pipeline for the Store Document Agent.
 func NewPipeline(logger *slog.Logger, pool *codec.BufferPool, reg *forge.Registry) *forge.Pipeline {
-	limiter := middleware.NewDualBucket(time.Minute, 100, 20)
+	limiter := ratelimit.FromRegistry(reg).SDA
 
 	routes := map[string]forge.Middleware{
 		OpGET:       middleware.Chain(forge.JSONDeserialize[DocRequest](), handleGet),

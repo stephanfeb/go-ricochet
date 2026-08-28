@@ -8,7 +8,6 @@ import (
 	"log/slog"
 	"regexp"
 	"strings"
-	"time"
 
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/core/protocol"
@@ -17,6 +16,7 @@ import (
 	"github.com/twostack/go-p2p-forge/codec"
 	"github.com/twostack/go-p2p-forge/middleware"
 
+	"github.com/twostack/go-ricochet/internal/ratelimit"
 	"github.com/twostack/go-ricochet/internal/storage"
 )
 
@@ -96,7 +96,7 @@ type FeedResponse struct {
 
 // NewPipeline creates a forge pipeline for the Store Feed Agent.
 func NewPipeline(logger *slog.Logger, pool *codec.BufferPool, reg *forge.Registry) *forge.Pipeline {
-	limiter := middleware.NewDualBucket(time.Minute, 100, 20)
+	limiter := ratelimit.FromRegistry(reg).SFA
 
 	return forge.NewPipeline(logger,
 		middleware.Recovery(),
@@ -393,7 +393,7 @@ func handleGetEntries(sc *forge.StreamContext, store storage.Storage, feed *stor
 	type entryJSON struct {
 		Seq       int    `json:"seq"`
 		Type      string `json:"type,omitempty"`
-		Content   string `json:"content"`          // base64
+		Content   string `json:"content"` // base64
 		Hash      string `json:"hash"`
 		CreatedAt int64  `json:"createdAt"`
 		CreatedBy string `json:"createdBy,omitempty"`

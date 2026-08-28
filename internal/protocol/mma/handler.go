@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
-	"time"
 
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/core/protocol"
@@ -18,6 +17,7 @@ import (
 
 	"github.com/twostack/go-ricochet/internal/core"
 	"github.com/twostack/go-ricochet/internal/mda"
+	"github.com/twostack/go-ricochet/internal/ratelimit"
 )
 
 // ProtocolID is the MMA protocol identifier.
@@ -115,7 +115,7 @@ type ACLEntry struct {
 
 // NewPipeline creates a forge pipeline for the Mailbox Management Agent.
 func NewPipeline(logger *slog.Logger, pool *codec.BufferPool, reg *forge.Registry) *forge.Pipeline {
-	limiter := middleware.NewSingleBucket(time.Minute, 50)
+	limiter := ratelimit.FromRegistry(reg).MMA
 
 	routes := map[string]forge.Middleware{
 		OpCreateMailbox:  middleware.Chain(forge.JSONDeserialize[AdminRequest](), handleCreateMailbox),

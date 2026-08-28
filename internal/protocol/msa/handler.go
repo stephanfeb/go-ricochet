@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"time"
 
 	"github.com/libp2p/go-libp2p/core/protocol"
 
@@ -15,6 +14,7 @@ import (
 
 	"github.com/twostack/go-ricochet/internal/core"
 	"github.com/twostack/go-ricochet/internal/mta"
+	"github.com/twostack/go-ricochet/internal/ratelimit"
 )
 
 // ProtocolID is the MSA protocol identifier.
@@ -34,7 +34,7 @@ const maxBatchMessages = 100
 
 // NewPipeline creates a forge pipeline for the Mail Submission Agent.
 func NewPipeline(logger *slog.Logger, pool *codec.BufferPool, reg *forge.Registry) *forge.Pipeline {
-	limiter := middleware.NewSingleBucket(time.Minute, 100)
+	limiter := ratelimit.FromRegistry(reg).MSA
 
 	return forge.NewPipeline(logger,
 		middleware.Recovery(),
@@ -60,7 +60,7 @@ type BatchSubmitResponse struct {
 
 // NewBatchPipeline creates a forge pipeline for batch mail submission.
 func NewBatchPipeline(logger *slog.Logger, pool *codec.BufferPool, reg *forge.Registry) *forge.Pipeline {
-	limiter := middleware.NewSingleBucket(time.Minute, 100)
+	limiter := ratelimit.FromRegistry(reg).MSABatch
 
 	return forge.NewPipeline(logger,
 		middleware.Recovery(),

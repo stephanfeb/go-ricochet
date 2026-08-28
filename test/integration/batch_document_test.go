@@ -11,9 +11,9 @@ import (
 )
 
 // TestBatchPutDocuments checks the core promise of BATCH_PUT: many documents,
-// one request. The document count here deliberately exceeds the SDA write rate
-// limit of 20/minute — as individual PUTs this would be throttled, so the test
-// passing at all is the property under test.
+// one request. Rate limiting is charged per request, so the whole batch costs
+// what a single PUT costs — see TestRateLimitIsConfigurable for the limits
+// themselves.
 func TestBatchPutDocuments(t *testing.T) {
 	server := newTestServer(t)
 	cl := newTestClient(t, server)

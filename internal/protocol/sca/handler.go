@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"log/slog"
 	"regexp"
-	"time"
 
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/core/protocol"
@@ -16,6 +15,7 @@ import (
 	"github.com/twostack/go-p2p-forge/codec"
 	"github.com/twostack/go-p2p-forge/middleware"
 
+	"github.com/twostack/go-ricochet/internal/ratelimit"
 	"github.com/twostack/go-ricochet/internal/storage"
 )
 
@@ -79,7 +79,7 @@ type CollectionResponse struct {
 
 // NewPipeline creates a forge pipeline for the Store Collection Agent.
 func NewPipeline(logger *slog.Logger, pool *codec.BufferPool, reg *forge.Registry) *forge.Pipeline {
-	limiter := middleware.NewDualBucket(time.Minute, 100, 20)
+	limiter := ratelimit.FromRegistry(reg).SCA
 
 	return forge.NewPipeline(logger,
 		middleware.Recovery(),

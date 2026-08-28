@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"time"
 
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/core/protocol"
@@ -17,6 +16,7 @@ import (
 
 	"github.com/twostack/go-ricochet/internal/core"
 	"github.com/twostack/go-ricochet/internal/mda"
+	"github.com/twostack/go-ricochet/internal/ratelimit"
 )
 
 // ProtocolID is the MAA protocol identifier.
@@ -24,7 +24,7 @@ const ProtocolID = protocol.ID("/sf-network/access/1.0.0")
 
 // NewPipeline creates a forge pipeline for the Mail Access Agent.
 func NewPipeline(logger *slog.Logger, pool *codec.BufferPool, reg *forge.Registry) *forge.Pipeline {
-	limiter := middleware.NewSingleBucket(time.Minute, 100)
+	limiter := ratelimit.FromRegistry(reg).MAA
 
 	routes := map[string]forge.Middleware{
 		"retrieve":       middleware.Chain(deserializeRetrieve(), handleRetrieve),

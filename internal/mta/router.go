@@ -4,10 +4,9 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"sync"
-	"time"
 
 	"github.com/libp2p/go-libp2p/core/peer"
+	"github.com/twostack/go-p2p-forge/middleware"
 
 	"github.com/twostack/go-ricochet/internal/core"
 	"github.com/twostack/go-ricochet/internal/mda"
@@ -15,22 +14,22 @@ import (
 
 // Router is the Mail Transfer Agent — handles routing, validation, and rate limiting.
 type Router struct {
-	mda              *mda.MailboxServer
-	rateLimitWindow  time.Duration
-	maxRequests      int
-	rateLimitHistory map[string][]time.Time
-	mu               sync.Mutex
-	logger           *slog.Logger
+	mda     *mda.MailboxServer
+	limiter middleware.Limiter
+	logger  *slog.Logger
 }
 
 // NewRouter creates a new MTA router.
-func NewRouter(mailboxServer *mda.MailboxServer, rateLimitWindow time.Duration, maxRequests int, logger *slog.Logger) *Router {
+//
+// The limiter is a backstop charged once per message, sitting behind the
+// per-request limits the protocol handlers apply. A batch submission therefore
+// costs one request at the MSA edge but one unit here per message it carries.
+// Passing nil disables it, leaving the protocol handlers as the only limit.
+func NewRouter(mailboxServer *mda.MailboxServer, limiter middleware.Limiter, logger *slog.Logger) *Router {
 	return &Router{
-		mda:              mailboxServer,
-		rateLimitWindow:  rateLimitWindow,
-		maxRequests:      maxRequests,
-		rateLimitHistory: make(map[string][]time.Time),
-		logger:           logger,
+		mda:     mailboxServer,
+		limiter: limiter,
+		logger:  logger,
 	}
 }
 
@@ -116,42 +115,21 @@ func (r *Router) validateMessage(msg *core.Message, senderID peer.ID) error {
 }
 
 func (r *Router) checkRateLimit(peerID peer.ID) bool {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	now := time.Now()
-	key := peerID.String()
-	cutoff := now.Add(-r.rateLimitWindow)
-
-	history := r.rateLimitHistory[key]
-
-	// Remove old entries
-	filtered := history[:0]
-	for _, ts := range history {
-		if ts.After(cutoff) {
-			filtered = append(filtered, ts)
-		}
+	if r.limiter == nil {
+		return true
 	}
-
-	if len(filtered) >= r.maxRequests {
-		r.logger.Warn("rate limit exceeded", "peer", key[:12])
-		r.rateLimitHistory[key] = filtered
-		return false
-	}
-
-	r.rateLimitHistory[key] = append(filtered, now)
-	return true
+	return r.limiter.Allow(peerID)
 }
 
 // GetStats returns router statistics.
 func (r *Router) GetStats() map[string]any {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return map[string]any{
-		"rateLimitedPeers":     len(r.rateLimitHistory),
-		"rateLimitWindow":      r.rateLimitWindow.Seconds(),
-		"maxRequestsPerWindow": r.maxRequests,
+	stats := map[string]any{
+		"rateLimitingEnabled": r.limiter != nil,
 	}
+	if tracker, ok := r.limiter.(interface{ TrackedPeers() int }); ok {
+		stats["rateLimitedPeers"] = tracker.TrackedPeers()
+	}
+	return stats
 }
 
 // RateLimitError indicates a rate limit was exceeded.
