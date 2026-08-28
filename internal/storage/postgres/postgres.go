@@ -859,20 +859,38 @@ func (s *PostgresStorage) BrowseDirectory(ctx context.Context, query string, cur
 		argIdx += 2
 	}
 
-	// Cursor-based pagination
+	// Cursor-based pagination.
+	//
+	// Cursor format: "{RFC3339Nano}:{peerId}". The timestamp contains colons of
+	// its own -- in the time and in a numeric zone offset -- so the separator
+	// is the LAST one, not the first. Splitting on the first colon parsed
+	// "2026-08-28T14" as the whole timestamp, which failed, and the failure was
+	// swallowed: every page then ran with no cursor at all, returned the same
+	// first page, and reported hasMore forever. A client looping until hasMore
+	// went false never terminated.
+	//
+	// A peer ID is base58 and never contains a colon, so the last colon is
+	// unambiguously the separator.
 	if cursor != "" {
-		// Cursor format: "{RFC3339Nano}:{peerId}"
-		sepIdx := strings.Index(cursor, ":")
-		if sepIdx > 0 {
-			cursorTime, err := time.Parse(time.RFC3339Nano, cursor[:sepIdx])
-			if err == nil {
-				cursorPeerID := cursor[sepIdx+1:]
-				conditions = append(conditions, fmt.Sprintf(
-					"(updated_at, owner_peer_id) < ($%d, $%d)", argIdx, argIdx+1))
-				args = append(args, cursorTime, cursorPeerID)
-				argIdx += 2
-			}
+		sepIdx := strings.LastIndex(cursor, ":")
+		if sepIdx <= 0 {
+			return nil, fmt.Errorf("%w: no separator", storage.ErrInvalidCursor)
 		}
+		cursorTime, err := time.Parse(time.RFC3339Nano, cursor[:sepIdx])
+		if err != nil {
+			// Reported rather than ignored. A cursor the server cannot read is
+			// a request it cannot answer correctly, and silently answering the
+			// first page instead is how this went unnoticed.
+			return nil, fmt.Errorf("%w: %v", storage.ErrInvalidCursor, err)
+		}
+		cursorPeerID := cursor[sepIdx+1:]
+		if cursorPeerID == "" {
+			return nil, fmt.Errorf("%w: no peer id", storage.ErrInvalidCursor)
+		}
+		conditions = append(conditions, fmt.Sprintf(
+			"(updated_at, owner_peer_id) < ($%d, $%d)", argIdx, argIdx+1))
+		args = append(args, cursorTime, cursorPeerID)
+		argIdx += 2
 	}
 
 	whereClause := ""
@@ -1066,18 +1084,18 @@ func scanMessage(rows pgx.Rows) (*core.Message, error) {
 	}
 
 	msg := &core.Message{
-		MessageID:       msgID,
-		RecipientPeerID: recipientID,
-		SenderPeerID:    senderID,
-		Payload:         payload,
-		Priority:        core.MessagePriority(priority),
+		MessageID:        msgID,
+		RecipientPeerID:  recipientID,
+		SenderPeerID:     senderID,
+		Payload:          payload,
+		Priority:         core.MessagePriority(priority),
 		ExpiryTimestamp:  expiresAt.UnixMilli(),
-		HopCount:        hopCount,
-		Flags:           core.FlagNone,
+		HopCount:         hopCount,
+		Flags:            core.FlagNone,
 		CreatedTimestamp: createdAt.UnixMilli(),
-		SequenceNumber:  uint64(seqNum),
-		MsgFlags:        core.MessageFlags(flagsBitmap),
-		Persistent:      persistent,
+		SequenceNumber:   uint64(seqNum),
+		MsgFlags:         core.MessageFlags(flagsBitmap),
+		Persistent:       persistent,
 	}
 	if folderPath != nil {
 		msg.FolderPath = *folderPath

@@ -247,6 +247,12 @@ var (
 	ErrFeedNotFound           = fmt.Errorf("feed not found")
 	ErrCollectionNotFound     = fmt.Errorf("collection not found")
 	ErrMailboxNotFound        = fmt.Errorf("mailbox not found")
+
+	// ErrInvalidCursor means a pagination cursor could not be read. It is a
+	// distinct error rather than a silent fall back to the first page: a
+	// listing that quietly restarts looks like a listing that never ends, and
+	// a client looping until "no more" never stops.
+	ErrInvalidCursor = fmt.Errorf("invalid pagination cursor")
 )
 
 // DocumentSizeExceededError indicates a document exceeds the size limit.

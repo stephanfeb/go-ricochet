@@ -2,6 +2,7 @@ package integration_test
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -224,7 +225,7 @@ func TestDirectoryPagination(t *testing.T) {
 		t.Errorf("expected 2 entries on page 2, got %d", len(result2.Entries))
 	}
 
-	// Get page 3 (should have 1 remaining)
+	// Get page 3.
 	result3, err := firstClient.BrowseDirectory(ctx,
 		client.WithDirectoryLimit(2),
 		client.WithDirectoryCursor(result2.NextCursor),
@@ -232,11 +233,28 @@ func TestDirectoryPagination(t *testing.T) {
 	if err != nil {
 		t.Fatalf("browse page 3: %v", err)
 	}
-	if len(result3.Entries) != 1 {
-		t.Errorf("expected 1 entry on page 3, got %d", len(result3.Entries))
+	if len(result3.Entries) > 2 {
+		t.Errorf("page 3 returned %d entries against a limit of 2", len(result3.Entries))
 	}
-	if result3.HasMore {
-		t.Error("expected hasMore=false on last page")
+
+	// The pages must not overlap. This is what a cursor is for, and it holds
+	// however many entries the directory contains -- unlike "page 3 has
+	// exactly one", which was only true when this test was the sole occupant
+	// of the database. The directory is server-wide and the test database is
+	// shared, so an absolute count belongs to every test at once.
+	//
+	// TestDirectoryWalkTerminatesWithoutRepeating covers reaching the end.
+	seen := map[string]int{}
+	for _, page := range []*client.DirectoryBrowseResult{result, result2, result3} {
+		for _, e := range page.Entries {
+			seen[e.OwnerPeerID]++
+		}
+	}
+	for id, count := range seen {
+		if count != 1 {
+			t.Errorf("entry %s appeared on %d of the three pages; the cursor is not advancing",
+				id[:12], count)
+		}
 	}
 }
 
@@ -317,5 +335,112 @@ func TestDirectoryEmptyBrowse(t *testing.T) {
 	}
 	if len(result.Entries) != 0 {
 		t.Errorf("expected 0 entries, got %d", len(result.Entries))
+	}
+}
+
+// Walking the directory to exhaustion has to terminate, and each entry has to
+// appear exactly once.
+//
+// This is the property the old page-by-page test did not state, and it is the
+// one that broke. The cursor is "{RFC3339Nano}:{peerId}" and the parser split
+// on the first colon, which lands inside the timestamp's own "14:13:20". The
+// parse failed, the failure was swallowed, and every page ran with no cursor —
+// so browse returned the same first page forever with hasMore set. A client
+// looping until hasMore went false never stopped.
+func TestDirectoryWalkTerminatesWithoutRepeating(t *testing.T) {
+	server := newTestServer(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	// The directory is server-wide and the test database is shared, so the
+	// walk sees every test's entries. What this asserts is that the walk
+	// terminates and that *these* entries each appear exactly once.
+	const entries = 7
+	var walker *client.Client
+	mine := map[string]bool{}
+	for i := 0; i < entries; i++ {
+		c := newTestClient(t, server)
+		if i == 0 {
+			walker = c
+		}
+		if err := c.JoinDirectory(ctx, client.DirectoryListing{
+			DisplayName: fmt.Sprintf("Walker%02d", i),
+			Bio:         "walk",
+		}); err != nil {
+			t.Fatalf("join %d: %v", i, err)
+		}
+		mine[c.PeerID().String()] = true
+	}
+
+	seen := map[string]int{}
+	cursor := ""
+	pages := 0
+
+	// The bound is the safety net: without the fix this loop never ends, so a
+	// test asserting termination has to be able to fail rather than hang. It
+	// is generous because the shared database holds other tests' entries too.
+	const maxPages = 200
+	for pages < maxPages {
+		page, err := walker.BrowseDirectory(ctx,
+			client.WithDirectoryLimit(2),
+			client.WithDirectoryCursor(cursor),
+		)
+		if err != nil {
+			t.Fatalf("page %d: %v", pages, err)
+		}
+		pages++
+
+		for _, e := range page.Entries {
+			seen[e.OwnerPeerID]++
+		}
+		if !page.HasMore {
+			break
+		}
+		if page.NextCursor == "" {
+			t.Fatal("hasMore is set but no cursor was returned; the walk cannot continue")
+		}
+		cursor = page.NextCursor
+	}
+
+	if pages >= maxPages {
+		t.Fatalf("walked %d pages of 2 without reaching the end; the cursor is not advancing", pages)
+	}
+
+	for id := range mine {
+		switch seen[id] {
+		case 1:
+			// As it should be.
+		case 0:
+			t.Errorf("entry %s never appeared in the walk", id[:12])
+		default:
+			t.Errorf("entry %s returned %d times, want once", id[:12], seen[id])
+		}
+	}
+}
+
+// A cursor the server cannot read is the caller's mistake, and it has to say
+// so. Falling back to the first page is what let the parse failure above go
+// unnoticed for as long as it did.
+func TestUnreadableDirectoryCursorIsRejected(t *testing.T) {
+	server := newTestServer(t)
+	c := newTestClient(t, server)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	if err := c.JoinDirectory(ctx, client.DirectoryListing{DisplayName: "Solo"}); err != nil {
+		t.Fatalf("join: %v", err)
+	}
+
+	for _, bad := range []string{"nonsense", "not-a-time:12D3KooWfake", "12D3KooWfake"} {
+		_, err := c.BrowseDirectory(ctx, client.WithDirectoryCursor(bad))
+		if err == nil {
+			t.Errorf("cursor %q was accepted; an unreadable cursor must not silently "+
+				"return the first page", bad)
+			continue
+		}
+		if got := client.Status(err); got != 400 {
+			t.Errorf("cursor %q gave status %d, want 400", bad, got)
+		}
 	}
 }

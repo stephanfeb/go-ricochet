@@ -914,6 +914,15 @@ func handleDirectoryBrowse(sc *forge.StreamContext, req *DocRequest) {
 
 	page, err := store.BrowseDirectory(ctx, req.DirectoryQuery, req.DirectoryCursor, limit)
 	if err != nil {
+		if errors.Is(err, storage.ErrInvalidCursor) {
+			// The caller sent something the server cannot read, so this is a
+			// 400. Answering the first page instead would look like success
+			// and loop forever.
+			sc.Logger.Warn("directory browse with an unreadable cursor", "error", err)
+			sc.Response = &DocResponse{Status: StatusBadRequest,
+				Headers: map[string]any{"Error": err.Error()}}
+			return
+		}
 		sc.Logger.Error("failed to browse directory", "error", err)
 		sc.Response = &DocResponse{Status: StatusInternalError}
 		return
