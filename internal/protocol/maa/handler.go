@@ -17,6 +17,7 @@ import (
 	"github.com/twostack/go-ricochet/internal/admission"
 	"github.com/twostack/go-ricochet/internal/core"
 	"github.com/twostack/go-ricochet/internal/mda"
+	"github.com/twostack/go-ricochet/internal/metrics"
 	"github.com/twostack/go-ricochet/internal/ratelimit"
 )
 
@@ -36,6 +37,7 @@ func NewPipeline(logger *slog.Logger, pool *codec.BufferPool, reg *forge.Registr
 	}
 
 	return forge.NewPipeline(logger,
+		metrics.Middleware(metrics.FromRegistry(reg), "maa", ""),
 		middleware.Recovery(),
 		maaResponseWriter(),
 		forge.FrameDecodeMiddleware(pool),

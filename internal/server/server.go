@@ -21,6 +21,7 @@ import (
 	"github.com/twostack/go-ricochet/internal/admission"
 	"github.com/twostack/go-ricochet/internal/core"
 	"github.com/twostack/go-ricochet/internal/mda"
+	"github.com/twostack/go-ricochet/internal/metrics"
 	"github.com/twostack/go-ricochet/internal/mta"
 	"github.com/twostack/go-ricochet/internal/opsapi"
 	"github.com/twostack/go-ricochet/internal/presence"
@@ -48,7 +49,12 @@ type Server struct {
 	mtaRtr      *mta.Router
 	limiters    *ratelimit.Limiters
 	admission   *admission.Controller
+	metrics     *metrics.Metrics
 	opsSrv      *opsapi.Server
+
+	// bufferPool is shared by every pipeline. It is a field rather than a
+	// local so its hit rate can be published.
+	bufferPool *codec.BufferPool
 
 	// Services
 	registry        *registry.Registry
@@ -106,6 +112,7 @@ func (s *Server) Start(parentCtx context.Context) error {
 	s.forgeServer.Provide("config", s.config)
 	s.forgeServer.Provide(ratelimit.RegistryKey, s.limiters)
 	s.forgeServer.Provide(admission.RegistryKey, s.admission)
+	s.forgeServer.Provide(metrics.RegistryKey, s.metrics)
 
 	// Register protocol handlers
 	s.registerProtocolHandlers()
@@ -329,6 +336,14 @@ func (s *Server) buildForgeConfig() *forge.Config {
 }
 
 func (s *Server) initializeServices(ctx context.Context) {
+	// Metrics and the shared buffer pool come first: the pipelines read the
+	// metrics out of the forge registry when they are built, and a nil there
+	// would silently produce a server that publishes no request series.
+	s.bufferPool = codec.NewBufferPool()
+	if s.config.EnableMetrics {
+		s.metrics = metrics.New()
+	}
+
 	// Build the per-protocol rate limiters before anything that uses them.
 	s.limiters = ratelimit.New(s.config.RateLimits)
 	s.logger.Info("rate limiters initialized",
@@ -351,6 +366,11 @@ func (s *Server) initializeServices(ctx context.Context) {
 	} else {
 		s.logger.Warn("admission control disabled — throughput is unbounded and the database is unprotected")
 	}
+
+	// Publish the live counters admission control, the connection pool and
+	// the buffer pool already keep. Registered here, after the controller
+	// exists, so a scrape never reads a half-built server.
+	s.registerCollectors()
 
 	// Create MDA
 	s.mdaSrv = mda.NewMailboxServer(s.storage, s.logger)
@@ -396,7 +416,7 @@ func (s *Server) initializeServices(ctx context.Context) {
 }
 
 func (s *Server) registerProtocolHandlers() {
-	pool := codec.NewBufferPool()
+	pool := s.bufferPool
 	reg := s.forgeServer.Registry()
 	h := s.forgeServer.Host()
 

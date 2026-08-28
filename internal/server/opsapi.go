@@ -40,8 +40,14 @@ func (s *Server) startOpsAPI() error {
 		Logger:           s.logger,
 	}
 
-	if s.config.EnableMetrics {
-		opts.MetricsHandler = promhttp.Handler()
+	// Serve this server's own registry rather than Prometheus's global
+	// default. libp2p registers a large number of collectors into the default
+	// registry simply by being imported, and the point of the exposition is to
+	// be a deliberate list of what this server publishes.
+	if reg := s.metrics.Registry(); reg != nil {
+		opts.MetricsHandler = promhttp.HandlerFor(reg, promhttp.HandlerOpts{
+			ErrorHandling: promhttp.ContinueOnError,
+		})
 	}
 
 	srv := opsapi.New(opts)

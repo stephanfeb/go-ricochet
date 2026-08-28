@@ -92,7 +92,13 @@ features:
 #           drains. Saturation is NOT unreadiness -- a busy instance is
 #           working, and withdrawing it moves its load onto the busiest peers.
 #           The body also carries admission and connection-pool figures.
-# /metrics  Prometheus, gated on features.enable_metrics.
+# /metrics  Prometheus, gated on features.enable_metrics. Publishes request
+#           counts and latency labelled by protocol, operation and outcome --
+#           where `rate_limited` (a peer over its budget) and `overloaded` (the
+#           server shedding) are separate, because they call for opposite
+#           responses -- alongside admission, connection-pool and buffer-pool
+#           figures. Peer IDs never appear in a label; with thousands of mobile
+#           clients that would be unbounded cardinality.
 #
 # Bound to loopback because readiness details, metrics and profiles all
 # disclose internal state. Reach it from off-host with an SSH tunnel, or set

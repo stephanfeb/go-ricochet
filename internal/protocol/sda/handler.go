@@ -18,6 +18,7 @@ import (
 	"github.com/twostack/go-p2p-forge/middleware"
 
 	"github.com/twostack/go-ricochet/internal/admission"
+	"github.com/twostack/go-ricochet/internal/metrics"
 	"github.com/twostack/go-ricochet/internal/ratelimit"
 	"github.com/twostack/go-ricochet/internal/storage"
 )
@@ -130,6 +131,12 @@ type DocResponse struct {
 	Body    string         `json:"body,omitempty"` // base64 encoded
 }
 
+// StatusCode reports the response status. It is how the metrics middleware
+// tells a request the handler refused — a 404 or a 409 — from one that
+// succeeded: neither sets a pipeline error, so without this both would be
+// counted as ok.
+func (r *DocResponse) StatusCode() int { return r.Status }
+
 // directoryListingPath is the well-known document path that triggers directory materialization.
 const directoryListingPath = "directory-listing"
 
@@ -150,6 +157,7 @@ func NewPipeline(logger *slog.Logger, pool *codec.BufferPool, reg *forge.Registr
 	}
 
 	return forge.NewPipeline(logger,
+		metrics.Middleware(metrics.FromRegistry(reg), "sda", ""),
 		middleware.Recovery(),
 		docResponseWriter(),
 		forge.FrameDecodeMiddleware(pool),

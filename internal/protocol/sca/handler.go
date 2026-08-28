@@ -17,6 +17,7 @@ import (
 	"github.com/twostack/go-p2p-forge/middleware"
 
 	"github.com/twostack/go-ricochet/internal/admission"
+	"github.com/twostack/go-ricochet/internal/metrics"
 	"github.com/twostack/go-ricochet/internal/ratelimit"
 	"github.com/twostack/go-ricochet/internal/storage"
 )
@@ -80,11 +81,18 @@ type CollectionResponse struct {
 	Body    string         `json:"body,omitempty"` // base64 encoded
 }
 
+// StatusCode reports the response status. It is how the metrics middleware
+// tells a request the handler refused — a 404 or a 409 — from one that
+// succeeded: neither sets a pipeline error, so without this both would be
+// counted as ok.
+func (r *CollectionResponse) StatusCode() int { return r.Status }
+
 // NewPipeline creates a forge pipeline for the Store Collection Agent.
 func NewPipeline(logger *slog.Logger, pool *codec.BufferPool, reg *forge.Registry) *forge.Pipeline {
 	limiter := ratelimit.FromRegistry(reg).SCA
 
 	return forge.NewPipeline(logger,
+		metrics.Middleware(metrics.FromRegistry(reg), "sca", ""),
 		middleware.Recovery(),
 		collectionResponseWriter(),
 		forge.FrameDecodeMiddleware(pool),

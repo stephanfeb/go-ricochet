@@ -24,6 +24,7 @@ import (
 	"github.com/twostack/go-ricochet/internal/admission"
 	"github.com/twostack/go-ricochet/internal/core"
 	"github.com/twostack/go-ricochet/internal/mda"
+	"github.com/twostack/go-ricochet/internal/metrics"
 	"github.com/twostack/go-ricochet/internal/mta"
 	"github.com/twostack/go-ricochet/internal/protocol/maa"
 	"github.com/twostack/go-ricochet/internal/protocol/mma"
@@ -39,11 +40,12 @@ import (
 
 // testServer wraps a server-side libp2p host with all protocol handlers registered.
 type testServer struct {
-	Host   host.Host
-	MDA    *mda.MailboxServer
-	MTA    *mta.Router
-	PeerID peer.ID
-	Config *core.ServerConfig
+	Host    host.Host
+	MDA     *mda.MailboxServer
+	MTA     *mta.Router
+	PeerID  peer.ID
+	Config  *core.ServerConfig
+	Metrics *metrics.Metrics
 }
 
 // newTestServer creates a fully wired server with PostgreSQL storage and all
@@ -95,6 +97,17 @@ func newTestServer(t *testing.T, configure ...func(*core.ServerConfig)) *testSer
 	t.Cleanup(limiters.Close)
 	admissionCtl := admission.New(cfg.Admission, pgCfg.PoolSize)
 
+	// Metrics are wired the way server.go wires them, so the integration
+	// tests exercise the middleware rather than a pipeline that quietly has
+	// none.
+	met := metrics.New()
+	if err := met.Register(metrics.NewAdmissionCollector(admissionCtl)); err != nil {
+		t.Fatalf("register admission collector: %v", err)
+	}
+	if err := met.Register(metrics.NewPoolCollector(store.Pool())); err != nil {
+		t.Fatalf("register pool collector: %v", err)
+	}
+
 	mdaSrv := mda.NewMailboxServer(store, logger)
 	mtaRtr := mta.NewRouter(mdaSrv, limiters.MTA, logger)
 
@@ -106,7 +119,11 @@ func newTestServer(t *testing.T, configure ...func(*core.ServerConfig)) *testSer
 	reg.Provide("config", cfg)
 	reg.Provide(ratelimit.RegistryKey, limiters)
 	reg.Provide(admission.RegistryKey, admissionCtl)
+	reg.Provide(metrics.RegistryKey, met)
 	pool := codec.NewBufferPool()
+	if err := met.Register(metrics.NewBufferPoolCollector(pool)); err != nil {
+		t.Fatalf("register buffer pool collector: %v", err)
+	}
 
 	msaPipeline := msa.NewPipeline(logger, pool, reg)
 	h.SetStreamHandler(msa.ProtocolID, msaPipeline.StreamHandler())
@@ -130,11 +147,12 @@ func newTestServer(t *testing.T, configure ...func(*core.ServerConfig)) *testSer
 	h.SetStreamHandler(sca.ProtocolID, scaPipeline.StreamHandler())
 
 	ts := &testServer{
-		Host:   h,
-		MDA:    mdaSrv,
-		MTA:    mtaRtr,
-		PeerID: h.ID(),
-		Config: cfg,
+		Host:    h,
+		MDA:     mdaSrv,
+		MTA:     mtaRtr,
+		PeerID:  h.ID(),
+		Config:  cfg,
+		Metrics: met,
 	}
 
 	t.Cleanup(func() {

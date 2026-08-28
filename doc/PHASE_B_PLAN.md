@@ -130,10 +130,37 @@ binary, the second in `TestOpsSurfaceReportsDatabaseLoss` against a real pool
 (pgx reports `closed pool`). Both readiness tests were confirmed to fail when
 the 503 path is removed.
 
-### B1 — Prometheus collector
+### B1 — Prometheus collector — **done**
 
-New package `internal/metrics` implementing `forge.MetricsCollector`, plus a
-ricochet-side middleware installed in all seven pipelines.
+Landed as `internal/metrics`, installed in all seven pipelines. Four
+departures from the plan, all forced by what the code turned out to be:
+
+- **forge's `MetricsCollector` was not the hook this plan took it for.** §2
+  recorded that go-ricochet references neither it nor `MetricsMiddleware`. The
+  sharper fact, found while implementing: **nothing inside forge calls the
+  collector either.** `WithMetrics` stores it and `Metrics()` returns it;
+  `StreamStarted`, `BufferPoolStats` and `ActiveStreams` have no callers
+  anywhere. Implementing the interface would have produced zero series and the
+  promised "free" buffer-pool numbers do not exist. So the middleware is
+  ricochet-native, and the second planned forge change — an operation-aware
+  completion callback — was dropped as pointless. Only the `OperationRouter`
+  change was needed (forge `ce65b76`).
+- **`codec.BufferPool.Hits`/`.Misses` are exported atomics**, so the buffer
+  pool is read directly. The server now holds the pool as a field rather than
+  a local in `registerProtocolHandlers`.
+- **Two more outcomes than planned: `client_error` and `server_error`.** The
+  four in the plan all derive from `sc.Err`, but a handler that answers 404 or
+  409 sets no pipeline error — so with the planned set, a server refusing
+  every request would have published an unbroken line of `ok`. That is the
+  same defect as `handleQueryCapacity`: a number that reads as healthy and is
+  not. The middleware reads a `StatusCode()` off the response where one
+  exists (`sda`, `sfa`, `sca` carry an HTTP-style status).
+- **A private registry, not Prometheus's global default.** libp2p registers a
+  large number of collectors into the default registry simply by being
+  imported. A deliberate registry keeps the exposition a known list and lets
+  the cardinality test enumerate it. B0's `/metrics` was switched over.
+
+Original scope, for reference:
 
 Metric families, all labelled `protocol` × `operation` × `outcome`
 (`ok` / `rate_limited` / `overloaded` / `error`):
@@ -147,14 +174,27 @@ Metric families, all labelled `protocol` × `operation` × `outcome`
 
 **Done when:** a scrape shows non-zero series for every protocol after a bench
 run, and cardinality is provably bounded — a test asserting no label value is a
-peer ID.
+peer ID. **Both verified.** `TestMetricsRecordRealTraffic` drives traffic
+through the real pipelines and checks the operation labels;
+`TestScrapeCarriesNoPeerIdentity` and `TestNoLabelCarriesAPeerID` walk every
+published series, not just the request families, since a collector added later
+is where peer identity would slip in. Removing the middleware, the status
+classification, and the rate-limited/overloaded distinction each made the
+matching test fail.
+
+The bound holds structurally, not just by convention: forge records the
+operation **only after a route matches**, so the label set is the routing
+table rather than whatever a caller sends. An unroutable request is labelled
+`unrouted`.
 
 ### B2 — The two numbers sumi could not see
 
-**Throttle state.** `outcome` already separates `rate_limited` (429) from
-`overloaded` (503), so this falls out of B1 — but it needs a test proving the
-two are distinguishable, because conflating them would tell an operator to
-raise a limit when they should be adding capacity.
+**Throttle state.** ~~Falls out of B1, but needs a test.~~ **Done in B1.**
+`TestRateLimitedAndOverloadedAreSeparateSeries` drives a real rate-limit
+rejection and a real admission shed through the pipelines and asserts they land
+in different series — and that `ricochet_admission_shed_total` agrees with the
+count of `overloaded` requests, since the two are independent views of the same
+event.
 
 **Mailbox depth.** Needs new storage methods:
 - `CountMailboxesNearCapacity(ctx, threshold float64) (int, error)`

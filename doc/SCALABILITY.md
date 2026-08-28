@@ -42,10 +42,15 @@ already solved — per-peer state is evicted on a timer and lock contention is s
 `map[string][]time.Time` behind a single `sync.Mutex` with no eviction. #5 and #7 are now
 *MTA-only* problems, and the fix is to delete that code and route MTA through the forge limiter.
 
-Also relevant: forge already defines a `MetricsCollector` interface (`metrics.go`) and a
-`MetricsMiddleware` (`middleware/metrics.go`). **go-ricochet implements neither and installs
-neither.** Sumi's Finding C ("`enable_metrics` is a no-op") is correct, but the job is now much
-smaller than they estimated — the hook exists, only the collector and the exporter are missing.
+Also relevant: forge defines a `MetricsCollector` interface (`metrics.go`) and a
+`MetricsMiddleware` (`middleware/metrics.go`). This note originally read them as a hook that
+made the job small. **That was wrong, and B1 corrected it:** nothing inside forge ever calls
+the collector — not `BufferPoolStats`, not `ActiveStreams`, not `StreamStarted`. Implementing
+the interface would have produced zero series. Sumi's Finding C ("`enable_metrics` is a no-op")
+was right, and the work was a ricochet-native middleware, not an adapter.
+
+**Fixed** (B1). `internal/metrics` publishes request, admission, connection-pool and
+buffer-pool series, and `enable_metrics` now gates whether they are served.
 
 ---
 
@@ -133,7 +138,7 @@ with no config path. **A4 has since closed this**; the row below records where i
 | 1 | Batch/bulk write (SDA + mailbox deposit) | **Still the top item.** `590aa0a` shipped `BATCH_GET` for feeds — that is the template; extend the same shape to SDA `BATCH_PUT` and MSA batch deposit. |
 | 2 | Configurable per-protocol limits + burst | **Done, then superseded.** A4 made every limiter config-driven (`rate_limiting.protocols.*`, forge `TokenBucket` with rate, burst and `AllowN`; an unrecognised protocol name is a startup error). They are now **off by default** — throughput is governed by concurrency-bounded admission control instead, so there is no per-minute ceiling to configure. The knobs remain for per-tenant capping. |
 | 3 | Operator mailbox observability | **Partially advanced.** `42948dc` added `GetMailboxInfo` to `pkg/client` — but it is still owner-scoped, which is exactly the limitation they flagged. The operator view does not exist. |
-| 4 | Wire `enable_metrics` | **Much cheaper now.** forge's `MetricsCollector` + `MetricsMiddleware` are the hook; this is a Prometheus implementation plus an HTTP listener, not a design problem. |
+| 4 | Wire `enable_metrics` | **Done** (B1). `internal/metrics` publishes `ricochet_requests_total` and `ricochet_request_duration_seconds` labelled `protocol` × `operation` × `outcome`, plus admission, pgx-pool and buffer-pool series, served from `/metrics`. `rate_limited` and `overloaded` are separate outcomes, so the question sumi could not answer — was I throttled or was the server full — is now a query. Peer ID never appears in a label; a test walks every published series to keep it that way. |
 | 5 | Per-owner, shard-friendly rate-limit state | **Half done.** Keyed by peer ID and sharded, and since A4 the MTA router no longer has its own global-mutex map. What is missing is *shared* state across instances. |
 
 Their pacing workaround (≤18 docs/pass, one pass per ~65s) means a 500-doc vault currently takes

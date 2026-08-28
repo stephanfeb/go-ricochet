@@ -14,6 +14,7 @@ import (
 
 	"github.com/twostack/go-ricochet/internal/admission"
 	"github.com/twostack/go-ricochet/internal/core"
+	"github.com/twostack/go-ricochet/internal/metrics"
 	"github.com/twostack/go-ricochet/internal/mta"
 	"github.com/twostack/go-ricochet/internal/ratelimit"
 )
@@ -38,6 +39,7 @@ func NewPipeline(logger *slog.Logger, pool *codec.BufferPool, reg *forge.Registr
 	limiter := ratelimit.FromRegistry(reg).MSA
 
 	return forge.NewPipeline(logger,
+		metrics.Middleware(metrics.FromRegistry(reg), "msa", "submit"),
 		middleware.Recovery(),
 		ackResponseWriter(),
 		forge.FrameDecodeMiddleware(pool),
@@ -65,6 +67,7 @@ func NewBatchPipeline(logger *slog.Logger, pool *codec.BufferPool, reg *forge.Re
 	limiter := ratelimit.FromRegistry(reg).MSABatch
 
 	return forge.NewPipeline(logger,
+		metrics.Middleware(metrics.FromRegistry(reg), "msa_batch", "batch_submit"),
 		middleware.Recovery(),
 		batchResponseWriter(),
 		forge.FrameDecodeMiddleware(pool),
