@@ -5,8 +5,8 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"strconv"
 	"sort"
+	"strconv"
 	"time"
 
 	libp2pcrypto "github.com/libp2p/go-libp2p/core/crypto"
@@ -50,6 +50,29 @@ type SendResult struct {
 	MessageID      string
 	StoredAtServer peer.ID
 	ErrorMessage   string
+
+	// Status is the server's classification of a failure, zero on success or
+	// from a server too old to classify.
+	Status int
+
+	// RetryAfter is the server's wait hint, zero when it gave none.
+	RetryAfter time.Duration
+}
+
+// Err returns the typed failure, or nil if the submission succeeded.
+//
+// Submission reports failure in the result rather than as an error, because a
+// rejected message is a normal outcome of a delivery attempt and not a fault
+// in the call. This is how a caller gets at the reason without parsing the
+// message:
+//
+//	if e := res.Err(); errors.Is(e, client.ErrMailboxFull) { ... }
+func (r *SendResult) Err() error {
+	if r == nil || r.Success {
+		return nil
+	}
+	return statusError("submit message", failureStatus(r.Status), r.ErrorMessage,
+		r.RetryAfter.Milliseconds())
 }
 
 // ACLEntry represents an access control entry returned by ListACL.
@@ -223,6 +246,8 @@ func (c *Client) SendMessage(ctx context.Context, recipient peer.ID, payload []b
 		MessageID:      ack.MessageID,
 		StoredAtServer: serverID,
 		ErrorMessage:   ack.ErrorMessage,
+		Status:         ack.Status,
+		RetryAfter:     time.Duration(ack.RetryAfterMs) * time.Millisecond,
 	}, nil
 }
 
@@ -238,6 +263,21 @@ type BatchSendResult struct {
 	Success      bool
 	MessageID    string
 	ErrorMessage string
+
+	// Status and RetryAfter carry the server's classification for this one
+	// message. They are per message because a batch's outcomes genuinely
+	// differ: one recipient's mailbox can be full while the rest are fine.
+	Status     int
+	RetryAfter time.Duration
+}
+
+// Err returns the typed failure for this message, or nil if it was accepted.
+func (r *BatchSendResult) Err() error {
+	if r == nil || r.Success {
+		return nil
+	}
+	return statusError("submit message", failureStatus(r.Status), r.ErrorMessage,
+		r.RetryAfter.Milliseconds())
 }
 
 // MaxBatchMessages is the most messages one SendMessages call may carry,
@@ -307,7 +347,9 @@ func (c *Client) SendMessages(ctx context.Context, msgs []BatchMessage) ([]Batch
 		// A whole-request rejection comes back as a single ack; surface its
 		// message rather than a confusing length mismatch.
 		if len(resp.Acks) == 1 && !resp.Acks[0].Success {
-			return nil, fmt.Errorf("batch submit: %s", resp.Acks[0].ErrorMessage)
+			ack := resp.Acks[0]
+			return nil, statusError("batch submit", failureStatus(ack.Status),
+				ack.ErrorMessage, ack.RetryAfterMs)
 		}
 		return nil, fmt.Errorf("batch submit returned %d acks for %d messages",
 			len(resp.Acks), len(msgs))
@@ -319,6 +361,8 @@ func (c *Client) SendMessages(ctx context.Context, msgs []BatchMessage) ([]Batch
 			Success:      ack.Success,
 			MessageID:    ack.MessageID,
 			ErrorMessage: ack.ErrorMessage,
+			Status:       ack.Status,
+			RetryAfter:   time.Duration(ack.RetryAfterMs) * time.Millisecond,
 		})
 	}
 	return results, nil
@@ -379,6 +423,10 @@ func (c *Client) RetrieveMessages(ctx context.Context, opts ...RetrieveOption) (
 	respData, err := frame.ReadFrame(s)
 	if err != nil {
 		return nil, fmt.Errorf("read retrieve response: %w", err)
+	}
+
+	if err := maaError("retrieve messages", respData); err != nil {
+		return nil, err
 	}
 
 	resp, err := frame.DecodeRetrieveResponse(respData)
@@ -449,6 +497,10 @@ func (c *Client) MarkDelivered(ctx context.Context, messageIDs []string) (*core.
 		return nil, fmt.Errorf("read mark delivered ack: %w", err)
 	}
 
+	if err := maaError("mark delivered", respData); err != nil {
+		return nil, err
+	}
+
 	ack, err := frame.DecodeMarkDeliveredAck(respData)
 	if err != nil {
 		return nil, fmt.Errorf("decode mark delivered ack: %w", err)
@@ -489,6 +541,10 @@ func (c *Client) UpdateFlags(ctx context.Context, messageID string, addFlags, re
 	respData, err := frame.ReadFrame(s)
 	if err != nil {
 		return nil, fmt.Errorf("read update flags ack: %w", err)
+	}
+
+	if err := maaError("update flags", respData); err != nil {
+		return nil, err
 	}
 
 	ack, err := frame.DecodeUpdateFlagsAck(respData)
@@ -537,6 +593,10 @@ func (c *Client) Expunge(ctx context.Context, opts ...ExpungeOption) (*core.Expu
 		return nil, fmt.Errorf("read expunge ack: %w", err)
 	}
 
+	if err := maaError("expunge", respData); err != nil {
+		return nil, err
+	}
+
 	ack, err := frame.DecodeExpungeAck(respData)
 	if err != nil {
 		return nil, fmt.Errorf("decode expunge ack: %w", err)
@@ -575,6 +635,10 @@ func (c *Client) DeleteMessages(ctx context.Context, messageIDs []string) (*core
 	respData, err := frame.ReadFrame(s)
 	if err != nil {
 		return nil, fmt.Errorf("read delete messages ack: %w", err)
+	}
+
+	if err := maaError("delete messages", respData); err != nil {
+		return nil, err
 	}
 
 	ack, err := frame.DecodeDeleteMessagesAck(respData)
@@ -636,7 +700,8 @@ func (c *Client) doAdmin(ctx context.Context, req *mma.AdminRequest) (*mma.Admin
 	}
 
 	if !resp.Success {
-		return nil, fmt.Errorf("admin operation %s failed: %s", req.OperationType, resp.ErrorMessage)
+		return nil, statusError("admin operation "+req.OperationType,
+			failureStatus(resp.Status), resp.ErrorMessage, resp.RetryAfterMs)
 	}
 
 	return &resp, nil
@@ -843,11 +908,7 @@ func (c *Client) JoinDirectory(ctx context.Context, listing DirectoryListing, op
 	}
 
 	if resp.Status >= 400 {
-		errMsg := resp.Headers["Error"]
-		if errMsg == "" {
-			errMsg = fmt.Sprintf("join directory failed with status %d", resp.Status)
-		}
-		return fmt.Errorf("join directory: %s", errMsg)
+		return responseError("join directory", resp.Status, resp.Headers)
 	}
 
 	return nil
@@ -867,11 +928,7 @@ func (c *Client) LeaveDirectory(ctx context.Context, opts ...DocOption) error {
 	}
 
 	if resp.Status >= 400 {
-		errMsg := resp.Headers["Error"]
-		if errMsg == "" {
-			errMsg = fmt.Sprintf("leave directory failed with status %d", resp.Status)
-		}
-		return fmt.Errorf("leave directory: %s", errMsg)
+		return responseError("leave directory", resp.Status, resp.Headers)
 	}
 
 	return nil
@@ -904,7 +961,7 @@ func (c *Client) BrowseDirectory(ctx context.Context, opts ...DirectoryBrowseOpt
 	}
 
 	if resp.Status != sda.StatusOK {
-		return nil, fmt.Errorf("browse directory failed with status %d", resp.Status)
+		return nil, responseError("browse directory", resp.Status, resp.Headers)
 	}
 
 	if resp.Body == "" {
@@ -942,7 +999,7 @@ func (c *Client) GetDirectoryEntry(ctx context.Context, peerID peer.ID, opts ...
 	}
 
 	if resp.Status != sda.StatusOK {
-		return nil, fmt.Errorf("get directory entry failed with status %d", resp.Status)
+		return nil, responseError("get directory entry", resp.Status, resp.Headers)
 	}
 
 	if resp.Body == "" {
@@ -1121,11 +1178,7 @@ func (c *Client) PutDocument(ctx context.Context, ownerPeerID peer.ID, path stri
 	}
 
 	if resp.Status >= 400 {
-		errMsg, _ := resp.Headers["Error"].(string)
-		if errMsg == "" {
-			errMsg = fmt.Sprintf("document put failed with status %d", resp.Status)
-		}
-		return nil, fmt.Errorf("document put: %s", errMsg)
+		return nil, responseError("document put", resp.Status, resp.Headers)
 	}
 
 	result := &core.DocumentPutResponse{
@@ -1329,11 +1382,7 @@ func (c *Client) PutDocuments(ctx context.Context, ownerPeerID peer.ID, docs []B
 		return nil, err
 	}
 	if resp.Status != sda.StatusOK {
-		errMsg, _ := resp.Headers["Error"].(string)
-		if errMsg == "" {
-			errMsg = fmt.Sprintf("batch put failed with status %d", resp.Status)
-		}
-		return nil, fmt.Errorf("batch put: %s", errMsg)
+		return nil, responseError("batch put", resp.Status, resp.Headers)
 	}
 
 	bodyBytes, err := base64.StdEncoding.DecodeString(resp.Body)
@@ -1431,7 +1480,7 @@ func (c *Client) listDocumentPage(ctx context.Context, ownerPeerID peer.ID, curs
 	}
 
 	if resp.Status != sda.StatusOK {
-		return nil, "", fmt.Errorf("list documents failed with status %d", resp.Status)
+		return nil, "", responseError("list documents", resp.Status, resp.Headers)
 	}
 
 	if resp.Body == "" {

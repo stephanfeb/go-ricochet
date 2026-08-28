@@ -151,6 +151,20 @@ type StoreAck struct {
 	Success               bool   `json:"success"`
 	ErrorMessage          string `json:"errorMessage,omitempty"`
 	EstimatedDeliveryTime int64  `json:"estimatedDeliveryTime,omitempty"`
+
+	// Status classifies a failure so a client can act on it. Success carried
+	// no machine-readable reason before this: throttling, a saturated server
+	// and a full mailbox all arrived as English in ErrorMessage, and the only
+	// safe reading of any of them was to slow down and stay slow.
+	//
+	// Zero means the sender is an older server that does not set it; a client
+	// must fall back to treating the failure as unclassified rather than as a
+	// success.
+	Status int `json:"status,omitempty"`
+
+	// RetryAfterMs is how long to wait before retrying, when the server can
+	// say. Absent means it could not, not that retrying is free.
+	RetryAfterMs int64 `json:"retryAfterMs,omitempty"`
 }
 
 // RetrieveRequest represents a request to retrieve messages.

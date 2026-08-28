@@ -20,6 +20,7 @@ import (
 	"github.com/twostack/go-ricochet/internal/core"
 	"github.com/twostack/go-ricochet/internal/mda"
 	"github.com/twostack/go-ricochet/internal/metrics"
+	"github.com/twostack/go-ricochet/internal/protocol/wire"
 	"github.com/twostack/go-ricochet/internal/ratelimit"
 )
 
@@ -90,6 +91,11 @@ type AdminResponse struct {
 	Success      bool   `json:"success"`
 	ErrorMessage string `json:"errorMessage,omitempty"`
 
+	// Status and RetryAfterMs classify a failure. See core.StoreAck for why
+	// a free-text message alone was not enough.
+	Status       int   `json:"status,omitempty"`
+	RetryAfterMs int64 `json:"retryAfterMs,omitempty"`
+
 	// listMailboxes
 	Mailboxes []MailboxInfo `json:"mailboxes,omitempty"`
 
@@ -153,6 +159,7 @@ func adminResponseWriter() forge.Middleware {
 
 		// Convert pipeline errors into error responses.
 		if sc.Err != nil && sc.Response == nil {
+			status, retryAfter := wire.Classify(sc.Err)
 			errMsg := sc.Err.Error()
 			if errors.Is(sc.Err, forge.ErrRateLimited) {
 				errMsg = "rate limit exceeded"
@@ -160,6 +167,8 @@ func adminResponseWriter() forge.Middleware {
 			sc.Response = &AdminResponse{
 				Success:      false,
 				ErrorMessage: errMsg,
+				Status:       status,
+				RetryAfterMs: wire.RetryAfterMs(retryAfter),
 			}
 		}
 

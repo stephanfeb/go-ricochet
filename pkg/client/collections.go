@@ -138,11 +138,7 @@ func (c *Client) CreateCollection(ctx context.Context, path, name string, opts .
 	}
 
 	if resp.Status >= 400 {
-		errMsg, _ := resp.Headers["Error"].(string)
-		if errMsg == "" {
-			errMsg = fmt.Sprintf("create collection failed with status %d", resp.Status)
-		}
-		return fmt.Errorf("create collection: %s", errMsg)
+		return responseError("create collection", resp.Status, resp.Headers)
 	}
 
 	return nil
@@ -165,7 +161,7 @@ func (c *Client) GetCollection(ctx context.Context, ownerPeerID peer.ID, path st
 		return nil, nil
 	}
 	if resp.Status != sca.StatusOK {
-		return nil, fmt.Errorf("get collection failed with status %d", resp.Status)
+		return nil, responseError("get collection", resp.Status, resp.Headers)
 	}
 	if resp.Body == "" {
 		return nil, nil
@@ -224,7 +220,7 @@ func (c *Client) ListCollections(ctx context.Context, ownerPeerID peer.ID, opts 
 	}
 
 	if resp.Status != sca.StatusOK {
-		return nil, fmt.Errorf("list collections failed with status %d", resp.Status)
+		return nil, responseError("list collections", resp.Status, resp.Headers)
 	}
 	if resp.Body == "" {
 		return nil, nil
@@ -267,17 +263,8 @@ func (c *Client) PutCollectionItem(ctx context.Context, path, key string, conten
 		return nil, err
 	}
 
-	if resp.Status == sca.StatusConflict {
-		errMsg, _ := resp.Headers["Error"].(string)
-		return nil, fmt.Errorf("collection item conflict: %s", errMsg)
-	}
-
 	if resp.Status >= 400 {
-		errMsg, _ := resp.Headers["Error"].(string)
-		if errMsg == "" {
-			errMsg = fmt.Sprintf("put collection item failed with status %d", resp.Status)
-		}
-		return nil, fmt.Errorf("put collection item: %s", errMsg)
+		return nil, responseError("put collection item", resp.Status, resp.Headers)
 	}
 
 	result := &CollectionItemResult{
@@ -311,7 +298,7 @@ func (c *Client) GetCollectionItem(ctx context.Context, ownerPeerID peer.ID, pat
 		return nil, nil
 	}
 	if resp.Status != sca.StatusOK {
-		return nil, fmt.Errorf("get collection item failed with status %d", resp.Status)
+		return nil, responseError("get collection item", resp.Status, resp.Headers)
 	}
 	if resp.Body == "" {
 		return nil, nil
@@ -373,7 +360,7 @@ func (c *Client) ListCollectionKeys(ctx context.Context, ownerPeerID peer.ID, pa
 		return nil, 0, fmt.Errorf("collection not found")
 	}
 	if resp.Status != sca.StatusOK {
-		return nil, 0, fmt.Errorf("list collection keys failed with status %d", resp.Status)
+		return nil, 0, responseError("list collection keys", resp.Status, resp.Headers)
 	}
 	if resp.Body == "" {
 		return nil, 0, nil
@@ -417,8 +404,7 @@ func (c *Client) QueryCollection(ctx context.Context, ownerPeerID peer.ID, path 
 		return nil, fmt.Errorf("collection not found")
 	}
 	if resp.Status != sca.StatusOK {
-		errMsg, _ := resp.Headers["Error"].(string)
-		return nil, fmt.Errorf("query collection failed with status %d: %s", resp.Status, errMsg)
+		return nil, responseError("query collection", resp.Status, resp.Headers)
 	}
 	if resp.Body == "" {
 		return &CollectionQueryResponse{}, nil

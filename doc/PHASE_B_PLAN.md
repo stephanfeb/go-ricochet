@@ -307,23 +307,72 @@ mailbox the caller does not own. **Verified.**
 identity the caller has never met and reads back `"full": true` over HTTP with
 no handshake, no key and no client library.
 
-### B4 — Close the client loop
+### B4 — Close the client loop — **done**
 
-`pkg/client` currently has no typed errors at all: every status collapses into
-`fmt.Errorf` text, so a caller cannot tell 429 from 503 from 500. The A4
-integration tests had to match on a substring, which is the same guesswork
-sumi was doing.
+All four typed errors landed, along with the wire changes they needed. Five
+things differ from the plan, and one of them was a bug the plan did not
+anticipate.
 
-- Typed errors: `RateLimitedError`, `OverloadedError`, `ConflictError`,
-  `MailboxFullError`, each carrying the status and any `Retry-After`.
-- `Retry-After` on 429 and 503 responses. The server knows when capacity will
-  free up; not telling the client is why sumi ended up pacing at
-  "≤18 docs per pass, one pass per ~65s".
-- Update `../overnode_v2/RICOCHET_SERVER_CHANGES.md`: 503 is a new status no
-  client knows about yet, and the note does not currently mention 429 or 503.
+- **The server had to be taught to say it first.** The plan reads as a client
+  change, but MSA, MMA and MAA carried no status at all — a failure was
+  `success: false` plus English. Typing the client against that would have
+  meant parsing prose. So `internal/protocol/wire` now owns the
+  error → status mapping in one place, and the flat protocols gained `status`
+  and `retryAfterMs` fields while the document protocols carry the hint in
+  their existing headers map. Every addition is additive; a client ignoring
+  the new fields behaves exactly as before.
+- **`Retry-After` in milliseconds, not seconds.** HTTP's unit is seconds, and
+  the hints that matter here — a token bucket refilling, a fleet being
+  desynchronised — are well under one. Rounding a 40ms wait up to a second
+  would pause a client twenty-five times longer than the server needs, which
+  is the failure this endpoint exists to prevent.
+- **The 429 hint is exact; the 503 hint deliberately is not.** The token bucket
+  knows precisely when the next token arrives, so a 429 reports it (go-p2p-forge
+  `df6668c` adds `AllowNWithRetry`, computed under the same lock as the decision
+  so it cannot describe a bucket that has since refilled). A 503 is different:
+  admission control already paces by blocking, so a shed request has waited the
+  full acquire timeout and there is no hot loop to prevent. Its hint is a quarter
+  of that timeout, clamped to [50ms, 1s], and exists to desynchronise a fleet
+  rather than to pace it. A larger value would re-create the per-minute ceiling
+  that concurrency bounds exist to remove.
+- **507 carries no hint at all, and `IsRetryable` is false for it.** A full
+  mailbox is not backpressure — only the recipient clears it — so a client that
+  reads it as "retry later" retries forever. Same for 409, which needs a
+  re-read rather than a wait.
+- **A fifth type fell out: `ProtocolError`.** Statuses with no dedicated
+  handling (400, 500) still need to reach the caller carrying their number, or
+  the caller is back to reading prose for those.
+
+**Two bugs surfaced while doing this.**
+
+`sfa/handler.go` and `sca/handler.go` compared `sc.Err == forge.ErrRateLimited`
+by equality rather than with `errors.Is`. The moment the limiter started
+returning a wrapped error, both would have reported 500 for every throttled
+request. Routing all three document protocols through `wire.Classify` removed
+the equality checks along with the duplication.
+
+A rejected MAA request produced an error envelope the compound frame decoder
+cannot parse, so a throttled retrieve surfaced as "retrieve response truncated
+at metadata" — an error that reads like a codec bug and sends the reader to the
+framing rather than to the limiter. The client now checks for the envelope
+first.
+
+**One bug found and deliberately not fixed.** `internal/mda/delivery.go:58`
+creates delivery mailboxes with a hardcoded cap of 1000, ignoring
+`max_messages_per_mailbox` entirely — the same class of problem as sumi's
+Finding A, a configured knob that does not reach the code. Changing it alters
+the effective cap for every existing deployment, which is a decision in its own
+right rather than a side effect of adding typed errors. 507 is reachable today
+through mailboxes created explicitly via MMA, which is how the regression test
+drives it.
 
 **Done when:** a client can branch on error type, and the integration tests
-stop matching on strings.
+stop matching on strings. **Both verified.** `isRateLimited` and `isOverloaded`
+in the integration suite are now `errors.Is` checks;
+`TestRateLimitedErrorCarriesAWorkingRetryHint` waits exactly the hint it was
+given and succeeds on the retry, and `TestOverloadedErrorIsDistinctFromRateLimited`
+drives a real admission shed and asserts it does *not* match the throttling
+sentinel.
 
 ### B5 — Baselines
 

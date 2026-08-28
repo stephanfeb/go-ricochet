@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log/slog"
 	"regexp"
@@ -18,6 +17,7 @@ import (
 
 	"github.com/twostack/go-ricochet/internal/admission"
 	"github.com/twostack/go-ricochet/internal/metrics"
+	"github.com/twostack/go-ricochet/internal/protocol/wire"
 	"github.com/twostack/go-ricochet/internal/ratelimit"
 	"github.com/twostack/go-ricochet/internal/storage"
 )
@@ -139,19 +139,12 @@ func collectionResponseWriter() forge.Middleware {
 
 		// Convert pipeline errors into error responses.
 		if sc.Err != nil && sc.Response == nil {
-			status := StatusInternalError
-			errMsg := sc.Err.Error()
-
-			if errors.Is(sc.Err, admission.ErrOverloaded) {
-				status = StatusServiceUnavailable
-			} else if sc.Err == forge.ErrRateLimited {
-				status = StatusTooManyRequests
-				errMsg = ""
-			}
+			status, retryAfter := wire.Classify(sc.Err)
 
 			resp := &CollectionResponse{Status: status}
-			if errMsg != "" {
-				resp.Headers = map[string]any{"Error": errMsg}
+			resp.Headers = map[string]any{"Error": sc.Err.Error()}
+			if ms := wire.RetryAfterMs(retryAfter); ms > 0 {
+				resp.Headers[wire.RetryAfterHeaderKey] = ms
 			}
 			sc.Response = resp
 		}

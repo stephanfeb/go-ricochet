@@ -16,6 +16,7 @@ import (
 	"github.com/twostack/go-ricochet/internal/core"
 	"github.com/twostack/go-ricochet/internal/metrics"
 	"github.com/twostack/go-ricochet/internal/mta"
+	"github.com/twostack/go-ricochet/internal/protocol/wire"
 	"github.com/twostack/go-ricochet/internal/ratelimit"
 )
 
@@ -84,8 +85,18 @@ func batchResponseWriter() forge.Middleware {
 		next()
 
 		if sc.Err != nil && sc.Response == nil {
+			status, retryAfter := wire.Classify(sc.Err)
+			// A batch rejected before it was opened reports one ack for the
+			// whole request: the messages were never looked at individually,
+			// and inventing a per-message verdict would claim knowledge the
+			// server does not have.
 			sc.Response = &BatchSubmitResponse{
-				Acks: []core.StoreAck{{Success: false, ErrorMessage: sc.Err.Error()}},
+				Acks: []core.StoreAck{{
+					Success:      false,
+					ErrorMessage: sc.Err.Error(),
+					Status:       status,
+					RetryAfterMs: wire.RetryAfterMs(retryAfter),
+				}},
 			}
 		}
 		if sc.Response == nil {
@@ -192,9 +203,12 @@ func ackResponseWriter() forge.Middleware {
 
 		// Convert pipeline errors into error ack responses.
 		if sc.Err != nil && sc.Response == nil {
+			status, retryAfter := wire.Classify(sc.Err)
 			sc.Response = &core.StoreAck{
 				Success:      false,
 				ErrorMessage: sc.Err.Error(),
+				Status:       status,
+				RetryAfterMs: wire.RetryAfterMs(retryAfter),
 			}
 		}
 
@@ -256,7 +270,11 @@ func submitHandler(sc *forge.StreamContext, next func()) {
 		Success:   err == nil,
 	}
 	if err != nil {
+		// A full mailbox is the one failure here a client can act on, and it
+		// is not backpressure: only the recipient can clear it, so a client
+		// that reads it as "retry later" retries forever.
 		ack.ErrorMessage = err.Error()
+		ack.Status, _ = wire.Classify(err)
 	}
 
 	sc.Response = ack

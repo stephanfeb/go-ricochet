@@ -19,6 +19,7 @@ import (
 
 	"github.com/twostack/go-ricochet/internal/admission"
 	"github.com/twostack/go-ricochet/internal/metrics"
+	"github.com/twostack/go-ricochet/internal/protocol/wire"
 	"github.com/twostack/go-ricochet/internal/ratelimit"
 	"github.com/twostack/go-ricochet/internal/storage"
 )
@@ -194,18 +195,12 @@ func docResponseWriter() forge.Middleware {
 
 		// Convert pipeline errors into error responses.
 		if sc.Err != nil && sc.Response == nil {
-			status := StatusInternalError
-			switch {
-			case errors.Is(sc.Err, forge.ErrRateLimited):
-				status = StatusTooManyRequests
-			case errors.Is(sc.Err, admission.ErrOverloaded):
-				// The server is saturated, not the client misbehaving.
-				status = StatusServiceUnavailable
+			status, retryAfter := wire.Classify(sc.Err)
+			headers := map[string]any{"Error": sc.Err.Error()}
+			if ms := wire.RetryAfterMs(retryAfter); ms > 0 {
+				headers[wire.RetryAfterHeaderKey] = ms
 			}
-			sc.Response = &DocResponse{
-				Status:  status,
-				Headers: map[string]any{"Error": sc.Err.Error()},
-			}
+			sc.Response = &DocResponse{Status: status, Headers: headers}
 		}
 
 		if sc.Response == nil {

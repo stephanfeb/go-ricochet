@@ -131,7 +131,7 @@ For a "large connection counts" target this is the first thing that has to chang
 Their code anchors all still resolve — the line numbers in their appendix are still exact.
 Finding A in particular was fully confirmed: `sda/handler.go:94` was
 `NewDualBucket(time.Minute, 100, 20)`, and the handler limits were hardcoded literals
-with no config path. **A4 has since closed this**; the row below records where it landed. B3 closed the other half of it — `/ops/limits` reports the *effective* admission and rate-limit values the running server parsed, including bounds it derived rather than read, so "did my change take effect" is now answerable without reading the source.
+with no config path. **A4 has since closed this**; the row below records where it landed. B3 closed the other half of it — `/ops/limits` reports the *effective* admission and rate-limit values the running server parsed, including bounds it derived rather than read, so "did my change take effect" is now answerable without reading the source. B4 closed the client half: a rejected request now says *why* — 429 for throttling, 503 for saturation, 507 for a full mailbox — with an exact wait on the 429, so a client no longer has to infer a rate limit from a failure and pace itself defensively around it.
 
 | Their # | Ask | Re-scored |
 |---------|-----|-----------|

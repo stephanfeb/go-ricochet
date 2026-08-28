@@ -18,6 +18,7 @@ import (
 	"github.com/twostack/go-ricochet/internal/core"
 	"github.com/twostack/go-ricochet/internal/mda"
 	"github.com/twostack/go-ricochet/internal/metrics"
+	"github.com/twostack/go-ricochet/internal/protocol/wire"
 	"github.com/twostack/go-ricochet/internal/ratelimit"
 )
 
@@ -48,6 +49,23 @@ func NewPipeline(logger *slog.Logger, pool *codec.BufferPool, reg *forge.Registr
 	).WithRegistry(reg)
 }
 
+// ErrorResponse is the MAA failure envelope.
+//
+// It replaces a bare map[string]string{"error": ...}, which gave a client
+// nothing but prose: a retrieve rejected for throttling and one rejected
+// because the server was full were the same shape, and the caller's only
+// option was to slow down for both. The "error" key is unchanged, so a client
+// reading only that keeps working.
+type ErrorResponse struct {
+	Error        string `json:"error"`
+	Status       int    `json:"status,omitempty"`
+	RetryAfterMs int64  `json:"retryAfterMs,omitempty"`
+}
+
+// StatusCode reports the status so the metrics middleware classifies a failed
+// retrieve as the kind of failure it was.
+func (r *ErrorResponse) StatusCode() int { return r.Status }
+
 // maaResponseWriter writes the response after downstream handlers complete.
 // For retrieve operations, sc.Response is a FrameIterator that produces
 // multiple length-prefixed frames (metadata + N messages). For all other
@@ -60,7 +78,12 @@ func maaResponseWriter() forge.Middleware {
 
 		// Convert pipeline errors into JSON error responses.
 		if sc.Err != nil && sc.Response == nil {
-			sc.Response = map[string]string{"error": sc.Err.Error()}
+			status, retryAfter := wire.Classify(sc.Err)
+			sc.Response = &ErrorResponse{
+				Error:        sc.Err.Error(),
+				Status:       status,
+				RetryAfterMs: wire.RetryAfterMs(retryAfter),
+			}
 		}
 
 		if sc.Response == nil {

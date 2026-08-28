@@ -2,12 +2,13 @@ package integration_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"strings"
 	"testing"
 	"time"
 
 	"github.com/twostack/go-ricochet/internal/core"
+	client "github.com/twostack/go-ricochet/pkg/client"
 )
 
 // withSDAWriteLimit returns a config hook that replaces the SDA write bucket.
@@ -21,11 +22,12 @@ func withSDAWriteLimit(rate, burst int) func(*core.ServerConfig) {
 
 // isRateLimited reports whether err is the server's 429 response.
 //
-// It matches on text because pkg/client collapses a document error into a
-// string, discarding the status code. The server does distinguish 429 from
-// every other failure, so a typed client error would be the better surface.
+// It matches on the type rather than on the text. Matching on text was the
+// same guesswork the sumi team was doing from the outside, and it could not
+// tell a throttle from a saturated server: both said "come back later" in
+// different words, and the correct response to each is different.
 func isRateLimited(err error) bool {
-	return err != nil && strings.Contains(err.Error(), "rate limit")
+	return errors.Is(err, client.ErrRateLimited)
 }
 
 // TestRateLimitIsConfigurable is the property A4 exists for: a write limit set

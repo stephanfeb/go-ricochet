@@ -39,6 +39,72 @@ import (
 // anything wrong, so it maps to a 503 rather than a 429.
 var ErrOverloaded = errors.New("server at capacity")
 
+// OverloadedError is ErrOverloaded with a retry hint attached. It unwraps to
+// the sentinel, so existing errors.Is checks are unaffected.
+type OverloadedError struct {
+	// RetryAfter is a floor to jitter around, not a schedule.
+	//
+	// Admission control already paces clients by blocking: a shed request has
+	// waited the full acquire timeout, so a retry loop's natural period is
+	// that timeout and there is no hot loop to prevent. What the hint is for
+	// is desynchronising a fleet, which would otherwise retry in lockstep
+	// after the same shed. A large value here would re-create the per-minute
+	// ceiling that concurrency bounds exist to remove -- the exact failure the
+	// sumi team hit when they were left to guess and settled on one pass per
+	// 65 seconds.
+	RetryAfter time.Duration
+
+	// Reason says which bound was hit, for the log and the error text.
+	Reason string
+}
+
+func (e *OverloadedError) Error() string {
+	msg := ErrOverloaded.Error()
+	if e.Reason != "" {
+		msg += ": " + e.Reason
+	}
+	if e.RetryAfter > 0 {
+		msg += fmt.Sprintf(", retry after %s", e.RetryAfter)
+	}
+	return msg
+}
+
+func (e *OverloadedError) Unwrap() error { return ErrOverloaded }
+
+// retryHintFraction is how much of the acquire timeout a shed request is asked
+// to wait. A quarter is short enough to keep a freed slot from sitting idle
+// and long enough that a fleet retrying together spreads out once jittered.
+const retryHintFraction = 4
+
+// minRetryHint and maxRetryHint bound the hint however the timeout is
+// configured. The floor keeps a very short timeout from producing a hint too
+// small to separate anything; the ceiling keeps a long one from becoming the
+// pacing constant this design exists to avoid.
+const (
+	minRetryHint = 50 * time.Millisecond
+	maxRetryHint = 1 * time.Second
+)
+
+// retryHint derives the wait a shed request is asked to observe.
+func (c *Controller) retryHint() time.Duration {
+	if c == nil {
+		return 0
+	}
+	hint := c.timeout / retryHintFraction
+	if hint < minRetryHint {
+		return minRetryHint
+	}
+	if hint > maxRetryHint {
+		return maxRetryHint
+	}
+	return hint
+}
+
+// overloaded builds the shed error.
+func (c *Controller) overloaded(reason string) error {
+	return &OverloadedError{RetryAfter: c.retryHint(), Reason: reason}
+}
+
 const peerShardCount = 64
 
 // peerSlots is one peer's concurrency allowance. refs counts how many requests
@@ -121,7 +187,7 @@ func (c *Controller) Acquire(ctx context.Context, peerID peer.ID) (func(), error
 		case <-timer.C:
 			c.releasePeer(key)
 			c.shed.Add(1)
-			return nil, fmt.Errorf("%w: peer already has %d requests in flight", ErrOverloaded, c.maxPerPeer)
+			return nil, c.overloaded(fmt.Sprintf("peer already has %d requests in flight", c.maxPerPeer))
 		case <-ctx.Done():
 			c.releasePeer(key)
 			return nil, ctx.Err()
@@ -139,7 +205,7 @@ func (c *Controller) Acquire(ctx context.Context, peerID peer.ID) (func(), error
 		case <-timer.C:
 			releasePeer()
 			c.shed.Add(1)
-			return nil, fmt.Errorf("%w: %d requests in flight", ErrOverloaded, cap(c.global))
+			return nil, c.overloaded(fmt.Sprintf("%d requests in flight", cap(c.global)))
 		case <-ctx.Done():
 			releasePeer()
 			return nil, ctx.Err()

@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log/slog"
 	"regexp"
@@ -19,6 +18,7 @@ import (
 
 	"github.com/twostack/go-ricochet/internal/admission"
 	"github.com/twostack/go-ricochet/internal/metrics"
+	"github.com/twostack/go-ricochet/internal/protocol/wire"
 	"github.com/twostack/go-ricochet/internal/ratelimit"
 	"github.com/twostack/go-ricochet/internal/storage"
 )
@@ -146,20 +146,12 @@ func feedResponseWriter() forge.Middleware {
 
 		// Convert pipeline errors into error responses.
 		if sc.Err != nil && sc.Response == nil {
-			status := StatusInternalError
-			if errors.Is(sc.Err, admission.ErrOverloaded) {
-				status = StatusServiceUnavailable
-			} else if sc.Err == forge.ErrRateLimited {
-				status = StatusTooManyRequests
-			} else if sc.Err == middleware.ErrUnknownOperation {
-				status = StatusBadRequest
-			} else if sc.Err == middleware.ErrMissingOperation {
-				status = StatusBadRequest
+			status, retryAfter := wire.Classify(sc.Err)
+			headers := map[string]any{"Error": sc.Err.Error()}
+			if ms := wire.RetryAfterMs(retryAfter); ms > 0 {
+				headers[wire.RetryAfterHeaderKey] = ms
 			}
-			sc.Response = &FeedResponse{
-				Status:  status,
-				Headers: map[string]any{"Error": sc.Err.Error()},
-			}
+			sc.Response = &FeedResponse{Status: status, Headers: headers}
 		}
 
 		if sc.Response == nil {

@@ -103,11 +103,7 @@ func (c *Client) CreateFeed(ctx context.Context, path, title, description string
 	}
 
 	if resp.Status >= 400 {
-		errMsg, _ := resp.Headers["Error"].(string)
-		if errMsg == "" {
-			errMsg = fmt.Sprintf("create feed failed with status %d", resp.Status)
-		}
-		return fmt.Errorf("create feed: %s", errMsg)
+		return responseError("create feed", resp.Status, resp.Headers)
 	}
 
 	return nil
@@ -129,11 +125,7 @@ func (c *Client) AppendFeedEntry(ctx context.Context, path string, content []byt
 	}
 
 	if resp.Status >= 400 {
-		errMsg, _ := resp.Headers["Error"].(string)
-		if errMsg == "" {
-			errMsg = fmt.Sprintf("append feed entry failed with status %d", resp.Status)
-		}
-		return 0, fmt.Errorf("append feed entry: %s", errMsg)
+		return 0, responseError("append feed entry", resp.Status, resp.Headers)
 	}
 
 	seq := int(headerToInt64(resp.Headers["X-Sequence"]))
@@ -156,11 +148,7 @@ func (c *Client) AppendToFeed(ctx context.Context, ownerPeerID peer.ID, path str
 	}
 
 	if resp.Status >= 400 {
-		errMsg, _ := resp.Headers["Error"].(string)
-		if errMsg == "" {
-			errMsg = fmt.Sprintf("append to feed failed with status %d", resp.Status)
-		}
-		return 0, fmt.Errorf("append to feed: %s", errMsg)
+		return 0, responseError("append to feed", resp.Status, resp.Headers)
 	}
 
 	seq := int(headerToInt64(resp.Headers["X-Sequence"]))
@@ -185,7 +173,7 @@ func (c *Client) GetFeed(ctx context.Context, ownerPeerID peer.ID, path string, 
 	}
 
 	if resp.Status != sfa.StatusOK {
-		return nil, fmt.Errorf("get feed failed with status %d", resp.Status)
+		return nil, responseError("get feed", resp.Status, resp.Headers)
 	}
 
 	if resp.Body == "" {
@@ -237,7 +225,7 @@ func (c *Client) GetFeedEntry(ctx context.Context, ownerPeerID peer.ID, path str
 	}
 
 	if resp.Status != sfa.StatusOK {
-		return nil, fmt.Errorf("get feed entry failed with status %d", resp.Status)
+		return nil, responseError("get feed entry", resp.Status, resp.Headers)
 	}
 
 	if resp.Body == "" {
@@ -298,7 +286,7 @@ func (c *Client) GetFeedEntries(ctx context.Context, ownerPeerID peer.ID, path s
 	}
 
 	if resp.Status != sfa.StatusOK {
-		return nil, false, fmt.Errorf("get feed entries failed with status %d", resp.Status)
+		return nil, false, responseError("get feed entries", resp.Status, resp.Headers)
 	}
 
 	if resp.Body == "" {
@@ -387,11 +375,7 @@ func (c *Client) GetMultiFeedEntries(ctx context.Context, queries []BatchFeedQue
 	}
 
 	if resp.Status != sfa.StatusOK {
-		errMsg, _ := resp.Headers["Error"].(string)
-		if errMsg == "" {
-			errMsg = fmt.Sprintf("batch get failed with status %d", resp.Status)
-		}
-		return nil, fmt.Errorf("batch get feed entries: %s", errMsg)
+		return nil, responseError("batch get feed entries", resp.Status, resp.Headers)
 	}
 
 	if resp.Body == "" {
@@ -477,7 +461,7 @@ func (c *Client) ListFeeds(ctx context.Context, ownerPeerID peer.ID, opts ...Fee
 	}
 
 	if resp.Status != sfa.StatusOK {
-		return nil, fmt.Errorf("list feeds failed with status %d", resp.Status)
+		return nil, responseError("list feeds", resp.Status, resp.Headers)
 	}
 
 	if resp.Body == "" {

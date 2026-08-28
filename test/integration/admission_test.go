@@ -2,6 +2,7 @@ package integration_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -14,7 +15,7 @@ import (
 
 // isOverloaded reports whether err is the server's 503 shed response.
 func isOverloaded(err error) bool {
-	return err != nil && strings.Contains(err.Error(), "server at capacity")
+	return errors.Is(err, client.ErrOverloaded)
 }
 
 // TestAdmissionDoesNotCapThroughput is the property the whole mechanism exists
