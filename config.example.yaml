@@ -115,6 +115,21 @@ ops:
   bind: 127.0.0.1
   port: 9090
 
+  # Mounted on this listener:
+  #   /healthz                    liveness; touches no dependency
+  #   /readyz                     readiness; 503 when a dependency is down or draining
+  #   /metrics                    Prometheus exposition (requires enable_metrics)
+  #   /ops/mailboxes/top?n=20     fullest mailboxes across every owner
+  #                               (add sort=count to order by size instead)
+  #   /ops/mailboxes?owner=<id>   one peer's mailboxes, without being that peer
+  #   /ops/storage                per-owner totals plus the sampled server-wide figures
+  #   /ops/limits                 the effective limits this server actually parsed
+  #
+  # The /ops/* views name peer IDs and report what every owner is storing. That
+  # is the point of them, and it is why this listener binds to loopback: moving
+  # it off 127.0.0.1 exposes one tenant's usage to anyone who can reach the
+  # port. Front it with something that authenticates if it has to travel.
+
   # Mounts /debug/pprof. Off by default: the profiles include goroutine stacks
   # and heap contents. Turn it on to diagnose, then turn it off.
   enable_pprof: false

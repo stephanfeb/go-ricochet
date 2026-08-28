@@ -308,6 +308,40 @@ Schedule with cron:
 */5 * * * * /opt/ricochet/health_check.sh || /opt/ricochet/alert.sh
 ```
 
+### Investigating storage
+
+The same listener serves the operator's view of what the server is holding.
+None of it needs a peer identity, a key or the client library, and it works for
+mailboxes the caller does not own — which is the point, since an operator
+chasing a complaint has a peer ID and nothing else.
+
+```bash
+OPS=http://127.0.0.1:9090
+
+# Which mailboxes are closest to their cap, across every owner?
+curl -s "$OPS/ops/mailboxes/top?n=20" | jq '.mailboxes[] | select(.full)'
+
+# Everything one peer is storing.
+curl -s "$OPS/ops/mailboxes?owner=12D3Koo..." | jq
+
+# Who is using the space, and how much room is left?
+curl -s "$OPS/ops/storage" | jq '{server, top: (.owners[:5])}'
+
+# Did the limit I changed actually take effect?
+curl -s "$OPS/ops/limits" | jq .admission
+```
+
+Two things to know when reading the output. `/ops/storage` reports per-owner
+totals live but takes the server-wide block from a sample refreshed on the
+maintenance tick, so that block carries `sampledAt` and `ageSeconds` and is
+`null` until the first sample lands — figures with an invisible age are worse
+than an admitted absence. And `/ops/limits` reports *effective* values: a bound
+the server derived rather than read is shown with the number it derived and a
+flag saying so.
+
+These views name peer IDs and disclose what each tenant is storing. Keep the
+`ops` listener on loopback, or put something in front of it that authenticates.
+
 ## Log Management
 
 ### Log Rotation

@@ -3,12 +3,14 @@ package server
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/twostack/go-ricochet/internal/opsapi"
+	"github.com/twostack/go-ricochet/internal/opsview"
 )
 
 // poolProvider is satisfied by the PostgreSQL storage backend. It is declared
@@ -37,6 +39,7 @@ func (s *Server) startOpsAPI() error {
 		ReadinessTimeout: s.config.Ops.EffectiveReadinessTimeout(),
 		Checks:           s.readinessChecks(),
 		Details:          s.opsDetails,
+		Routes:           s.opsRoutes(),
 		Logger:           s.logger,
 	}
 
@@ -62,6 +65,32 @@ func (s *Server) startOpsAPI() error {
 		"pprof", s.config.Ops.EnablePprof,
 	)
 	return nil
+}
+
+// opsRoutes builds the operator's view of stored data.
+//
+// It is skipped when there is no storage, which is the only state in which
+// the endpoints would have nothing to read; mounting them anyway would answer
+// every question with a 500.
+func (s *Server) opsRoutes() map[string]http.Handler {
+	if s.storage == nil {
+		return nil
+	}
+
+	// The same derivation initializeServices uses, so /ops/limits reports the
+	// bound the admission controller was actually built with.
+	poolSize := 0
+	if s.config.Storage.Postgres != nil {
+		poolSize = s.config.Storage.Postgres.PoolSize
+	}
+
+	return opsview.Routes(opsview.Options{
+		Storage:  s.storage,
+		Capacity: s.capacity,
+		Config:   s.config,
+		PoolSize: poolSize,
+		Logger:   s.logger,
+	})
 }
 
 // readinessChecks returns the dependencies /readyz verifies. Today that is

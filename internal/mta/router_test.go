@@ -266,6 +266,14 @@ func (m *mockStorage) ServerStats(_ context.Context, _ float64) (*storage.Server
 	panic("not implemented")
 }
 
+func (m *mockStorage) ListMailboxUsage(_ context.Context, _ storage.MailboxUsageQuery) ([]*storage.MailboxUsage, error) {
+	panic("not implemented")
+}
+
+func (m *mockStorage) ListOwnerUsage(_ context.Context, _, _ int) ([]*storage.OwnerUsage, error) {
+	panic("not implemented")
+}
+
 // --- Collection operations ---
 
 func (m *mockStorage) CreateCollection(_ context.Context, _ peer.ID, _, _ string) (*storage.CollectionRecord, error) {

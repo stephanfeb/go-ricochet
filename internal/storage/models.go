@@ -333,3 +333,94 @@ type DepthBucket struct {
 	// Mailboxes is how many fall in this range.
 	Mailboxes int
 }
+
+// Operator page-size bounds. Every cross-owner query is capped here rather
+// than at the caller, because a query that is not owner-scoped has no natural
+// bound and one unbounded scan on a busy server is enough to matter.
+const (
+	// DefaultOperatorPageSize is what a request that names no limit gets.
+	DefaultOperatorPageSize = 20
+
+	// MaxOperatorPageSize is the ceiling, whatever a caller asks for.
+	MaxOperatorPageSize = 500
+)
+
+// ClampPageSize bounds a requested page size to something a cross-owner query
+// may safely return.
+func ClampPageSize(n int) int {
+	if n <= 0 {
+		return DefaultOperatorPageSize
+	}
+	if n > MaxOperatorPageSize {
+		return MaxOperatorPageSize
+	}
+	return n
+}
+
+// MailboxSort selects the order of a MailboxUsage listing.
+type MailboxSort string
+
+const (
+	// SortByFill orders by how close a mailbox is to its cap, which is the
+	// order that answers "what is about to start evicting". A mailbox with no
+	// cap has no fill ratio and sorts last regardless of size.
+	SortByFill MailboxSort = "fill"
+
+	// SortByCount orders by raw message count, which is the order that
+	// answers "who is holding the most". An uncapped mailbox can dominate
+	// this list without being in any danger.
+	SortByCount MailboxSort = "count"
+)
+
+// MailboxUsageQuery selects and bounds a cross-owner mailbox listing.
+type MailboxUsageQuery struct {
+	// Owner restricts the listing to one peer. Empty means every owner.
+	Owner string
+
+	// Sort defaults to SortByFill.
+	Sort MailboxSort
+
+	// Limit is clamped by ClampPageSize; Offset pages through the result.
+	Limit  int
+	Offset int
+}
+
+// MailboxUsage is one mailbox as an operator needs to see it: enough to tell
+// whether it is full, who owns it, and how much it is holding.
+//
+// It is deliberately not a MailboxRecord. A record describes configuration —
+// caps and retention — and says nothing about what is actually stored, which
+// is the entire question being asked here.
+type MailboxUsage struct {
+	MailboxID    int64  `json:"id"`
+	OwnerPeerID  string `json:"owner"`
+	FolderPath   string `json:"folderPath"`
+	MessageCount int    `json:"messageCount"`
+
+	// MaxMessages is the cap. Zero or less means uncapped, in which case
+	// FillRatio is zero and Full is false however much is stored.
+	MaxMessages int `json:"maxMessages"`
+
+	MessageBytes int64 `json:"messageBytes"`
+
+	// FillRatio is MessageCount/MaxMessages, computed by the database so the
+	// ordering and the reported figure cannot disagree.
+	FillRatio float64 `json:"fillRatio"`
+
+	// LastMessageAt is nil for a mailbox that has never received one.
+	LastMessageAt *time.Time `json:"lastMessageAt,omitempty"`
+}
+
+// Full reports whether the mailbox has reached its cap, which is the point at
+// which it starts evicting.
+func (u *MailboxUsage) Full() bool {
+	return u.MaxMessages > 0 && u.MessageCount >= u.MaxMessages
+}
+
+// OwnerUsage is one peer's total footprint across all of its mailboxes.
+type OwnerUsage struct {
+	OwnerPeerID  string `json:"owner"`
+	Mailboxes    int    `json:"mailboxes"`
+	Messages     int64  `json:"messages"`
+	MessageBytes int64  `json:"messageBytes"`
+}

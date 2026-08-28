@@ -102,12 +102,24 @@ type Storage interface {
 	DeleteExpiredMessages(ctx context.Context) (int, error)
 	EnforceRetentionPolicy(ctx context.Context, mailbox *MailboxRecord) error
 
-	// Operator statistics
+	// Operator views
 	//
-	// ServerStats aggregates across every owner. It is the only method here
-	// that is not owner- or mailbox-scoped, and it is deliberately the only
-	// one: it exists to answer operator questions ("how full is this server",
-	// "which mailboxes are about to overflow") that per-owner methods cannot.
-	// It scans, so it is sampled on a timer rather than called per request.
+	// These are the only methods here that are not owner- or mailbox-scoped.
+	// They exist to answer operator questions ("how full is this server",
+	// "which mailboxes are about to overflow", "who is using the space")
+	// that per-owner methods cannot: a protocol handler always knows whose
+	// data it is looking at, and an operator investigating a problem does
+	// not. They all scan, so none belongs on a request path — ServerStats is
+	// sampled on a timer, and the listings are bounded by construction.
+
+	// ServerStats aggregates across every owner in one pass.
 	ServerStats(ctx context.Context, nearCapacityRatio float64) (*ServerStats, error)
+
+	// ListMailboxUsage lists mailboxes with their live message counts, either
+	// across all owners or within one. The result is capped by
+	// ClampPageSize regardless of what the query asks for.
+	ListMailboxUsage(ctx context.Context, q MailboxUsageQuery) ([]*MailboxUsage, error)
+
+	// ListOwnerUsage totals storage per owner, largest first. Also capped.
+	ListOwnerUsage(ctx context.Context, limit, offset int) ([]*OwnerUsage, error)
 }

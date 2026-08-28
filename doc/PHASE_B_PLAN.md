@@ -254,26 +254,58 @@ fabricated handler or the truncated ratio fails the matching test. A live
 scrape against the real binary matched the database exactly: 31 mailboxes, 624
 messages, depth buckets summing to 31.
 
-### B3 — Operator view
+### B3 — Operator view — **done**
 
-JSON endpoints on the B0 listener, localhost-bound:
+All four endpoints landed as planned, in a new `internal/opsview` package
+mounted on the B0 listener. Five things differ from the plan:
 
-- `/ops/mailboxes/top?n=20` — fullest mailboxes across all owners, with
-  `messageCount`, `maxMessages`, `owner`, `folderPath`.
-- `/ops/mailboxes?owner=<peerID>` — one owner's mailboxes, without needing to
-  be that owner.
-- `/ops/storage` — per-owner storage totals, descending.
-- `/ops/limits` — effective rate limits and admission settings as loaded, so
-  an operator can confirm what the server actually parsed. This is the direct
-  answer to sumi's Finding A: they changed a knob and could not tell whether
-  it had taken effect.
+- **`opsapi` gained `Options.Routes`, not an exported `Handle`.** The mux is
+  built inside `New` and never escapes, so extra routes are passed in rather
+  than registered afterwards: there is no ordering to get wrong, everything the
+  surface serves is decided before the listener exists, and each supplied route
+  is wrapped so it rejects anything but a read. A pattern that collides with a
+  built-in is refused and logged — losing `/healthz` to a typo would look like
+  a healthy server to every probe that could still reach it. The index now
+  lists what is actually mounted instead of a hand-maintained guess.
+- **The handlers live outside `opsapi`.** That package stays a transport: it
+  knows about listeners, readiness and draining, and nothing about mailboxes.
+  Same separation that keeps the Postgres ping in `internal/server`.
+- **Two storage methods, not `ListAllMailboxes(ctx, limit, offset)`.** A list
+  of `MailboxRecord` would have answered the wrong question — a record carries
+  the *cap* and says nothing about what is stored, which is the whole point.
+  `ListMailboxUsage(ctx, MailboxUsageQuery)` returns counts, bytes, fill ratio
+  and last-message time; `ListOwnerUsage(ctx, limit, offset)` totals per owner.
+  The second is separate because grouping by owner from a mailbox list would
+  mean reading every mailbox to add up three numbers.
+- **The page cap is enforced in storage, not in the handler.** `ClampPageSize`
+  (default 20, max 500) is applied inside the query. A cross-owner listing has
+  no natural bound and one unbounded scan is enough to matter, so the bound
+  cannot be something a caller is trusted to pass.
+- **`/ops/storage` reports sampled and live figures side by side.** The
+  per-owner totals are computed live; the server-wide block comes from the B2
+  sampler, because it includes a database size that is expensive to compute.
+  Before the first sample the block is `null` with a note rather than zeroes,
+  and it always carries `sampledAt` and `ageSeconds`. On a live server this is
+  visible and correct: the totals move as data arrives while the sampled block
+  states its own age until the next maintenance tick.
 
-Needs a cross-owner `ListAllMailboxes(ctx, limit, offset)` on the storage
-interface — the first query in the codebase that is not owner-scoped, so it
-needs a bounded result set by construction.
+`/ops/mailboxes/top` also accepts `sort=count` alongside the default
+`sort=fill`. "Fullest" and "biggest" are different questions — an uncapped
+mailbox holding a million messages is in no danger — and the ordering costs one
+`ORDER BY` branch.
+
+**A note on what the tests caught.** Reverting each change confirmed all eight
+mutations fail the suite, but two of the tests had to be strengthened first:
+the fullest-first ordering check was vacuous on a page of uncapped mailboxes
+(all fill ratios zero, so any order is non-increasing), and the double-count
+test asserted only on message totals, which a single-stage join gets right —
+it is the *mailbox* count that inflates. Both now fail on revert.
 
 **Done when:** the question "is this mailbox full?" is one `curl` away for a
-mailbox the caller does not own.
+mailbox the caller does not own. **Verified.**
+`TestOperatorCanSeeAnotherPeersFullMailbox` creates a mailbox owned by a peer
+identity the caller has never met and reads back `"full": true` over HTTP with
+no handshake, no key and no client library.
 
 ### B4 — Close the client loop
 

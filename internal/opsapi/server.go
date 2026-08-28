@@ -21,6 +21,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/pprof"
+	"sort"
 	"sync/atomic"
 	"time"
 )
@@ -49,6 +50,18 @@ type Options struct {
 	// MetricsHandler is mounted at /metrics when non-nil.
 	MetricsHandler http.Handler
 
+	// Routes are additional endpoints mounted alongside the built-in ones,
+	// keyed by ServeMux pattern.
+	//
+	// They are passed in rather than registered afterwards so there is no
+	// ordering to get wrong: everything this surface serves is decided before
+	// the listener exists. Each is wrapped so it rejects anything but a read,
+	// which keeps that invariant a property of the surface rather than
+	// something every handler has to remember. A pattern that collides with a
+	// built-in is refused and logged; the built-in wins, since losing
+	// /healthz to a typo would be silent and expensive.
+	Routes map[string]http.Handler
+
 	// EnablePprof mounts /debug/pprof.
 	EnablePprof bool
 
@@ -65,6 +78,10 @@ type Server struct {
 	httpSrv *http.Server
 	ln      net.Listener
 	started time.Time
+
+	// mounted is every pattern actually served, sorted, so the index can list
+	// the surface rather than a hand-maintained guess at it.
+	mounted []string
 
 	// draining flips /readyz to unready without taking the listener down, so
 	// a load balancer sees a deliberate withdrawal rather than a refused
@@ -90,20 +107,48 @@ func New(opts Options) *Server {
 	}
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/healthz", s.handleHealth)
-	mux.HandleFunc("/readyz", s.handleReady)
+
+	// "/" is the index and is deliberately absent from the mounted list: it
+	// is how the list is read, not an entry in it.
 	mux.HandleFunc("/", s.handleIndex)
 
+	reserved := map[string]bool{"/": true}
+	mount := func(pattern string, h http.Handler) {
+		mux.Handle(pattern, h)
+		reserved[pattern] = true
+		s.mounted = append(s.mounted, pattern)
+	}
+
+	mount("/healthz", http.HandlerFunc(s.handleHealth))
+	mount("/readyz", http.HandlerFunc(s.handleReady))
+
 	if opts.MetricsHandler != nil {
-		mux.Handle("/metrics", opts.MetricsHandler)
+		mount("/metrics", opts.MetricsHandler)
 	}
 	if opts.EnablePprof {
-		mux.HandleFunc("/debug/pprof/", pprof.Index)
+		mount("/debug/pprof/", http.HandlerFunc(pprof.Index))
+		// The subpaths are handled by /debug/pprof/ as far as discovery is
+		// concerned, so they are registered but not listed.
 		mux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
 		mux.HandleFunc("/debug/pprof/profile", pprof.Profile)
 		mux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
 		mux.HandleFunc("/debug/pprof/trace", pprof.Trace)
+		reserved["/debug/pprof/cmdline"] = true
+		reserved["/debug/pprof/profile"] = true
+		reserved["/debug/pprof/symbol"] = true
+		reserved["/debug/pprof/trace"] = true
 	}
+
+	for _, pattern := range sortedKeys(opts.Routes) {
+		if reserved[pattern] {
+			logger.Error("ops route ignored: it would shadow a built-in endpoint",
+				"pattern", pattern)
+			continue
+		}
+		mount(pattern, readOnly(opts.Routes[pattern]))
+	}
+
+	sort.Strings(s.mounted)
 
 	s.httpSrv = &http.Server{
 		Handler: mux,
@@ -263,19 +308,34 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	routes := []string{"/healthz", "/readyz"}
-	if s.opts.MetricsHandler != nil {
-		routes = append(routes, "/metrics")
-	}
-	if s.opts.EnablePprof {
-		routes = append(routes, "/debug/pprof/")
-	}
-
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	fmt.Fprintln(w, "ricochet operator surface")
-	for _, route := range routes {
+	for _, route := range s.mounted {
 		fmt.Fprintln(w, route)
 	}
+}
+
+// readOnly applies the surface's no-mutation rule to a supplied handler, so a
+// route contributed from elsewhere cannot quietly accept a POST.
+func readOnly(h http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !allowRead(w, r) {
+			return
+		}
+		h.ServeHTTP(w, r)
+	})
+}
+
+// sortedKeys makes route registration deterministic. Map iteration order is
+// random, and a surface that reports a different set of conflicts from run to
+// run is one nobody trusts.
+func sortedKeys(m map[string]http.Handler) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 // allowRead rejects anything but a read. Nothing on this surface mutates

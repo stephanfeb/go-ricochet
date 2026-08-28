@@ -327,3 +327,87 @@ func TestDrainOnNilServerIsSafe(t *testing.T) {
 	var s *Server
 	s.Drain()
 }
+
+// ---------------------------------------------------------------------------
+// Supplied routes
+// ---------------------------------------------------------------------------
+
+func echoHandler(body string) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, body)
+	})
+}
+
+func TestSuppliedRoutesAreServedAndListed(t *testing.T) {
+	s := New(Options{Routes: map[string]http.Handler{
+		"/ops/storage": echoHandler("owners"),
+		"/ops/limits":  echoHandler("knobs"),
+	}})
+
+	if rec := get(t, s, "/ops/storage"); rec.Code != http.StatusOK || rec.Body.String() != "owners" {
+		t.Errorf("GET /ops/storage = %d %q", rec.Code, rec.Body.String())
+	}
+	if rec := get(t, s, "/ops/limits"); rec.Code != http.StatusOK || rec.Body.String() != "knobs" {
+		t.Errorf("GET /ops/limits = %d %q", rec.Code, rec.Body.String())
+	}
+
+	// An endpoint nobody can discover is one nobody uses.
+	index := get(t, s, "/").Body.String()
+	for _, want := range []string{"/ops/storage", "/ops/limits"} {
+		if !strings.Contains(index, want) {
+			t.Errorf("index missing %s; body:\n%s", want, index)
+		}
+	}
+}
+
+// The surface's no-mutation rule has to hold for routes supplied from
+// elsewhere too, or it is a convention rather than a property.
+func TestSuppliedRoutesRejectWrites(t *testing.T) {
+	var served atomic.Int64
+	s := New(Options{Routes: map[string]http.Handler{
+		"/ops/storage": http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+			served.Add(1)
+		}),
+	}})
+
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/ops/storage", nil))
+
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Errorf("POST /ops/storage = %d, want 405", rec.Code)
+	}
+	if served.Load() != 0 {
+		t.Error("the handler ran on a POST; the wrapper is not applied")
+	}
+}
+
+// A supplied route must never displace a built-in. Losing /healthz to a typo
+// would look like a healthy server to every probe that could still reach it.
+func TestSuppliedRoutesCannotShadowBuiltins(t *testing.T) {
+	s := New(Options{
+		MetricsHandler: echoHandler("real metrics"),
+		Routes: map[string]http.Handler{
+			"/healthz": echoHandler("hijacked"),
+			"/metrics": echoHandler("hijacked"),
+			"/":        echoHandler("hijacked"),
+		},
+	})
+
+	rec := get(t, s, "/healthz")
+	if rec.Code != http.StatusOK || strings.Contains(rec.Body.String(), "hijacked") {
+		t.Errorf("/healthz was displaced: %d %q", rec.Code, rec.Body.String())
+	}
+	if body := get(t, s, "/metrics").Body.String(); body != "real metrics" {
+		t.Errorf("/metrics = %q, want the supplied metrics handler", body)
+	}
+	if body := get(t, s, "/").Body.String(); strings.Contains(body, "hijacked") {
+		t.Errorf("index was displaced: %q", body)
+	}
+}
+
+func TestNoRoutesIsStillAValidSurface(t *testing.T) {
+	s := New(Options{Routes: nil})
+	if rec := get(t, s, "/healthz"); rec.Code != http.StatusOK {
+		t.Errorf("code = %d, want 200", rec.Code)
+	}
+}
