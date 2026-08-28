@@ -250,35 +250,53 @@ sees the difference: `GET` returns bytes either way.
 ## 6. Admission control, not rate limits
 
 The hardcoded limiters were the wrong mechanism, not just the wrong numbers.
-Making `20/min` configurable (`SCALABILITY.md` A4, landed) was a necessary interim
-step, but a configured constant is still a constant, and it still needs an operator
-to guess a number that our own measurements should be producing.
+Making `20/min` configurable (`SCALABILITY.md` A4) was a necessary interim step,
+but a configured constant is still a constant, and it still needs an operator to
+guess a number that our own measurements should be producing.
 
-Three layers replace it:
+**This has now landed, and it replaced rate limiting rather than tuning it.**
+Per-peer rate limits are off by default. Throughput is governed by
+`internal/admission`, which bounds concurrent work instead of work per unit time.
 
-**Cost-based budgeting.** A request's cost is derived from work performed — bytes
-written, documents committed, manifest entries scanned — not from the fact that it
-is one request. This is what makes it safe to accept a 5,000-entry manifest that
-would be 5,000 requests today: it is budgeted as the work it actually is.
+The reason that removes the ceiling rather than raising it: throughput is
+concurrency divided by latency. Fix the concurrency and throughput becomes a
+function of how fast the work completes — it rises with the hardware and falls on
+its own when the database slows, with no number in the config that has to be
+revised. Measured on a laptop Postgres: **4,964 documents/sec** from one client
+writing in batches, **17,685 documents/sec** across eight. The limit A4 shipped
+was 20 per minute.
 
-**Capacity-derived refill.** The budget refills at a rate derived from measured
-capacity — in-flight database operations, pool saturation, commit latency — rather
-than a constant. When the database is healthy the ceiling rises on its own; when it
-is struggling the ceiling falls before anything times out. This is
-`SCALABILITY.md` #12 (backpressure) and it is what "unbounded" actually rests on:
-throughput is limited by what the hardware can do, and by nothing else.
+It is also self-weighting, which quietly solves the cost problem below. A batch
+write holds its slot for as long as it takes, so a request that does more work
+occupies more capacity, without anyone maintaining a cost model.
 
-**Per-owner fair queueing.** The reason to keep limits low today is fear that one
-heavy client starves the rest. Weighted fair queueing by owner peer ID removes that
-fear directly, which is what makes it safe to raise the ceiling at all. Sumi asked
-for budgeting by owner peer ID rather than by connection; this grants it, and their
-multi-device case is handled correctly because forge's limiter is already keyed by
-peer ID.
+The remaining layers:
 
-**Shedding, not blocking.** When capacity is genuinely exhausted, reject with a
-retry-after rather than queueing. An unbounded queue converts a throughput problem
-into a memory problem and then into an outage — the failure mode `SCALABILITY.md`
-#12 describes.
+**Cost-based budgeting.** Still relevant where a *cap* is wanted for non-capacity
+reasons — per-tenant billing, or containing a client known to loop. A request's
+cost derived from work performed rather than from being one request. The limiters
+have `AllowN` for this; nothing uses it yet.
+
+**Capacity-derived bound.** ✅ Landed. The global bound is derived from the
+database pool size rather than guessed, so it tracks the resource it protects. This
+is `SCALABILITY.md` #12 (backpressure) and it is what "unbounded" actually rests
+on: throughput is limited by what the hardware can do, and by nothing else. What
+remains is making the bound *adaptive* — widening it while commit latency stays
+flat and narrowing it when latency climbs — which needs Stage 3's measurements.
+
+**Per-owner fairness.** ✅ Landed, as a per-peer concurrency bound rather than
+weighted fair queueing. The reason to keep limits low was fear that one heavy
+client starves the rest; bounding how many slots any single peer may hold removes
+that fear directly, and is what makes it safe to ship with no per-peer rate limit
+at all. Sumi asked for budgeting by owner peer ID rather than by connection; this
+grants it, and their multi-device case works because the bound is keyed by peer ID.
+
+**Shedding, not blocking.** ✅ Landed. A request waits for a slot — that is how a
+fast client is paced to the database — but only up to `acquire_timeout`, after
+which it is shed with a 503. An unbounded queue converts a throughput problem into
+a memory problem and then into an outage, the failure mode `SCALABILITY.md` #12
+describes. The shed counter is the signal to add capacity, and it is a measurement
+a guessed rate limit could never produce.
 
 ---
 
@@ -324,15 +342,17 @@ with it, closing the last instance of `SCALABILITY.md` #5 and #7.
 Note there were **seven** hardcoded sites by the time A4 ran, not six: batch
 submission added one in `98216e6`.
 
-Two things A4 deliberately did not do, both belonging to §6:
+A4 left two gaps, and the admission-control work that followed closed both by
+changing the mechanism rather than the numbers (§6):
 
-- **Cost is still per request.** A `BATCH_PUT` of 100 documents costs one unit,
-  the same as a single `PUT`. That is bounded — the batch operations cap their
-  own size and count — but it means the effective ceiling in documents per
-  minute depends on how a client packages its writes. `AllowN` exists on the
-  limiters now so cost-based budgeting has something to build on.
-- **Limits are still per instance.** A fleet of five gives every client five
-  times its intended budget (§5, and `SCALABILITY.md` #4 in the fleet section).
+- **Cost was per request.** A `BATCH_PUT` of 100 documents cost one unit, the
+  same as a single `PUT`. Concurrency bounds are self-weighting — a batch holds
+  its slot for as long as it takes — so this no longer needs a cost model.
+- **Limits were per instance**, so a fleet of five gave every client five times
+  its budget. A concurrency bound is *correctly* per instance: each one is
+  protecting its own database connections, and adding an instance adds real
+  capacity. This removes blocker 4 from `SCALABILITY.md` §4 rather than
+  deferring it to shared state.
 
 ### Stage 2 — Content-addressed sync
 The core refactor. This is where the shape of the workload changes.
@@ -356,17 +376,23 @@ where they get replaced.
   exists), `/metrics`, `/healthz`, `/debug/pprof`.
 - Throughput, commit latency, pool saturation, blob hit rate, dedup ratio.
 - `cmd/ricochet-bench` scenarios for cold sync, warm re-sync, and no-op re-sync.
-- Cost-based admission control (§6) driven by those measurements.
+- Adaptive admission bounds driven by those measurements — widen while commit
+  latency is flat, narrow when it climbs. The bound and the shedding exist
+  (§6); what is missing is the feedback loop that sets the bound.
 - Resource manager and connection manager limits (`SCALABILITY.md` C1, C2) — the
   connection-count half of the target.
 
-**Removes:** constants as the governing mechanism. **Next binding:** single-node
-hardware.
+**Removes:** the last constant an operator has to guess. **Next binding:**
+single-node hardware — which, after §6, is already what binds.
 
 ### Stage 4 — Fleet
 - Object-storage `BlockStore` implementation. Blob throughput stops being ours.
 - Postgres holds metadata only; read replicas for `GET` and `LIST`.
-- Shared rate-limit state so a fleet of N does not grant N× the budget.
+- ~~Shared rate-limit state so a fleet of N does not grant N× the budget.~~
+  Dropped: with concurrency bounds as the governor and per-peer rate limits off
+  by default, there is no per-instance budget to multiply. Shared state is only
+  needed if a deployment turns rate limits on for per-tenant capping, and that
+  is a billing concern rather than a capacity one.
 - `mailboxCache` coherence; cross-instance notification for private mailboxes.
 - Client-side fleet discovery via the GossipSub `Registry` — server-side
   `GetAvailableServers()` already exists at `registry.go:107`, but `pkg/client` has

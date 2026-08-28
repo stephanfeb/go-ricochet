@@ -62,11 +62,77 @@ type ServerConfig struct {
 	TrustedPeers         []string   `yaml:"trusted_peers" json:"trustedPeers"`
 	RateLimits           RateLimits `yaml:"rate_limits" json:"rateLimits"`
 
+	// Capacity
+	Admission AdmissionControl `yaml:"admission_control" json:"admissionControl"`
+
 	// Relay limits
 	RelayLimits RelayLimits `yaml:"relay_limits" json:"relayLimits"`
 
 	// Identity
 	IdentityFile string `yaml:"identity_file" json:"identityFile,omitempty"`
+}
+
+// AdmissionControl bounds how much work is in flight at once instead of
+// capping how many requests a peer may make per unit of time.
+//
+// This is the mechanism that governs throughput. It has no ceiling expressed
+// in documents or requests per minute: work is admitted as fast as it can be
+// completed, so throughput rises with the hardware and falls on its own when
+// the database slows. A request that cannot be admitted before AcquireTimeout
+// is shed with a 503, which is a signal to add capacity rather than a verdict
+// on the client.
+type AdmissionControl struct {
+	Enabled bool `yaml:"enabled" json:"enabled"`
+
+	// MaxInFlight bounds concurrent requests server-wide. Zero derives it
+	// from the database pool size, which is the resource it is protecting.
+	MaxInFlight int `yaml:"max_in_flight" json:"maxInFlight"`
+
+	// MaxInFlightPerPeer stops one client occupying every slot. This is what
+	// makes it safe to run with per-peer rate limiting switched off. Zero
+	// disables the per-peer bound.
+	MaxInFlightPerPeer int `yaml:"max_in_flight_per_peer" json:"maxInFlightPerPeer"`
+
+	// AcquireTimeout is how long a request waits for a slot before being
+	// shed. Waiting is normal and is how a client is paced to the database;
+	// only a genuinely saturated server should reach this.
+	AcquireTimeout time.Duration `yaml:"acquire_timeout" json:"acquireTimeout"`
+}
+
+// inFlightPerPoolConnection is how many requests may be in flight per database
+// connection. Above one because not every request is inside a query for its
+// whole life -- there is decoding, validation and encoding either side -- so a
+// little oversubscription keeps the pool busy without queueing on it.
+const inFlightPerPoolConnection = 4
+
+// DefaultAdmissionControl returns the built-in admission settings.
+func DefaultAdmissionControl() AdmissionControl {
+	return AdmissionControl{
+		Enabled:            true,
+		MaxInFlight:        0, // derived from the pool size
+		MaxInFlightPerPeer: 64,
+		AcquireTimeout:     5 * time.Second,
+	}
+}
+
+// EffectiveMaxInFlight returns the configured global bound, deriving one from
+// the database pool size when it is not set explicitly.
+func (a AdmissionControl) EffectiveMaxInFlight(poolSize int) int {
+	if a.MaxInFlight > 0 {
+		return a.MaxInFlight
+	}
+	if poolSize <= 0 {
+		poolSize = 25
+	}
+	return poolSize * inFlightPerPoolConnection
+}
+
+// EffectiveAcquireTimeout returns the configured timeout, or five seconds.
+func (a AdmissionControl) EffectiveAcquireTimeout() time.Duration {
+	if a.AcquireTimeout <= 0 {
+		return 5 * time.Second
+	}
+	return a.AcquireTimeout
 }
 
 // Protocol keys for per-protocol rate limits. Each names one limiter.
@@ -85,13 +151,18 @@ const (
 // RateLimits.Window, plus a Burst that a peer may accumulate while idle and
 // spend at once.
 //
-// A Rate of zero disables the bucket. A Burst of zero defaults to Rate, which
-// reproduces the classic "N requests per window" behaviour. A Burst below Rate
-// paces a peer without lowering its sustained throughput.
+// A negative Rate (RateUnlimited) disables the bucket, which is the default.
+// A Rate of zero means "not specified" when merging a config file over the
+// defaults, so it is not a way to switch a limit off. A Burst of zero defaults
+// to Rate, reproducing the classic "N requests per window" behaviour; a Burst
+// below Rate paces a peer without lowering its sustained throughput.
 type Limit struct {
 	Rate  int `yaml:"rate" json:"rate"`
 	Burst int `yaml:"burst" json:"burst"`
 }
+
+// RateUnlimited is the Rate value that switches a bucket off.
+const RateUnlimited = -1
 
 // ProtocolLimits configures one protocol's limiter.
 //
@@ -104,44 +175,49 @@ type ProtocolLimits struct {
 	Write    Limit `yaml:"write" json:"write"`
 }
 
-// RateLimits configures per-peer rate limiting across every protocol.
+// RateLimits configures optional per-peer rate limiting.
 //
-// Limits are counted per request, not per unit of work: one BATCH_PUT costs
-// the same as one PUT regardless of how many documents it carries. The batch
-// operations impose their own caps on size and count, so this is bounded, but
-// it does mean the effective ceiling in documents per minute depends on how
-// the client packages its writes.
+// These are off by default. Throughput is governed by AdmissionControl, which
+// bounds concurrent work rather than requests per minute and therefore has no
+// ceiling to outgrow. A per-peer rate limit is a constant somebody guessed: it
+// caps a well-behaved client long before the hardware is busy, and it is the
+// wrong tool for the one thing it looks like it is for, since a saturated
+// server needs to shed whatever is arriving rather than whatever a peer's
+// budget says.
+//
+// They remain available for deployments that need a per-tenant cap for
+// non-capacity reasons -- billing tiers, untrusted peers, containing a client
+// known to loop. Enable one by giving it a positive rate.
+//
+// When enabled, limits are counted per request, not per unit of work: one
+// BATCH_PUT costs the same as one PUT regardless of how many documents it
+// carries.
 type RateLimits struct {
 	Window    time.Duration             `yaml:"window" json:"window"`
 	Protocols map[string]ProtocolLimits `yaml:"protocols" json:"protocols"`
 }
 
-// DefaultRateLimits returns the built-in per-protocol limits.
+// DefaultRateLimits returns the built-in per-protocol limits, which are off.
 //
-// Reads are set well above writes because retrieval is now paged — walking a
-// large mailbox or document set legitimately costs many requests. Write limits
-// assume a client with a backlog will use the batch operations rather than
-// issuing one request per item.
+// Every protocol is listed explicitly with a negative rate rather than left
+// out of the map. The distinction matters: a missing entry would also read as
+// "no limit", but silently, and there would be no way to tell a deliberate
+// choice from a protocol somebody forgot to add.
 func DefaultRateLimits() RateLimits {
-	read := Limit{Rate: 300, Burst: 600}
-	write := Limit{Rate: 60, Burst: 120}
+	off := Limit{Rate: RateUnlimited}
+	unlimited := ProtocolLimits{Requests: off, Read: off, Write: off}
 
 	return RateLimits{
 		Window: 1 * time.Minute,
 		Protocols: map[string]ProtocolLimits{
-			RateLimitMSA:      {Requests: Limit{Rate: 100, Burst: 200}},
-			RateLimitMSABatch: {Requests: Limit{Rate: 60, Burst: 120}},
-			RateLimitMAA:      {Requests: read},
-			RateLimitMMA:      {Requests: Limit{Rate: 50, Burst: 100}},
-			RateLimitSDA:      {Read: read, Write: write},
-			RateLimitSFA:      {Read: read, Write: write},
-			RateLimitSCA:      {Read: read, Write: write},
-			// The MTA is charged once per message, so a single batch
-			// submission of 100 messages costs 100 here while costing one at
-			// the MSA edge. It is a backstop against a handler forgetting to
-			// limit, not the binding constraint, so it is set high enough not
-			// to cut a legitimate batch short.
-			RateLimitMTA: {Requests: Limit{Rate: 6000, Burst: 12000}},
+			RateLimitMSA:      unlimited,
+			RateLimitMSABatch: unlimited,
+			RateLimitMAA:      unlimited,
+			RateLimitMMA:      unlimited,
+			RateLimitSDA:      unlimited,
+			RateLimitSFA:      unlimited,
+			RateLimitSCA:      unlimited,
+			RateLimitMTA:      unlimited,
 		},
 	}
 }
@@ -260,6 +336,7 @@ func DefaultConfig() *ServerConfig {
 		EnableRelayService: true,
 
 		RateLimits: DefaultRateLimits(),
+		Admission:  DefaultAdmissionControl(),
 	}
 }
 
@@ -306,6 +383,12 @@ func (c *ServerConfig) Validate() error {
 	}
 	if c.MaxMessagesPerMailbox <= 0 {
 		return fmt.Errorf("max_messages_per_mailbox must be positive")
+	}
+	if c.Admission.MaxInFlight < 0 {
+		return fmt.Errorf("admission_control.max_in_flight must not be negative")
+	}
+	if c.Admission.MaxInFlightPerPeer < 0 {
+		return fmt.Errorf("admission_control.max_in_flight_per_peer must not be negative")
 	}
 	if c.RateLimits.Window < 0 {
 		return fmt.Errorf("rate limit window must not be negative")
@@ -426,6 +509,13 @@ type yamlFileConfig struct {
 		Window    string                    `yaml:"window"`
 		Protocols map[string]ProtocolLimits `yaml:"protocols"`
 	} `yaml:"rate_limiting"`
+
+	AdmissionControl struct {
+		Enabled            *bool  `yaml:"enabled"`
+		MaxInFlight        int    `yaml:"max_in_flight"`
+		MaxInFlightPerPeer *int   `yaml:"max_in_flight_per_peer"`
+		AcquireTimeout     string `yaml:"acquire_timeout"`
+	} `yaml:"admission_control"`
 }
 
 // LoadConfigFromFile reads a YAML config file and applies its values on top of
@@ -586,6 +676,46 @@ func LoadConfigFromFile(path string, base *ServerConfig) error {
 	// Rate limiting section
 	if err := applyRateLimits(yc, base); err != nil {
 		return err
+	}
+
+	// Admission control section
+	if err := applyAdmissionControl(yc, base); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// applyAdmissionControl folds the file's admission_control section into base.
+//
+// Enabled and MaxInFlightPerPeer are pointers in the YAML struct so that an
+// explicit "false" or "0" is distinguishable from an absent key. Both have
+// non-zero defaults, so treating zero as "unset" would make them impossible
+// to switch off from a config file.
+func applyAdmissionControl(yc yamlFileConfig, base *ServerConfig) error {
+	ac := &base.Admission
+
+	if yc.AdmissionControl.Enabled != nil {
+		ac.Enabled = *yc.AdmissionControl.Enabled
+	}
+	if yc.AdmissionControl.MaxInFlight > 0 {
+		ac.MaxInFlight = yc.AdmissionControl.MaxInFlight
+	}
+	if yc.AdmissionControl.MaxInFlightPerPeer != nil {
+		if *yc.AdmissionControl.MaxInFlightPerPeer < 0 {
+			return fmt.Errorf("admission_control.max_in_flight_per_peer must not be negative")
+		}
+		ac.MaxInFlightPerPeer = *yc.AdmissionControl.MaxInFlightPerPeer
+	}
+	if yc.AdmissionControl.AcquireTimeout != "" {
+		d, err := time.ParseDuration(yc.AdmissionControl.AcquireTimeout)
+		if err != nil {
+			return fmt.Errorf("parse admission_control.acquire_timeout: %w", err)
+		}
+		if d <= 0 {
+			return fmt.Errorf("admission_control.acquire_timeout must be positive, got %s", yc.AdmissionControl.AcquireTimeout)
+		}
+		ac.AcquireTimeout = d
 	}
 
 	return nil

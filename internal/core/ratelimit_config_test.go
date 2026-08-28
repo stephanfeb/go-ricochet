@@ -19,23 +19,32 @@ func writeConfig(t *testing.T, yaml string) string {
 	return path
 }
 
-func TestRateLimits_DefaultsCoverEveryProtocol(t *testing.T) {
-	// Every limiter the server builds must have a default. A missing entry
-	// would fall through to a zero Rate, which disables limiting entirely.
+func TestRateLimits_DefaultsAreOffButExplicit(t *testing.T) {
+	// Per-peer rate limits are off by default: throughput is governed by
+	// admission control, which bounds concurrent work instead. Every protocol
+	// must still be listed explicitly, so that "no limit here" is a recorded
+	// decision rather than an entry somebody forgot to add.
 	protocols := []string{
 		core.RateLimitMSA, core.RateLimitMSABatch, core.RateLimitMAA,
 		core.RateLimitMMA, core.RateLimitSDA, core.RateLimitSFA,
 		core.RateLimitSCA, core.RateLimitMTA,
 	}
 	limits := core.DefaultRateLimits()
+	if len(limits.Protocols) != len(protocols) {
+		t.Errorf("defaults list %d protocols, expected %d", len(limits.Protocols), len(protocols))
+	}
 	for _, name := range protocols {
 		p, ok := limits.Protocols[name]
 		if !ok {
-			t.Errorf("protocol %q has no default limits", name)
+			t.Errorf("protocol %q has no default entry", name)
 			continue
 		}
-		if p.Requests.Rate <= 0 && p.Read.Rate <= 0 && p.Write.Rate <= 0 {
-			t.Errorf("protocol %q has no bucket with a positive rate", name)
+		for bucket, limit := range map[string]core.Limit{
+			"requests": p.Requests, "read": p.Read, "write": p.Write,
+		} {
+			if limit.Rate != core.RateUnlimited {
+				t.Errorf("protocol %q %s: rate is %d, want RateUnlimited", name, bucket, limit.Rate)
+			}
 		}
 	}
 }

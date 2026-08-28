@@ -15,6 +15,7 @@ import (
 	"github.com/twostack/go-p2p-forge/codec"
 	"github.com/twostack/go-p2p-forge/middleware"
 
+	"github.com/twostack/go-ricochet/internal/admission"
 	"github.com/twostack/go-ricochet/internal/core"
 	"github.com/twostack/go-ricochet/internal/mda"
 	"github.com/twostack/go-ricochet/internal/ratelimit"
@@ -134,6 +135,7 @@ func NewPipeline(logger *slog.Logger, pool *codec.BufferPool, reg *forge.Registr
 		adminResponseWriter(),
 		forge.FrameDecodeMiddleware(pool),
 		middleware.RateLimitMiddleware(limiter),
+		admission.Middleware(admission.FromRegistry(reg)),
 		dartNormalize(),
 		middleware.OperationRouter("operationType", routes),
 	).WithRegistry(reg)

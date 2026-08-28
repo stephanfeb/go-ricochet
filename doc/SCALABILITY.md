@@ -20,7 +20,7 @@ path to horizontal scale.**
 |---|---------|--------|--------------------|
 | 1 | `NullResourceManager` disables all libp2p limits | **Open** — and no longer in this repo | `../go-p2p-forge/host/host.go:89` |
 | 2 | DB pool size of 10 | **Fixed** (`42948dc`) — 25 default / 50 production | `internal/core/config.go` |
-| 3 | `GetNextSequence` race | **Open** | `internal/storage/postgres/postgres.go:275` |
+| 3 | `GetNextSequence` race | **Fixed** (`c8b0c4a`) — `UPDATE ... RETURNING` in the delivery transaction | `internal/storage/postgres/postgres.go` |
 | 4 | `MaxConcurrentConnections` never enforced | **Open** — parsed, never read | `internal/core/config.go` only |
 | 5 | Rate-limit memory leak | **Fixed** — MTA closed by A4 | forge `middleware/tokenbucket.go` / `internal/ratelimit/limiters.go` |
 | 6 | Mailbox cache has no eviction | **Open** | `internal/mda/delivery.go:26` |
@@ -29,7 +29,7 @@ path to horizontal scale.**
 | 9 | `WorkerThreads` defined but unused | **Open** | `internal/core/config.go` only |
 | 10 | No horizontal scaling path | **Open** — but closer than the old doc implies (§4) | architectural |
 | 11 | JSON + base64 over libp2p is expensive | **Open** | all handlers |
-| 12 | No backpressure mechanism | **Open** | architectural |
+| 12 | No backpressure mechanism | **Fixed** — bounded in-flight work, shed on saturation | `internal/admission/controller.go` |
 
 ### What the forge migration fixed for free
 
@@ -131,7 +131,7 @@ with no config path. **A4 has since closed this**; the row below records where i
 | Their # | Ask | Re-scored |
 |---------|-----|-----------|
 | 1 | Batch/bulk write (SDA + mailbox deposit) | **Still the top item.** `590aa0a` shipped `BATCH_GET` for feeds — that is the template; extend the same shape to SDA `BATCH_PUT` and MSA batch deposit. |
-| 2 | Configurable per-protocol limits + burst | **Done** (A4). `rate_limiting.protocols.*` drives every limiter; forge gained `TokenBucket`/`DualTokenBucket` with rate, burst and `AllowN`. An unrecognised protocol name is a startup error, so a typo can no longer look like a no-op. |
+| 2 | Configurable per-protocol limits + burst | **Done, then superseded.** A4 made every limiter config-driven (`rate_limiting.protocols.*`, forge `TokenBucket` with rate, burst and `AllowN`; an unrecognised protocol name is a startup error). They are now **off by default** — throughput is governed by concurrency-bounded admission control instead, so there is no per-minute ceiling to configure. The knobs remain for per-tenant capping. |
 | 3 | Operator mailbox observability | **Partially advanced.** `42948dc` added `GetMailboxInfo` to `pkg/client` — but it is still owner-scoped, which is exactly the limitation they flagged. The operator view does not exist. |
 | 4 | Wire `enable_metrics` | **Much cheaper now.** forge's `MetricsCollector` + `MetricsMiddleware` are the hook; this is a Prometheus implementation plus an HTTP listener, not a design problem. |
 | 5 | Per-owner, shard-friendly rate-limit state | **Half done.** Keyed by peer ID and sharded, and since A4 the MTA router no longer has its own global-mutex map. What is missing is *shared* state across instances. |
@@ -176,11 +176,15 @@ So the data plane is *already* horizontally scalable. What blocks it is a short,
    *this* host to the owner. If the owner is connected to a different instance, the notification
    silently fails. Shared mailboxes go via GossipSub and already fan out correctly — private
    mailboxes do not.
-4. **Rate limits are per-instance.** A fleet of 5 gives every client 5× the intended budget.
-   Exactly sumi's ask #5.
-5. **`GetNextSequence` (#3) escalates from a race to a guarantee-breaker.** Within one process
-   it is a narrow window. Across instances there is no shared lock at all, so duplicate sequence
-   numbers become routine rather than rare.
+4. ~~**Rate limits are per-instance.** A fleet of 5 gives every client 5× the intended budget.~~
+   **No longer a blocker.** Throughput is governed by `internal/admission`, which bounds
+   concurrent work per instance — and per instance is the *correct* scope, since each one is
+   protecting its own database connections. Adding an instance adds capacity instead of
+   multiplying a budget. Per-peer rate limits are off by default; a deployment that turns them
+   on for per-tenant capping would still want shared state, but that is billing, not capacity.
+5. ~~**`GetNextSequence` (#3) escalates from a race to a guarantee-breaker.**~~ **Fixed**
+   (`c8b0c4a`). Sequence assignment is now a single `UPDATE ... RETURNING` inside the delivery
+   transaction, so it is correct across instances as well as within one.
 6. **No health check, no draining, no HTTP surface at all.** `grep` for `net/http` across
    `internal/` and `cmd/` returns nothing. No load balancer can participate.
 
@@ -194,12 +198,12 @@ Ordered so that each phase makes the next one measurable.
 
 | | Item | Notes |
 |---|------|-------|
-| A1 | `octet_length` + pagination for `LIST` (N1) | Largest win for the smallest change |
-| A2 | Single-statement conditional `PUT` (N2 + N3) | Kills two reads *and* the lost-update bug |
-| A3 | `BATCH_PUT` for SDA, batch deposit for MSA | Sumi #1; `BATCH_GET` in `590aa0a` is the template |
-| A4 | Config-drive the six limiters; token bucket with burst | Sumi #2; budget by owner peer ID |
-| A5 | Transactional `GetNextSequence` (#3) | Correctness, and a prerequisite for Phase D |
-| A6 | Batch the expiry `DELETE` (N5) | |
+| A1 | ✅ `octet_length` + pagination for `LIST` (N1) | Largest win for the smallest change |
+| A2 | ✅ Single-statement conditional `PUT` (N2 + N3) | Kills two reads *and* the lost-update bug |
+| A3 | ✅ `BATCH_PUT` for SDA, batch deposit for MSA | Sumi #1; `BATCH_GET` in `590aa0a` is the template |
+| A4 | ✅ Config-drive the limiters; token bucket with burst | Sumi #2. There were seven sites, not six. Superseded by C3: the limits are now off by default |
+| A5 | ✅ Transactional `GetNextSequence` (#3) | Correctness, and a prerequisite for Phase D |
+| A6 | ✅ Batch the expiry `DELETE` (N5) | |
 
 ### Phase B — see what is happening
 
@@ -219,7 +223,7 @@ rate limit from client-side `429`s; that must not be the debugging experience ag
 |---|------|-------|
 | C1 | Real `rcmgr` limits in `go-p2p-forge`, made configurable (#1) | Change lands in the forge repo |
 | C2 | Connection manager with watermarks; wire `MaxConcurrentConnections` (#4, N6) | |
-| C3 | Admission control on DB saturation (#12) | Give `WorkerThreads` (#9) a meaning or delete it |
+| C3 | ✅ Admission control on DB saturation (#12) | Done ahead of B. Concurrency-bounded, global + per-peer, derived from the pool size. Adaptive sizing still needs B's measurements. Give `WorkerThreads` (#9) a meaning or delete it |
 | C4 | Bound notifier goroutines (#8); LRU the mailbox cache (#6) | |
 
 ### Phase D — horizontal

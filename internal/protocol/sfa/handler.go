@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"regexp"
@@ -16,6 +17,7 @@ import (
 	"github.com/twostack/go-p2p-forge/codec"
 	"github.com/twostack/go-p2p-forge/middleware"
 
+	"github.com/twostack/go-ricochet/internal/admission"
 	"github.com/twostack/go-ricochet/internal/ratelimit"
 	"github.com/twostack/go-ricochet/internal/storage"
 )
@@ -40,15 +42,16 @@ var validPathRe = regexp.MustCompile(`^[a-zA-Z0-9\-_/]+$`)
 
 // HTTP-style status codes used in responses.
 const (
-	StatusOK              = 200
-	StatusCreated         = 201
-	StatusNoContent       = 204
-	StatusBadRequest      = 400
-	StatusForbidden       = 403
-	StatusNotFound        = 404
-	StatusConflict        = 409
-	StatusTooManyRequests = 429
-	StatusInternalError   = 500
+	StatusOK                 = 200
+	StatusCreated            = 201
+	StatusNoContent          = 204
+	StatusBadRequest         = 400
+	StatusForbidden          = 403
+	StatusNotFound           = 404
+	StatusConflict           = 409
+	StatusTooManyRequests    = 429
+	StatusInternalError      = 500
+	StatusServiceUnavailable = 503
 )
 
 // FeedRequest is the JSON request format for feed operations.
@@ -103,6 +106,7 @@ func NewPipeline(logger *slog.Logger, pool *codec.BufferPool, reg *forge.Registr
 		feedResponseWriter(),
 		forge.FrameDecodeMiddleware(pool),
 		middleware.DualRateLimitMiddleware(limiter, isWriteClassifier),
+		admission.Middleware(admission.FromRegistry(reg)),
 		forge.JSONDeserialize[FeedRequest](),
 		commonValidation(),
 		middleware.OperationRouter("operation", map[string]forge.Middleware{
@@ -135,7 +139,9 @@ func feedResponseWriter() forge.Middleware {
 		// Convert pipeline errors into error responses.
 		if sc.Err != nil && sc.Response == nil {
 			status := StatusInternalError
-			if sc.Err == forge.ErrRateLimited {
+			if errors.Is(sc.Err, admission.ErrOverloaded) {
+				status = StatusServiceUnavailable
+			} else if sc.Err == forge.ErrRateLimited {
 				status = StatusTooManyRequests
 			} else if sc.Err == middleware.ErrUnknownOperation {
 				status = StatusBadRequest

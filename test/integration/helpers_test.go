@@ -21,6 +21,7 @@ import (
 	forge "github.com/twostack/go-p2p-forge"
 	"github.com/twostack/go-p2p-forge/codec"
 
+	"github.com/twostack/go-ricochet/internal/admission"
 	"github.com/twostack/go-ricochet/internal/core"
 	"github.com/twostack/go-ricochet/internal/mda"
 	"github.com/twostack/go-ricochet/internal/mta"
@@ -92,6 +93,7 @@ func newTestServer(t *testing.T, configure ...func(*core.ServerConfig)) *testSer
 
 	limiters := ratelimit.New(cfg.RateLimits)
 	t.Cleanup(limiters.Close)
+	admissionCtl := admission.New(cfg.Admission, pgCfg.PoolSize)
 
 	mdaSrv := mda.NewMailboxServer(store, logger)
 	mtaRtr := mta.NewRouter(mdaSrv, limiters.MTA, logger)
@@ -103,6 +105,7 @@ func newTestServer(t *testing.T, configure ...func(*core.ServerConfig)) *testSer
 	reg.Provide("mda", mdaSrv)
 	reg.Provide("config", cfg)
 	reg.Provide(ratelimit.RegistryKey, limiters)
+	reg.Provide(admission.RegistryKey, admissionCtl)
 	pool := codec.NewBufferPool()
 
 	msaPipeline := msa.NewPipeline(logger, pool, reg)

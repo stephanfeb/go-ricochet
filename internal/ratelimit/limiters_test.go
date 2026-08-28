@@ -81,7 +81,8 @@ func TestNew_HonoursConfiguredRateAndBurst(t *testing.T) {
 }
 
 func TestNew_UnlistedProtocolUsesItsDefault(t *testing.T) {
-	// A partial config must not leave a protocol unlimited.
+	// Configuring one protocol must not disturb another. The default is
+	// unlimited, so MMA must stay unlimited here.
 	cfg := core.RateLimits{
 		Window:    time.Minute,
 		Protocols: map[string]core.ProtocolLimits{core.RateLimitSDA: {Write: core.Limit{Rate: 1, Burst: 1}}},
@@ -90,9 +91,15 @@ func TestNew_UnlistedProtocolUsesItsDefault(t *testing.T) {
 	defer limiters.Close()
 	pid := testPeerID(t)
 
-	want := core.DefaultRateLimits().Protocols[core.RateLimitMMA].Requests.Burst
-	if got := countAllowed(limiters.MMA, pid, want*10); got != want {
-		t.Errorf("mma: allowed %d requests, want the default burst of %d", got, want)
+	if got := countAllowed(limiters.MMA, pid, 2000); got != 2000 {
+		t.Errorf("mma should be unlimited by default, but stopped after %d", got)
+	}
+	// The one protocol that was configured must still be enforced.
+	if !limiters.SDA.Allow(pid, true) {
+		t.Fatal("the first sda write should be allowed")
+	}
+	if limiters.SDA.Allow(pid, true) {
+		t.Error("the second sda write should have exhausted the configured burst of 1")
 	}
 }
 
@@ -142,9 +149,9 @@ func TestFromRegistry_ReturnsTheProvidedLimiters(t *testing.T) {
 	}
 }
 
-func TestFromRegistry_FallsBackToEnforcingDefaults(t *testing.T) {
-	// A wiring mistake must not silently remove rate limiting. Both a nil
-	// registry and one missing the key have to yield a working limiter.
+func TestFromRegistry_FallsBackToTheDefaults(t *testing.T) {
+	// A wiring mistake must yield a usable limiter rather than a nil one that
+	// every call site would have to guard.
 	for name, reg := range map[string]*forge.Registry{
 		"nil registry": nil,
 		"missing key":  forge.NewRegistry(),
@@ -153,10 +160,8 @@ func TestFromRegistry_FallsBackToEnforcingDefaults(t *testing.T) {
 		if limiters == nil {
 			t.Fatalf("%s: got nil limiters", name)
 		}
-		pid := testPeerID(t)
-		want := core.DefaultRateLimits().Protocols[core.RateLimitMMA].Requests.Burst
-		if got := countAllowed(limiters.MMA, pid, want*10); got != want {
-			t.Errorf("%s: allowed %d requests, want the default burst of %d", name, got, want)
+		if limiters.MMA == nil || limiters.SDA == nil {
+			t.Errorf("%s: fallback limiters are incomplete", name)
 		}
 	}
 }

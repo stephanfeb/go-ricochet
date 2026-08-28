@@ -18,6 +18,7 @@ import (
 	forgehost "github.com/twostack/go-p2p-forge/host"
 	"github.com/twostack/go-p2p-forge/node"
 
+	"github.com/twostack/go-ricochet/internal/admission"
 	"github.com/twostack/go-ricochet/internal/core"
 	"github.com/twostack/go-ricochet/internal/mda"
 	"github.com/twostack/go-ricochet/internal/mta"
@@ -45,6 +46,7 @@ type Server struct {
 	mdaSrv      *mda.MailboxServer
 	mtaRtr      *mta.Router
 	limiters    *ratelimit.Limiters
+	admission   *admission.Controller
 
 	// Services
 	registry        *registry.Registry
@@ -101,6 +103,7 @@ func (s *Server) Start(parentCtx context.Context) error {
 	s.forgeServer.Provide("mta", s.mtaRtr)
 	s.forgeServer.Provide("config", s.config)
 	s.forgeServer.Provide(ratelimit.RegistryKey, s.limiters)
+	s.forgeServer.Provide(admission.RegistryKey, s.admission)
 
 	// Register protocol handlers
 	s.registerProtocolHandlers()
@@ -301,6 +304,23 @@ func (s *Server) initializeServices(ctx context.Context) {
 	s.logger.Info("rate limiters initialized",
 		"window", s.config.RateLimits.EffectiveWindow(),
 	)
+
+	// Admission control governs throughput; the rate limiters above are an
+	// optional per-tenant cap and are off unless configured.
+	poolSize := 0
+	if s.config.Storage.Postgres != nil {
+		poolSize = s.config.Storage.Postgres.PoolSize
+	}
+	s.admission = admission.New(s.config.Admission, poolSize)
+	if s.admission != nil {
+		s.logger.Info("admission control initialized",
+			"maxInFlight", s.config.Admission.EffectiveMaxInFlight(poolSize),
+			"maxInFlightPerPeer", s.config.Admission.MaxInFlightPerPeer,
+			"acquireTimeout", s.config.Admission.EffectiveAcquireTimeout(),
+		)
+	} else {
+		s.logger.Warn("admission control disabled — throughput is unbounded and the database is unprotected")
+	}
 
 	// Create MDA
 	s.mdaSrv = mda.NewMailboxServer(s.storage, s.logger)
