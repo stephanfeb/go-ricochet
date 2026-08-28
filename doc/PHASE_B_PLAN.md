@@ -57,6 +57,7 @@ metrics middleware wrapping the pipeline therefore cannot tell a `GET` from a
 `ActiveMailboxes` and `HealthScore` at zero. It answers "storage is 100% free"
 regardless of what is on disk. This is the same class of defect as the
 unreachable rate limit: a knob that reads as working and is not.
+**Fixed in B2.**
 
 **Two more dead config knobs.** `TrustedPeers` and `EnableAuthentication`
 (`config.go:61-62`) are parsed, set by the production preset, and never read.
@@ -187,7 +188,42 @@ operation **only after a route matches**, so the label set is the routing
 table rather than whatever a caller sends. An unroutable request is labelled
 `unrouted`.
 
-### B2 — The two numbers sumi could not see
+### B2 — The two numbers sumi could not see — **done**
+
+Landed as `internal/capacity` plus one `Storage.ServerStats` method. Four
+things differ from the plan:
+
+- **One method, not three.** `CountMailboxesNearCapacity`, `TotalStorageBytes`
+  and `MailboxDepthHistogram` all need the same per-mailbox message count, so
+  three methods would have scanned `stored_messages` three times.
+  `ServerStats(ctx, nearCapacityRatio)` returns all of it from a single pass.
+- **Usage is `pg_database_size`, not a sum of payloads.** Indexes and
+  unreclaimed space are what actually fill a volume; a server reporting 40%
+  used while its disk is full has answered the wrong question. The payload sum
+  is published separately as `ricochet_message_bytes` — what users stored, as
+  distinct from what it costs. `pg_database_size` is also O(1), so the single
+  scan left is the mailbox pass.
+- **A sampler with an explicit "not yet" state.** `capacity.Sampler` caches the
+  pass and refreshes it on the maintenance tick, with the first sample taken in
+  the background at startup. Before one lands, `Capacity()` returns
+  `ErrNotSampled` and the metrics collector publishes *nothing* — zeroes would
+  read as an empty server, which is the exact fabrication being removed. Every
+  answer carries `SampledAt`, and the exposition carries
+  `ricochet_stats_age_seconds`: a sampler that has quietly stopped otherwise
+  looks identical to a server whose numbers have stopped changing.
+- **`core.ServerCapacity` gained `SampledAt`**, and `HealthScore` now has a
+  stated definition — the fraction of the storage budget still free. It was
+  hardcoded to zero precisely because the name invites reading it as an overall
+  verdict.
+
+**A real bug surfaced while testing this.** The near-capacity filter was
+`n >= $1 * max_messages`. Postgres infers `$1` from the integer column it
+multiplies, so the 0.9 ratio was truncated to 0 and *every* mailbox counted as
+near capacity. It needs `$1::double precision`. The first version of the
+regression test used before/after deltas and passed with the bug reintroduced;
+it now measures a below-threshold mailbox on its own, and fails as it should.
+
+Original scope, for reference:
 
 **Throttle state.** ~~Falls out of B1, but needs a test.~~ **Done in B1.**
 `TestRateLimitedAndOverloadedAreSeparateSeries` drives a real rate-limit
@@ -208,7 +244,15 @@ are aggregate scans. Exposed as gauges.
 a bug fix, not a feature: it currently lies.
 
 **Done when:** filling a mailbox to its cap moves the near-capacity gauge, and
-`queryCapacity` returns numbers that match the database.
+`queryCapacity` returns numbers that match the database. **Both verified.**
+`TestFillingAMailboxMovesNearCapacity` checks the gauge moves for a mailbox at
+its cap and does not for one with room;
+`TestQueryCapacityReportsRealUsage` goes over the wire through the MMA handler
+— asserting against the sampler directly left the handler free to go on
+fabricating, which an earlier draft of the test did. Reintroducing either the
+fabricated handler or the truncated ratio fails the matching test. A live
+scrape against the real binary matched the database exactly: 31 mailboxes, 624
+messages, depth buckets summing to 31.
 
 ### B3 — Operator view
 

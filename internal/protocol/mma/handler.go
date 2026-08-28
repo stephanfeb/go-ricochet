@@ -16,6 +16,7 @@ import (
 	"github.com/twostack/go-p2p-forge/middleware"
 
 	"github.com/twostack/go-ricochet/internal/admission"
+	"github.com/twostack/go-ricochet/internal/capacity"
 	"github.com/twostack/go-ricochet/internal/core"
 	"github.com/twostack/go-ricochet/internal/mda"
 	"github.com/twostack/go-ricochet/internal/metrics"
@@ -604,16 +605,34 @@ func handleGetMailboxInfo(sc *forge.StreamContext, next func()) {
 
 // handleQueryCapacity returns server capacity metrics. This operation does not
 // require owner verification -- any authenticated peer can query capacity.
+// handleQueryCapacity answers with the server's real storage usage.
+//
+// It reads the most recent aggregate sample rather than querying: the figures
+// scan every mailbox, and running that per admin request would make an
+// observability endpoint into a load source. The sample's age travels with it
+// in SampledAt.
+//
+// When no sample has completed the request fails rather than returning zeroes.
+// This handler previously reported AvailableStorageBytes equal to the
+// configured maximum and left everything else at zero, so it told every caller
+// storage was 100% free no matter what was on disk. Refusing to answer is
+// worse for the caller and better for the operator: an error gets
+// investigated, a plausible wrong number does not.
 func handleQueryCapacity(sc *forge.StreamContext, next func()) {
-	config, _ := forge.ServiceFrom[*core.ServerConfig](sc, "config")
+	sampler := capacity.FromRegistry(sc.Registry)
 
-	capacity := &core.ServerCapacity{
-		TotalStorageBytes:     config.MaxStorageBytes,
-		AvailableStorageBytes: config.MaxStorageBytes, // TODO: compute actual usage
+	view, err := sampler.Capacity()
+	if err != nil {
+		sc.Logger.Warn("capacity query before the first sample completed", "error", err)
+		sc.Response = &AdminResponse{
+			Success:      false,
+			ErrorMessage: err.Error(),
+		}
+		return
 	}
 
 	sc.Response = &AdminResponse{
 		Success:  true,
-		Capacity: capacity,
+		Capacity: view,
 	}
 }

@@ -101,4 +101,13 @@ type Storage interface {
 	// Cleanup operations
 	DeleteExpiredMessages(ctx context.Context) (int, error)
 	EnforceRetentionPolicy(ctx context.Context, mailbox *MailboxRecord) error
+
+	// Operator statistics
+	//
+	// ServerStats aggregates across every owner. It is the only method here
+	// that is not owner- or mailbox-scoped, and it is deliberately the only
+	// one: it exists to answer operator questions ("how full is this server",
+	// "which mailboxes are about to overflow") that per-owner methods cannot.
+	// It scans, so it is sampled on a timer rather than called per request.
+	ServerStats(ctx context.Context, nearCapacityRatio float64) (*ServerStats, error)
 }

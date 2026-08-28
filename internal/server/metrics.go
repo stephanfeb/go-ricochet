@@ -26,6 +26,7 @@ func (s *Server) registerCollectors() {
 
 	register("admission", metrics.NewAdmissionCollector(s.admission))
 	register("buffer_pool", metrics.NewBufferPoolCollector(s.bufferPool))
+	register("capacity", metrics.NewCapacityCollector(s.capacity))
 
 	if provider, ok := s.storage.(poolProvider); ok {
 		register("db_pool", metrics.NewPoolCollector(provider.Pool()))

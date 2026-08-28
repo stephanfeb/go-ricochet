@@ -170,12 +170,22 @@ type RetrieveResponse struct {
 
 // ServerCapacity contains server capacity metrics.
 type ServerCapacity struct {
-	TotalStorageBytes     int64   `json:"totalStorageBytes"`
-	UsedStorageBytes      int64   `json:"usedStorageBytes"`
-	AvailableStorageBytes int64   `json:"availableStorageBytes"`
-	MessageCount          int     `json:"messageCount"`
-	ActiveMailboxes       int     `json:"activeMailboxes"`
-	HealthScore           float64 `json:"healthScore"`
+	TotalStorageBytes     int64 `json:"totalStorageBytes"`
+	UsedStorageBytes      int64 `json:"usedStorageBytes"`
+	AvailableStorageBytes int64 `json:"availableStorageBytes"`
+	MessageCount          int   `json:"messageCount"`
+	ActiveMailboxes       int   `json:"activeMailboxes"`
+
+	// HealthScore is the fraction of the storage budget still free: 1.0 on an
+	// empty server, 0.0 when it is spent. It reports storage headroom only,
+	// despite the name.
+	HealthScore float64 `json:"healthScore"`
+
+	// SampledAt is when these figures were taken. The aggregates scan, so they
+	// are sampled on a timer rather than computed per request, and the age
+	// travels with them — a cached number that has silently gone stale is
+	// worse than no number.
+	SampledAt time.Time `json:"sampledAt,omitzero"`
 }
 
 // UsagePercent returns the storage usage percentage.

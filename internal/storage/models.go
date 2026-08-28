@@ -278,3 +278,58 @@ type CollectionItemConflictError struct {
 func (e *CollectionItemConflictError) Error() string {
 	return fmt.Sprintf("collection item conflict: expected hash %s, got %s", e.ExpectedHash, e.ActualHash)
 }
+
+// ServerStats is a point-in-time aggregate across every owner, for operator
+// views and metrics.
+//
+// Everything else on the Storage interface is scoped to one owner or one
+// mailbox, which is right for serving requests and useless for answering "how
+// full is this server". These figures come from a single pass and are sampled
+// on a timer rather than computed per request.
+type ServerStats struct {
+	// SampledAt is when the pass ran. It travels with the numbers because a
+	// cached figure that has silently gone stale is worse than no figure.
+	SampledAt time.Time
+
+	// Mailboxes is the total across all owners.
+	Mailboxes int
+
+	// Messages is the total stored message count.
+	Messages int64
+
+	// MessageBytes is the summed payload length. This is what users stored,
+	// not what it costs on disk.
+	MessageBytes int64
+
+	// DatabaseBytes is the size of the database on disk, including indexes
+	// and unreclaimed space. This is the figure that runs a server out of
+	// room, so it is what capacity is measured against.
+	DatabaseBytes int64
+
+	// MailboxesNearCapacity counts mailboxes at or above NearCapacityRatio of
+	// their own max_messages. A mailbox at its cap silently drops or evicts,
+	// so this is the number that predicts data loss.
+	MailboxesNearCapacity int
+
+	// NearCapacityRatio is the fraction used for the count above.
+	NearCapacityRatio float64
+
+	// Depth is the distribution of mailbox sizes. A single enormous mailbox
+	// and a million small ones need different responses, and a mean hides
+	// which one you have.
+	Depth []DepthBucket
+}
+
+// DepthBucket counts mailboxes whose message count falls within [Min, Max].
+type DepthBucket struct {
+	// Label names the range, e.g. "10-99". It is a fixed string so it is safe
+	// as a metric label.
+	Label string
+
+	// Min and Max bound the bucket inclusively. Max is -1 when unbounded.
+	Min int
+	Max int
+
+	// Mailboxes is how many fall in this range.
+	Mailboxes int
+}

@@ -19,6 +19,7 @@ import (
 	"github.com/twostack/go-p2p-forge/node"
 
 	"github.com/twostack/go-ricochet/internal/admission"
+	"github.com/twostack/go-ricochet/internal/capacity"
 	"github.com/twostack/go-ricochet/internal/core"
 	"github.com/twostack/go-ricochet/internal/mda"
 	"github.com/twostack/go-ricochet/internal/metrics"
@@ -50,6 +51,7 @@ type Server struct {
 	limiters    *ratelimit.Limiters
 	admission   *admission.Controller
 	metrics     *metrics.Metrics
+	capacity    *capacity.Sampler
 	opsSrv      *opsapi.Server
 
 	// bufferPool is shared by every pipeline. It is a field rather than a
@@ -113,6 +115,7 @@ func (s *Server) Start(parentCtx context.Context) error {
 	s.forgeServer.Provide(ratelimit.RegistryKey, s.limiters)
 	s.forgeServer.Provide(admission.RegistryKey, s.admission)
 	s.forgeServer.Provide(metrics.RegistryKey, s.metrics)
+	s.forgeServer.Provide(capacity.RegistryKey, s.capacity)
 
 	// Register protocol handlers
 	s.registerProtocolHandlers()
@@ -367,6 +370,11 @@ func (s *Server) initializeServices(ctx context.Context) {
 		s.logger.Warn("admission control disabled — throughput is unbounded and the database is unprotected")
 	}
 
+	// The aggregate sampler answers capacity questions. It scans, so it is
+	// refreshed on the maintenance tick rather than per request.
+	s.capacity = capacity.New(s.storage, s.config.MaxStorageBytes,
+		postgres.DefaultNearCapacityRatio, s.logger)
+
 	// Publish the live counters admission control, the connection pool and
 	// the buffer pool already keep. Registered here, after the controller
 	// exists, so a scrape never reads a half-built server.
@@ -485,6 +493,38 @@ func (s *Server) startServices(ctx context.Context) {
 
 	// Start periodic maintenance
 	go s.maintenanceLoop(ctx)
+
+	// Take the first capacity sample immediately, in the background. Until it
+	// lands, queryCapacity reports that it has nothing rather than returning
+	// zeroes; waiting a whole cleanup interval for that to clear would be a
+	// long time to look empty. It runs off the startup path because on a large
+	// database the scan is not instant.
+	go s.sampleCapacity(ctx)
+}
+
+// sampleCapacity refreshes the aggregate storage sample. A failure is logged
+// and the previous sample kept: stale figures carry their age, so a widening
+// gap is visible, whereas discarding them would leave the operator with
+// nothing at the moment the database is unhappy.
+func (s *Server) sampleCapacity(ctx context.Context) {
+	if s.capacity == nil {
+		return
+	}
+
+	stats, err := s.capacity.Sample(ctx)
+	if err != nil {
+		if ctx.Err() == nil {
+			s.logger.Warn("capacity sample failed", "error", err)
+		}
+		return
+	}
+
+	s.logger.Debug("capacity sampled",
+		"mailboxes", stats.Mailboxes,
+		"messages", stats.Messages,
+		"databaseBytes", stats.DatabaseBytes,
+		"nearCapacity", stats.MailboxesNearCapacity,
+	)
 }
 
 func (s *Server) maintenanceLoop(ctx context.Context) {
@@ -502,6 +542,7 @@ func (s *Server) maintenanceLoop(ctx context.Context) {
 			if err := s.mdaSrv.PerformMaintenance(ctx); err != nil {
 				s.logger.Warn("maintenance error", "error", err)
 			}
+			s.sampleCapacity(ctx)
 			if s.forgeServer.Node() != nil {
 				s.forgeServer.Node().LogDHTStatus()
 			}

@@ -22,6 +22,7 @@ import (
 	"github.com/twostack/go-p2p-forge/codec"
 
 	"github.com/twostack/go-ricochet/internal/admission"
+	"github.com/twostack/go-ricochet/internal/capacity"
 	"github.com/twostack/go-ricochet/internal/core"
 	"github.com/twostack/go-ricochet/internal/mda"
 	"github.com/twostack/go-ricochet/internal/metrics"
@@ -40,12 +41,14 @@ import (
 
 // testServer wraps a server-side libp2p host with all protocol handlers registered.
 type testServer struct {
-	Host    host.Host
-	MDA     *mda.MailboxServer
-	MTA     *mta.Router
-	PeerID  peer.ID
-	Config  *core.ServerConfig
-	Metrics *metrics.Metrics
+	Host     host.Host
+	MDA      *mda.MailboxServer
+	MTA      *mta.Router
+	PeerID   peer.ID
+	Config   *core.ServerConfig
+	Metrics  *metrics.Metrics
+	Capacity *capacity.Sampler
+	Storage  *postgres.PostgresStorage
 }
 
 // newTestServer creates a fully wired server with PostgreSQL storage and all
@@ -97,10 +100,25 @@ func newTestServer(t *testing.T, configure ...func(*core.ServerConfig)) *testSer
 	t.Cleanup(limiters.Close)
 	admissionCtl := admission.New(cfg.Admission, pgCfg.PoolSize)
 
+	// The aggregate sampler, wired as server.go wires it. Sampled on demand
+	// by the tests rather than on a timer.
+	sampler := capacity.New(store, cfg.MaxStorageBytes,
+		postgres.DefaultNearCapacityRatio, logger)
+
 	// Metrics are wired the way server.go wires them, so the integration
 	// tests exercise the middleware rather than a pipeline that quietly has
 	// none.
 	met := metrics.New()
+	if err := met.Register(metrics.NewCapacityCollector(sampler)); err != nil {
+		t.Fatalf("register capacity collector: %v", err)
+	}
+
+	// Take the first sample, as Server.startServices does. Without it the
+	// capacity handler correctly reports that it has nothing to report, which
+	// is not the state a test wants to start from.
+	if _, err := sampler.Sample(ctx); err != nil {
+		t.Fatalf("initial capacity sample: %v", err)
+	}
 	if err := met.Register(metrics.NewAdmissionCollector(admissionCtl)); err != nil {
 		t.Fatalf("register admission collector: %v", err)
 	}
@@ -120,6 +138,7 @@ func newTestServer(t *testing.T, configure ...func(*core.ServerConfig)) *testSer
 	reg.Provide(ratelimit.RegistryKey, limiters)
 	reg.Provide(admission.RegistryKey, admissionCtl)
 	reg.Provide(metrics.RegistryKey, met)
+	reg.Provide(capacity.RegistryKey, sampler)
 	pool := codec.NewBufferPool()
 	if err := met.Register(metrics.NewBufferPoolCollector(pool)); err != nil {
 		t.Fatalf("register buffer pool collector: %v", err)
@@ -147,12 +166,14 @@ func newTestServer(t *testing.T, configure ...func(*core.ServerConfig)) *testSer
 	h.SetStreamHandler(sca.ProtocolID, scaPipeline.StreamHandler())
 
 	ts := &testServer{
-		Host:    h,
-		MDA:     mdaSrv,
-		MTA:     mtaRtr,
-		PeerID:  h.ID(),
-		Config:  cfg,
-		Metrics: met,
+		Host:     h,
+		MDA:      mdaSrv,
+		MTA:      mtaRtr,
+		PeerID:   h.ID(),
+		Config:   cfg,
+		Metrics:  met,
+		Capacity: sampler,
+		Storage:  store,
 	}
 
 	t.Cleanup(func() {

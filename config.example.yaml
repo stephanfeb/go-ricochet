@@ -57,6 +57,13 @@ performance:
   worker_threads: 4
 
 # Service intervals
+#
+# cleanup_min also paces the capacity sample: the aggregate that answers
+# queryCapacity and feeds the ricochet_mailboxes / ricochet_mailbox_depth /
+# ricochet_mailboxes_near_capacity series scans every mailbox, so it is taken
+# on this tick rather than per request. The first one runs at startup. The
+# sample's age is published as ricochet_stats_age_seconds and returned as
+# sampledAt, so a figure that has gone stale says so.
 intervals:
   service_announcement_min: 60
   health_check_min: 5

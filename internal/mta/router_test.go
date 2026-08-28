@@ -262,6 +262,10 @@ func (m *mockStorage) EnforceRetentionPolicy(_ context.Context, _ *storage.Mailb
 	panic("not implemented")
 }
 
+func (m *mockStorage) ServerStats(_ context.Context, _ float64) (*storage.ServerStats, error) {
+	panic("not implemented")
+}
+
 // --- Collection operations ---
 
 func (m *mockStorage) CreateCollection(_ context.Context, _ peer.ID, _, _ string) (*storage.CollectionRecord, error) {
