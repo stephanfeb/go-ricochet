@@ -217,7 +217,10 @@ func TestExampleConfigLoads(t *testing.T) {
 		t.Fatalf("config.example.yaml does not validate: %v", err)
 	}
 
-	// The example spells out every default, so loading it must reproduce them.
+	// The example's rate_limiting section is commented out because limiting is
+	// off by default, so what this checks is that loading the file leaves the
+	// built-in limits intact — an example that silently switched limiting on
+	// would be worse than one that omitted it.
 	for name, want := range core.DefaultRateLimits().Protocols {
 		if got := cfg.RateLimits.For(name); got != want {
 			t.Errorf("protocol %q: example config gives %+v, defaults are %+v", name, got, want)

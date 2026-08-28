@@ -32,26 +32,36 @@ server:
   bootstrap_peers: []
 
 # Storage configuration
+#
+# Every value below is the built-in default except data_directory and
+# max_storage_gb, which are deployment choices; the default of each is noted.
 storage:
-  data_directory: /var/lib/ricochet/sf_storage
-  max_storage_gb: 50
+  data_directory: /var/lib/ricochet/sf_storage   # default: ./sf_storage
+  max_storage_gb: 50                             # default: 10
 
-  # These two are applied when a mailbox is created — by an explicit
-  # createMailbox, or by the first message delivered to an address that has
-  # none. An existing mailbox keeps the settings it was created with, so
-  # changing these affects new mailboxes only.
+  # Mailbox defaults.
+  #
+  # These are applied when a mailbox is created — by an explicit createMailbox,
+  # or by the first message delivered to an address that has none. Both paths
+  # read these settings; until 2cdc173 the delivery path used hardcoded
+  # literals and ignored them, so a lowered cap appeared to do nothing.
+  #
+  # An existing mailbox keeps the settings it was created with, so changing
+  # these affects newly created mailboxes only.
   #
   # A mailbox at max_messages_per_mailbox rejects further deliveries with a
-  # 507; watch ricochet_mailboxes_near_capacity, or ask
-  # /ops/mailboxes/top?n=20 which ones are closest.
+  # 507, which clients are told not to retry on a timer — only the owner can
+  # clear it. Watch ricochet_mailboxes_near_capacity, or ask
+  # /ops/mailboxes/top?n=20 which mailboxes are closest.
   #
-  # retention_days is enforced as "delete anything older than N days". A
-  # retention shorter than one day is rounded up to one rather than truncated
-  # to zero, which would delete everything on the next sweep.
-  retention_days: 30
-  max_messages_per_mailbox: 1000
+  # retention_days is enforced as "delete anything older than N days", so it
+  # must never reach zero: a retention shorter than one day is rounded up to
+  # one rather than truncated, which would delete every message on the next
+  # sweep. Zero or omitted means "use the default", not "keep nothing".
+  retention_days: 30                 # default: 30
+  max_messages_per_mailbox: 1000     # default: 1000
 
-  max_mailboxes: 100000
+  max_mailboxes: 100000              # default: 100000
 
 # PostgreSQL configuration
 database:
@@ -87,15 +97,22 @@ intervals:
   presence_timeout_sec: 120
 
 # Feature flags
+#
+# All of them are listed with their defaults. Unlike most sections, a false
+# here is applied as false rather than treated as "unset" — the parser reads
+# every flag unconditionally — so omitting one turns it OFF rather than leaving
+# the default in place. List them all.
 features:
   enable_forwarding: false
   enable_push_delivery: true
   enable_presence_monitoring: true
   enable_presence_broadcast: true
-  enable_metrics: true
+  enable_metrics: true              # gates /metrics on the ops listener
   enable_authentication: false
   enable_relay: true
   enable_relay_service: true
+  enable_auto_relay: false          # use discovered public relays for our own reachability
+  enable_hole_punching: false       # DCUtR; needs relay to be reachable first
   enable_autonat: true
 
 # Operator HTTP surface
@@ -162,6 +179,29 @@ ops:
   # the load balancer learns about the shutdown through failed requests.
   # Zero (the default) skips the wait, which is right when nothing is probing.
   drain_delay: 0s
+
+# Circuit relay v2 service limits
+#
+# Only consulted when features.enable_relay_service is on. Every value is
+# omitted below because a zero means "use the go-libp2p default", which is the
+# right choice unless this server is carrying relay traffic for others and you
+# have measured what it costs.
+#
+# Note the units are in the key names, and they do NOT match the internal field
+# names: the file takes reservation_ttl_min (minutes) and
+# connection_duration_sec (seconds). Writing reservation_ttl or
+# connection_duration here is silently ignored.
+#
+# relay_limits:
+#   max_reservations: 128            # concurrent reservations, server-wide
+#   max_circuits: 16                 # concurrent circuits per reservation
+#   buffer_size: 2048                # relay copy buffer, bytes
+#   max_reservations_per_peer: 4
+#   max_reservations_per_ip: 8
+#   max_reservations_per_asn: 32
+#   reservation_ttl_min: 60          # minutes
+#   connection_duration_sec: 120     # seconds
+#   connection_data: 131072          # bytes relayed per circuit before it is cut
 
 # Admission control
 #
@@ -239,5 +279,11 @@ admission_control:
 #   max_requests_per_window: 60000
 
 # Logging
-logging:
-  level: INFO
+#
+# There is no logging section: the server logs at INFO, or at DEBUG when
+# started with --development. A `logging:` block here is parsed by nobody and
+# silently ignored, which is why it is not shown as a commented example --
+# an ignored setting that looks configured is worse than an absent one.
+#
+# Library-level logging (DHT, relay, host) is controlled separately by the
+# --debug-dht flag and by GOLOG_LOG_LEVEL.
