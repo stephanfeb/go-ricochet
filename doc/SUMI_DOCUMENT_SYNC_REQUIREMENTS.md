@@ -3,7 +3,7 @@
 **Author:** sumi team (a document-centric notes app syncing over go-ricochet)
 **Audience:** go-ricochet maintainers
 **Status:** field report + prioritized requests, grounded in production debugging
-**Related:** [`SCALABILITY.md`](./SCALABILITY.md), [`FUTURE_ENHANCEMENTS.md`](./FUTURE_ENHANCEMENTS.md)
+**Related:** [`MAILBOX_LIFECYCLE_AND_ACLS.md`](./MAILBOX_LIFECYCLE_AND_ACLS.md) (sibling field guide: mailbox lifecycle, retention, ACL semantics — the "why bidirectional sync silently stalled" learnings), [`SCALABILITY.md`](./SCALABILITY.md), [`FUTURE_ENHANCEMENTS.md`](./FUTURE_ENHANCEMENTS.md)
 
 This is a consumer's-eye view. We hit real walls syncing document vaults through go-ricochet,
 traced each to its source, and want to feed that back so the team can prioritise. Where a need
@@ -79,6 +79,14 @@ We had no way to observe this. `getMailboxInfo` (`mma/handler.go:556`) *does* re
 `messageCount`, but it's **owner-scoped** (`verifyOwner` + `FindMailbox(callerID, …)`) — a peer can only
 query *its own* mailboxes, and there's **no operator/global view** and **no CLI**. We ended up adding a
 `GetMailboxInfo` wrapper to `pkg/client` ourselves just to read the number.
+
+> **Update (later session):** the deeper cause of mailboxes climbing to the cap was
+> on us — a client must **delete** messages it has consumed (`retrieveMessages`
+> doesn't), or the inbox fills and rejects all delivery *both ways*. That, plus the
+> shared-vs-private ACL semantics that gate who may deliver, are written up as a
+> client-integration field guide in
+> [`MAILBOX_LIFECYCLE_AND_ACLS.md`](./MAILBOX_LIFECYCLE_AND_ACLS.md). With those
+> understood, bidirectional device sync works.
 
 ### Finding C — `enable_metrics: true` appears to be a no-op
 
