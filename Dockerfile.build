@@ -16,9 +16,13 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Go SDK
-RUN wget -q https://go.dev/dl/go1.25.0.linux-amd64.tar.gz \
-    && tar -C /usr/local -xzf go1.25.0.linux-amd64.tar.gz \
-    && rm go1.25.0.linux-amd64.tar.gz
+# go.mod's go directive is the floor; this is the current release of the
+# next line up, and TestDockerBuildUsesAToolchainTheModuleAccepts fails the
+# build if it ever falls below the floor.
+RUN wget -q https://go.dev/dl/go1.26.8.linux-amd64.tar.gz \
+    && echo "d0f743b33e8d8945e6b1f432edd15785c70507121d6e2a723b21285eddf8b57b  go1.26.8.linux-amd64.tar.gz" | sha256sum -c - \
+    && tar -C /usr/local -xzf go1.26.8.linux-amd64.tar.gz \
+    && rm go1.26.8.linux-amd64.tar.gz
 
 # Add Go to PATH
 ENV PATH="/usr/local/go/bin:/home/builder/go/bin:${PATH}"

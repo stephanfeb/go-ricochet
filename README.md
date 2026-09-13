@@ -60,7 +60,7 @@ The system follows an email-inspired agent separation:
 
 ### Prerequisites
 
-- Go 1.25+
+- Go 1.25.7+ (go-libp2p 0.49.0 requires it; an older `go` downloads the toolchain itself under the default `GOTOOLCHAIN=auto`)
 - PostgreSQL 14+
 
 ### Database Setup

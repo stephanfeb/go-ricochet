@@ -36,8 +36,9 @@ func TestReadmeMatchesTheCode(t *testing.T) {
 		}
 	}
 
-	// Go version: go.mod's major.minor.
-	goLine := regexp.MustCompile(`(?m)^go (\d+\.\d+)`).FindStringSubmatch(repoFile(t, "go.mod"))
+	// Go version: go.mod's directive, patch level included. A floor that
+	// comes from a dependency is a real floor.
+	goLine := regexp.MustCompile(`(?m)^go (\d+\.\d+(?:\.\d+)?)`).FindStringSubmatch(repoFile(t, "go.mod"))
 	if goLine == nil {
 		t.Fatal("go.mod has no go directive")
 	}
