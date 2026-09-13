@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/libp2p/go-libp2p"
@@ -74,10 +75,11 @@ type Server struct {
 	drain    admission.Drain
 	inFlight sync.WaitGroup
 
-	// State
+	// State. running is read by the maintenance goroutine and written by
+	// Start and Stop, so it is atomic rather than a plain bool.
 	ctx       context.Context
 	cancel    context.CancelFunc
-	isRunning bool
+	running   atomic.Bool
 	startTime time.Time
 }
 
@@ -90,12 +92,23 @@ func NewServer(cfg *core.ServerConfig, logger *slog.Logger) *Server {
 }
 
 // Start starts the server.
-func (s *Server) Start(parentCtx context.Context) error {
-	if s.isRunning {
+//
+// A Start that fails partway releases everything it had built: the storage
+// pool, the host and its listeners, the background goroutines. Without that,
+// a failure to bind the P2P port or the operator port left the process with
+// an open pool and, in a supervisor's restart loop, a database filling up
+// with connections from servers that never ran.
+func (s *Server) Start(parentCtx context.Context) (err error) {
+	if s.running.Load() {
 		return fmt.Errorf("server already running")
 	}
 
 	s.ctx, s.cancel = context.WithCancel(parentCtx)
+	defer func() {
+		if err != nil {
+			s.teardown()
+		}
+	}()
 
 	s.logger.Info("starting Ricochet store-and-forward server")
 	s.startTime = time.Now()
@@ -153,7 +166,7 @@ func (s *Server) Start(parentCtx context.Context) error {
 		return fmt.Errorf("start ops api: %w", err)
 	}
 
-	s.isRunning = true
+	s.running.Store(true)
 
 	peerID := s.forgeServer.PeerID()
 	addrs := s.forgeServer.Host().Addrs()
@@ -165,14 +178,15 @@ func (s *Server) Start(parentCtx context.Context) error {
 	return nil
 }
 
-// Stop gracefully shuts down the server.
+// Stop gracefully shuts down the server. It is safe to call more than once
+// and from more than one goroutine: only the call that flips the running
+// flag does any work.
 func (s *Server) Stop() error {
-	if !s.isRunning {
+	if !s.running.CompareAndSwap(true, false) {
 		return nil
 	}
 
 	s.logger.Info("stopping server")
-	s.isRunning = false
 
 	// Withdraw from load balancing before anything is torn down, so traffic
 	// stops arriving while the instance can still serve what it has. The delay
@@ -194,6 +208,18 @@ func (s *Server) Stop() error {
 	s.drain.Begin()
 	s.awaitInFlight(s.config.Ops.EffectiveShutdownTimeout())
 
+	s.teardown()
+
+	s.logger.Info("server stopped")
+	return nil
+}
+
+// teardown releases everything Start has built so far, in the order Stop
+// needs: goroutines first, then the network, then the operator surface, and
+// storage last so nothing is still using it. It is the one place the server
+// is dismantled, shared by Stop and by a Start that fails partway, so a
+// resource freed on one path cannot be forgotten on the other.
+func (s *Server) teardown() {
 	// Cancel context so background goroutines exit promptly
 	if s.cancel != nil {
 		s.cancel()
@@ -234,15 +260,19 @@ func (s *Server) Stop() error {
 		cancel()
 	}
 
-	// Close MDA (which closes storage)
-	if s.mdaSrv != nil {
+	// Close MDA (which closes storage). Before the MDA exists, storage is
+	// closed directly: that is the window in which a P2P failure used to
+	// leak the pool.
+	switch {
+	case s.mdaSrv != nil:
 		if err := s.mdaSrv.Close(); err != nil {
 			s.logger.Warn("error closing MDA", "error", err)
 		}
+	case s.storage != nil:
+		if err := s.storage.Close(); err != nil {
+			s.logger.Warn("error closing storage", "error", err)
+		}
 	}
-
-	s.logger.Info("server stopped")
-	return nil
 }
 
 // awaitInFlight waits for the pipelines to finish the requests they are
@@ -269,7 +299,7 @@ func (s *Server) PeerID() peer.ID {
 
 // IsRunning returns whether the server is running.
 func (s *Server) IsRunning() bool {
-	return s.isRunning
+	return s.running.Load()
 }
 
 // newCapacitySampler builds the storage-aggregate sampler.
@@ -346,8 +376,11 @@ func (s *Server) initializeP2P(ctx context.Context) error {
 		forge.WithTransport(libp2p.Transport(udxtransport.NewTransport)),
 	)
 
-	// Start forge server (creates host + node)
+	// Start forge server (creates host + node). A forge server that failed
+	// to start has already closed what it built, so it is dropped here
+	// rather than handed to teardown.
 	if err := s.forgeServer.Start(ctx); err != nil {
+		s.forgeServer = nil
 		return fmt.Errorf("start forge server: %w", err)
 	}
 
@@ -633,7 +666,7 @@ func (s *Server) maintenanceLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			if !s.isRunning {
+			if !s.running.Load() {
 				return
 			}
 			if err := s.mdaSrv.PerformMaintenance(ctx); err != nil {

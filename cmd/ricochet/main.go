@@ -168,14 +168,8 @@ func main() {
 
 	fmt.Printf("Ricochet server running. Peer ID: %s\n", srv.PeerID())
 
-	// Wait for signal
-	sigCh := make(chan os.Signal, 1)
+	// Wait for a signal. The buffer holds the second one that forces exit.
+	sigCh := make(chan os.Signal, 2)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-	<-sigCh
-
-	fmt.Println("\nShutting down...")
-	if err := srv.Stop(); err != nil {
-		logger.Error("error during shutdown", "error", err)
-		os.Exit(1)
-	}
+	waitForShutdown(sigCh, logger, srv.Stop, os.Exit)
 }
