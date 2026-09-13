@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/libp2p/go-libp2p"
@@ -66,6 +67,12 @@ type Server struct {
 	presenceMonitor *presence.Monitor
 	presenceService *presence.Service
 	notifier        *mda.Notifier
+
+	// Shutdown. drain is the switch every pipeline checks before admitting
+	// a request; inFlight counts the streams the pipelines are handling, so
+	// Stop can wait for them before it takes the storage away.
+	drain    admission.Drain
+	inFlight sync.WaitGroup
 
 	// State
 	ctx       context.Context
@@ -129,6 +136,7 @@ func (s *Server) Start(parentCtx context.Context) error {
 	s.forgeServer.Provide("config", s.config)
 	s.forgeServer.Provide(ratelimit.RegistryKey, s.limiters)
 	s.forgeServer.Provide(admission.RegistryKey, s.admission)
+	s.forgeServer.Provide(admission.DrainKey, &s.drain)
 	s.forgeServer.Provide(metrics.RegistryKey, s.metrics)
 	s.forgeServer.Provide(capacity.RegistryKey, s.capacity)
 	s.forgeServer.Provide(trust.RegistryKey, s.trusted)
@@ -178,7 +186,15 @@ func (s *Server) Stop() error {
 		}
 	}
 
-	// Cancel context first so background goroutines exit promptly
+	// Refuse new requests with a 503 and let the ones in flight finish, so
+	// nothing is mid-query when storage closes below. The handlers stay
+	// registered until the host goes away: a stream that arrives during the
+	// drain is answered in its protocol's own error shape, where a removed
+	// handler would fail it at negotiation with nothing a client can read.
+	s.drain.Begin()
+	s.awaitInFlight(s.config.Ops.EffectiveShutdownTimeout())
+
+	// Cancel context so background goroutines exit promptly
 	if s.cancel != nil {
 		s.cancel()
 	}
@@ -227,6 +243,20 @@ func (s *Server) Stop() error {
 
 	s.logger.Info("server stopped")
 	return nil
+}
+
+// awaitInFlight waits for the pipelines to finish the requests they are
+// handling, up to timeout. Every request is bounded by the pipeline's own
+// request timeout, so this only ever waits on real work.
+func (s *Server) awaitInFlight(timeout time.Duration) {
+	done := make(chan struct{})
+	go func() { s.inFlight.Wait(); close(done) }()
+	select {
+	case <-done:
+		s.logger.Info("in-flight requests drained")
+	case <-time.After(timeout):
+		s.logger.Warn("shutdown timeout reached with requests still in flight", "timeout", timeout)
+	}
 }
 
 // PeerID returns the server's peer ID.
@@ -496,37 +526,37 @@ func (s *Server) registerProtocolHandlers() {
 	// so post-Start registration must go through the host directly.
 
 	// MSA — Mail Submission Agent (write path)
-	msaPipeline := msa.NewPipeline(s.logger, pool, reg)
+	msaPipeline := msa.NewPipeline(s.logger, pool, reg).WithActiveStreams(&s.inFlight)
 	h.SetStreamHandler(msa.ProtocolID, msaPipeline.StreamHandler())
 	s.logger.Info("registered MSA handler", "protocol", msa.ProtocolID)
 
 	// MSA batch — many submissions in one request
-	msaBatchPipeline := msa.NewBatchPipeline(s.logger, pool, reg)
+	msaBatchPipeline := msa.NewBatchPipeline(s.logger, pool, reg).WithActiveStreams(&s.inFlight)
 	h.SetStreamHandler(msa.BatchProtocolID, msaBatchPipeline.StreamHandler())
 	s.logger.Info("registered MSA batch handler", "protocol", msa.BatchProtocolID)
 
 	// MAA — Mail Access Agent (read path)
-	maaPipeline := maa.NewPipeline(s.logger, pool, reg)
+	maaPipeline := maa.NewPipeline(s.logger, pool, reg).WithActiveStreams(&s.inFlight)
 	h.SetStreamHandler(maa.ProtocolID, maaPipeline.StreamHandler())
 	s.logger.Info("registered MAA handler", "protocol", maa.ProtocolID)
 
 	// MMA — Mailbox Management Agent (admin path)
-	mmaPipeline := mma.NewPipeline(s.logger, pool, reg)
+	mmaPipeline := mma.NewPipeline(s.logger, pool, reg).WithActiveStreams(&s.inFlight)
 	h.SetStreamHandler(mma.ProtocolID, mmaPipeline.StreamHandler())
 	s.logger.Info("registered MMA handler", "protocol", mma.ProtocolID)
 
 	// SDA — Store Document Access (document path)
-	sdaPipeline := sda.NewPipeline(s.logger, pool, reg)
+	sdaPipeline := sda.NewPipeline(s.logger, pool, reg).WithActiveStreams(&s.inFlight)
 	h.SetStreamHandler(sda.ProtocolID, sdaPipeline.StreamHandler())
 	s.logger.Info("registered SDA handler", "protocol", sda.ProtocolID)
 
 	// SFA — Store Feed Agent (feed path)
-	sfaPipeline := sfa.NewPipeline(s.logger, pool, reg)
+	sfaPipeline := sfa.NewPipeline(s.logger, pool, reg).WithActiveStreams(&s.inFlight)
 	h.SetStreamHandler(sfa.ProtocolID, sfaPipeline.StreamHandler())
 	s.logger.Info("registered SFA handler", "protocol", sfa.ProtocolID)
 
 	// SCA — Store Collection Agent (collection path)
-	scaPipeline := sca.NewPipeline(s.logger, pool, reg)
+	scaPipeline := sca.NewPipeline(s.logger, pool, reg).WithActiveStreams(&s.inFlight)
 	h.SetStreamHandler(sca.ProtocolID, scaPipeline.StreamHandler())
 	s.logger.Info("registered SCA handler", "protocol", sca.ProtocolID)
 }

@@ -205,7 +205,10 @@ type OpsConfig struct {
 	// something a constant can know. Zero means ten seconds.
 	QueryTimeout time.Duration `yaml:"query_timeout" json:"queryTimeout"`
 
-	// ShutdownTimeout bounds how long Stop waits for in-flight ops requests.
+	// ShutdownTimeout bounds how long Stop waits for requests already in
+	// flight, on the protocol handlers and the ops surface alike, before it
+	// closes storage under whatever is left. New requests are refused with a
+	// 503 from the moment the wait begins.
 	ShutdownTimeout time.Duration `yaml:"shutdown_timeout" json:"shutdownTimeout"`
 
 	// DrainDelay is how long shutdown keeps serving after /readyz starts

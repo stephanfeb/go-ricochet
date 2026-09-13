@@ -231,7 +231,9 @@ ops:
   # that admits it timed out.
   query_timeout: 10s
 
-  # How long shutdown waits for in-flight ops requests.
+  # How long shutdown waits for requests already in flight, on the protocol
+  # handlers and the ops surface alike, before closing storage under whatever
+  # is left. New requests get a 503 from the moment the wait begins.
   shutdown_timeout: 5s
 
   # How long shutdown keeps serving after /readyz starts reporting unready.

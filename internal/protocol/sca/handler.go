@@ -99,6 +99,7 @@ func NewPipeline(logger *slog.Logger, pool *codec.BufferPool, reg *forge.Registr
 		forge.FrameDecodeMiddleware(pool),
 		wire.RequestDeadline(reg),
 		middleware.DualRateLimitMiddleware(limiter, isWriteClassifier),
+		admission.DrainGate(admission.DrainFromRegistry(reg)),
 		admission.Middleware(admission.FromRegistry(reg)),
 		capacity.WriteGate(capacity.FromRegistry(reg), isWriteClassifier),
 		forge.JSONDeserialize[CollectionRequest](),

@@ -124,6 +124,9 @@ func classify(err error) (status int, retryAfter time.Duration, msg string) {
 	if errors.Is(err, admission.ErrOverloaded) {
 		return StatusServiceUnavailable, 0, admission.ErrOverloaded.Error()
 	}
+	if errors.Is(err, admission.ErrDraining) {
+		return StatusServiceUnavailable, 0, admission.ErrDraining.Error()
+	}
 
 	var full *mailboxes.MailboxFullError
 	if errors.As(err, &full) {

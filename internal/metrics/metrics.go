@@ -210,7 +210,7 @@ func classify(sc *forge.StreamContext) string {
 		// Fall through to the response status.
 	case errors.Is(sc.Err, forge.ErrRateLimited):
 		return OutcomeRateLimited
-	case errors.Is(sc.Err, admission.ErrOverloaded):
+	case errors.Is(sc.Err, admission.ErrOverloaded), errors.Is(sc.Err, admission.ErrDraining):
 		return OutcomeOverloaded
 	default:
 		return OutcomeError

@@ -51,6 +51,7 @@ func NewPipeline(logger *slog.Logger, pool *codec.BufferPool, reg *forge.Registr
 		forge.FrameDecodeMiddleware(pool),
 		wire.RequestDeadline(reg),
 		middleware.RateLimitMiddleware(limiter),
+		admission.DrainGate(admission.DrainFromRegistry(reg)),
 		admission.Middleware(admission.FromRegistry(reg)),
 		defaultOperationType(),
 		middleware.OperationRouter("operationType", routes),
