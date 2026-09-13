@@ -427,6 +427,10 @@ func (s *MailboxServer) DeleteMailbox(ctx context.Context, addr *core.MailboxAdd
 	delete(s.mailboxCache, addr.FullPath())
 	s.mu.Unlock()
 
+	if s.notifier != nil {
+		s.notifier.MailboxDeleted(addr)
+	}
+
 	s.logger.Info("deleted mailbox", "path", addr.FullPath())
 	return nil
 }

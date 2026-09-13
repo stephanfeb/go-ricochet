@@ -65,6 +65,7 @@ type Server struct {
 	presenceCache   *presence.Cache
 	presenceMonitor *presence.Monitor
 	presenceService *presence.Service
+	notifier        *mda.Notifier
 
 	// State
 	ctx       context.Context
@@ -437,24 +438,32 @@ func (s *Server) initializeServices(ctx context.Context) {
 		WithForwarding(s.config.EnableForwarding, s.trusted)
 	s.logger.Info("MTA initialized")
 
-	// Create push notifier
-	if s.config.EnablePushDelivery {
-		notifier := mda.NewNotifier(s.forgeServer.Host(), s.forgeServer.Node(), s.presenceMonitor, s.logger).
-			WithWorkers(s.config.WorkerThreads)
-		s.mdaSrv.SetNotifier(notifier)
-		s.logger.Info("push notifier initialized")
-	}
-
-	// Create service registry
-	s.registry = registry.NewRegistry(s.forgeServer.Node(), s.config, s.forgeServer.PeerID(), s.logger)
-	s.logger.Info("service registry initialized")
-
-	// Create presence monitor
+	// Create presence monitor. It is built before the notifier because the
+	// notifier takes it: for the life of the codebase this block came after
+	// the notifier, which therefore always got nil and dialled every
+	// recipient, online or not.
 	if s.config.EnablePresenceMonitoring {
 		s.presenceCache = presence.NewCache(30 * time.Second)
 		s.presenceMonitor = presence.NewMonitor(s.presenceCache, s.forgeServer.Host(), s.logger)
 		s.logger.Info("presence monitor initialized")
 	}
+
+	// Create push notifier
+	if s.config.EnablePushDelivery {
+		// A nil *Monitor must not become a non-nil interface.
+		var checker mda.PresenceChecker
+		if s.presenceMonitor != nil {
+			checker = s.presenceMonitor
+		}
+		s.notifier = mda.NewNotifier(s.forgeServer.Host(), s.forgeServer.Node(), checker, s.logger).
+			WithWorkers(s.config.WorkerThreads)
+		s.mdaSrv.SetNotifier(s.notifier)
+		s.logger.Info("push notifier initialized", "presence_checked", checker != nil)
+	}
+
+	// Create service registry
+	s.registry = registry.NewRegistry(s.forgeServer.Node(), s.config, s.forgeServer.PeerID(), s.logger)
+	s.logger.Info("service registry initialized")
 
 	// Create presence broadcast service
 	if s.config.EnablePresenceBroadcast {
@@ -536,6 +545,11 @@ func (s *Server) startServices(ctx context.Context) {
 		} else {
 			s.logger.Info("presence broadcast service started")
 		}
+	}
+
+	// Start the notifier's idle-topic sweep
+	if s.notifier != nil {
+		s.notifier.Start(ctx)
 	}
 
 	// Log host advertised addresses (confirms relay service)

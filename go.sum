@@ -266,8 +266,8 @@ github.com/stretchr/testify v1.8.3/go.mod h1:sz/lmYIOXD/1dqDmKjjqLyZ2RngseejIcXl
 github.com/stretchr/testify v1.8.4/go.mod h1:sz/lmYIOXD/1dqDmKjjqLyZ2RngseejIcXlSw2iwfAo=
 github.com/stretchr/testify v1.11.1 h1:7s2iGBzp5EwR7/aIZr8ao5+dra3wiQyKjjFuvgVKu7U=
 github.com/stretchr/testify v1.11.1/go.mod h1:wZwfW3scLgRK+23gO65QZefKpKQRnfz6sD981Nm4B6U=
-github.com/twostack/go-p2p-forge v0.1.0 h1:0j3TlcsS6m/j1T2YtSsFnmby9Udhwsmm83iWnHL4Mqs=
-github.com/twostack/go-p2p-forge v0.1.0/go.mod h1:wsi9EHj24NtlTyfSjxhnXQKEd0p+h1EhHpdRhNuttZI=
+github.com/twostack/go-p2p-forge v0.1.1 h1:V0LfdfK1eBC7YN5MluXdXgbOK0xvmZ78xDU+tUAUqxM=
+github.com/twostack/go-p2p-forge v0.1.1/go.mod h1:wsi9EHj24NtlTyfSjxhnXQKEd0p+h1EhHpdRhNuttZI=
 github.com/urfave/cli v1.22.10/go.mod h1:Gos4lmkARVdJ6EkW0WaNv/tZAAMe9V7XWyB60NtXRu0=
 github.com/warpfork/go-wish v0.0.0-20220906213052-39a1cc7a02d0 h1:GDDkbFiaK8jsSDJfjId/PEGEShv6ugrt4kYsC5UIDaQ=
 github.com/warpfork/go-wish v0.0.0-20220906213052-39a1cc7a02d0/go.mod h1:x6AKhvSSexNrVSrViXSHUEbICjmGXhtgABaHIySUSGw=
