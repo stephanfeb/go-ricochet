@@ -40,9 +40,13 @@ The easiest way to deploy is using our pre-built Debian package:
 
 ### Build the Package
 
+The build runs inside a Docker container (Ubuntu 22.04 with the Go toolchain
+and `dpkg-deb`), so it needs Docker on the machine that builds and nothing
+else. The package lands in `build/dist/`.
+
 ```bash
 cd /path/to/ricochet
-./build-deb.sh
+./build-deb.sh            # VERSION=1.0.1 ./build-deb.sh to set the version
 ```
 
 ### Install
@@ -56,6 +60,7 @@ The package automatically:
 - Creates the `ricochet` system user
 - Sets up directories with correct permissions
 - Installs supervisor configuration
+- Installs the server, `run.sh`, `health_check.sh` and `schema.sql` under `/opt/ricochet`
 - Copies example configuration files
 
 ### Configure and Start
@@ -67,6 +72,9 @@ The package automatically:
 sudo nano /etc/ricochet/env
 # Set: DB_PASSWORD=your_password
 #      EXTERNAL_IP=<the address clients reach this host on>
+#      DB_SSLMODE=disable  only if PostgreSQL is on this host or a private
+#                          network you trust: the package runs the server in
+#                          production mode, which requires TLS to the database
 
 # 2. Configure server (optional)
 sudo nano /etc/ricochet/config.yaml
@@ -106,12 +114,14 @@ sudo mkdir -p /var/log/ricochet
 sudo cp ricochet_server /opt/ricochet/
 sudo cp schema.sql /opt/ricochet/
 sudo cp deploy/run.sh /opt/ricochet/
+sudo cp deploy/health_check.sh /opt/ricochet/
 sudo cp config.example.yaml /etc/ricochet/config.yaml
 sudo cp deploy/env.example /etc/ricochet/env
 
 # Set permissions
 sudo chmod +x /opt/ricochet/ricochet_server
 sudo chmod +x /opt/ricochet/run.sh
+sudo chmod +x /opt/ricochet/health_check.sh
 sudo chown root:ricochet /etc/ricochet/env
 sudo chmod 640 /etc/ricochet/env
 
@@ -134,7 +144,9 @@ sudo supervisorctl update
 
 ### Supervisor Configuration
 
-The supervisor config (`/etc/supervisor/conf.d/ricochet.conf`) controls process management:
+The supervisor config (`/etc/supervisor/conf.d/ricochet.conf`, shipped as
+`deploy/supervisor/ricochet.conf`) controls process management. The settings
+that matter:
 
 ```ini
 [program:ricochet]
@@ -158,6 +170,13 @@ stderr_logfile=/var/log/ricochet/stderr.log
 stdout_logfile_maxbytes=50MB
 stdout_logfile_backups=10
 ```
+
+`stopwaitsecs=30` leaves room for a graceful stop. On TERM the server stops
+admitting requests, lets the ones in flight finish for up to
+`ops.shutdown_timeout` (5s by default) after `ops.drain_delay`, then closes
+the network and the database pool. A second TERM while that is still running
+makes it exit at once, and supervisor's KILL after 30s is the backstop behind
+that.
 
 ### Auto-Restart Behavior
 
@@ -278,39 +297,29 @@ the server rather than inferring its state from the outside:
   The body also carries admission and connection-pool figures, which is where
   to look first when the question is "why is it slow".
 
-Create a health check script (`/opt/ricochet/health_check.sh`):
+The package installs `/opt/ricochet/health_check.sh` (`deploy/health_check.sh`
+in the repository). It asks both endpoints and exits with the Nagios codes,
+so it drops into cron, Nagios or an external load-balancer check unchanged:
 
 ```bash
-#!/bin/bash
-
-OPS=http://127.0.0.1:9090
-
-# Liveness. A failure here means the process is gone or wedged.
-if ! curl -sf --max-time 5 "$OPS/healthz" >/dev/null; then
-    echo "CRITICAL: Ricochet not responding"
-    exit 2
-fi
-
-# Readiness. 503 means it is up but cannot serve — usually the database.
-if ! curl -sf --max-time 5 "$OPS/readyz" >/dev/null; then
-    echo "WARNING: Ricochet is up but not ready"
-    curl -s --max-time 5 "$OPS/readyz"
-    exit 1
-fi
-
-echo "OK: Ricochet is healthy"
-exit 0
+/opt/ricochet/health_check.sh
+# OK: Ricochet is healthy            exit 0
+# WARNING: Ricochet is up but not ready   exit 1, followed by the /readyz body
+# CRITICAL: Ricochet not responding  exit 2
 ```
+
+It reads the operator surface at `http://127.0.0.1:9090`; set `OPS` in its
+environment if the `ops` section binds elsewhere.
 
 Behind a load balancer, point the pool's health check at `/readyz` and set
 `ops.drain_delay` to a couple of probe intervals. Without that delay the
 instance stops answering in the same moment it reports itself unready, and the
 load balancer discovers the shutdown through failed requests instead.
 
-Schedule with cron:
+Schedule with cron, and put your own alerting command after the `||`:
 ```bash
-# Check every 5 minutes
-*/5 * * * * /opt/ricochet/health_check.sh || /opt/ricochet/alert.sh
+# Check every 5 minutes; a failure lands in syslog as daemon.err
+*/5 * * * * /opt/ricochet/health_check.sh >/dev/null || logger -t ricochet -p daemon.err "health check failed"
 ```
 
 ### Investigating storage
@@ -466,13 +475,16 @@ startsecs=5           ; Consider started after 5s instead of 10s
 
 ### Resource Limits
 
-Add resource limits to prevent runaway processes:
+The server has no memory knob; it bounds work, and memory follows. The bounds
+are in `/etc/ricochet/config.yaml`: `performance.max_concurrent_connections`
+(a hard cap, enforced by the libp2p resource manager), `admission_control`
+(requests in flight against the database), `database.pool_size` and
+`storage.mailbox_cache_size`. `curl -s http://127.0.0.1:9090/ops/limits` shows
+the values in effect, including the ones the server derived rather than read.
 
-```ini
-[program:ricochet]
-; Inherit environment (for ulimit)
-environment=RICOCHET_MAX_MEMORY="2G"
-```
+Supervisor itself cannot cap memory. For a hard ceiling put the cgroup around
+supervisord: `MemoryMax=` on the `supervisor` systemd unit covers every
+process it starts.
 
 ## Upgrading
 
@@ -482,8 +494,11 @@ environment=RICOCHET_MAX_MEMORY="2G"
 # Install new version
 sudo dpkg -i ricochet-server_1.0.1.deb
 
-# Service will auto-restart
-# Configuration is preserved
+# Configuration is preserved: config.yaml and env are conffiles and are
+# never overwritten. The package stops the running server before the files
+# change and starts it again on the new binary afterwards; a server that
+# was not running stays stopped.
+sudo supervisorctl status ricochet
 ```
 
 ### Manual Upgrade
@@ -514,7 +529,7 @@ sudo supervisorctl start ricochet
 - [ ] Logs are being written
 - [ ] Health checks configured
 - [ ] Monitoring alerts set up
-- [ ] Firewall allows P2P ports (4001)
+- [ ] Firewall allows UDP 55223 in (or `LISTEN_PORT` from `/etc/ricochet/env`), and does not expose the operator port 9090, which stays on loopback
 - [ ] Backup strategy in place
 
 ## Comparison: Supervisord vs Systemd
@@ -532,7 +547,8 @@ sudo supervisorctl start ricochet
 
 ## See Also
 
-- Main deployment guide: `doc/LINUX_POSTGRES_DEPLOYMENT.md`
-- Package README: `deploy/README.md`
-- Configuration examples: `config.example.yaml`
+- Project overview and client library: `README.md`
+- Every configuration key, with its default: `config.example.yaml`
+- What each mailbox type allows: `doc/MAILBOX_LIFECYCLE_AND_ACLS.md`
+- Capacity and scaling notes: `doc/SCALABILITY.md`
 

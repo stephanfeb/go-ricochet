@@ -40,6 +40,19 @@ if systemctl is-active --quiet supervisor; then
     echo "Supervisor configuration updated"
 fi
 
+# Start the new binary if prerm found the old one running. A first install
+# is left stopped: the database password is not set yet, and a start now
+# would only fail its way into FATAL.
+MARKER=/var/lib/ricochet/.restart-after-upgrade
+if [ -f "$MARKER" ]; then
+    rm -f "$MARKER"
+    if supervisorctl start ricochet 2>/dev/null; then
+        echo "Ricochet server restarted on the new version"
+    else
+        echo "WARNING: Ricochet was running before the upgrade and did not restart; check: supervisorctl tail ricochet stderr"
+    fi
+fi
+
 echo ""
 echo "============================================"
 echo "Ricochet Server Installation Complete"
