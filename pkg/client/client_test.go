@@ -236,8 +236,12 @@ func TestDialFailsOverToTheNextPreferredServer(t *testing.T) {
 		t.Error("an explicitly named dead server was silently replaced")
 	}
 
-	// With every server down the error names each attempt.
+	// With every server down the error names each attempt. The client's own
+	// connection to the backup is closed too: a closed remote host tears the
+	// connection down asynchronously, and until it does the client can still
+	// open a stream on it and fail at the write rather than at the dial.
 	backup.Close()
+	h.Network().ClosePeer(backup.ID())
 	_, err = cl.SendMessage(ctx, cl.PeerID(), []byte("hello"))
 	if err == nil || !strings.Contains(err.Error(), "no preferred server reachable") {
 		t.Errorf("send with every server down: err = %v", err)
