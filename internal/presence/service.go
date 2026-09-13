@@ -16,11 +16,21 @@ import (
 
 // PresenceConfig holds presence service configuration.
 type PresenceConfig struct {
+	// HeartbeatInterval is how often the full online set is published.
 	HeartbeatInterval time.Duration
-	TimeoutDuration   time.Duration
-	BatchWindow       time.Duration
-	MaxBatchSize      int
-	EnableBroadcast   bool
+
+	// TimeoutDuration is the TTL advertised on Online change events: how
+	// long a subscriber may trust the claim without a heartbeat refreshing
+	// it. It does not evict peers on the server; connectedness does.
+	TimeoutDuration time.Duration
+
+	// CheckInterval is how often the service reconciles its online set with
+	// the network, catching any connect or disconnect the notifier missed.
+	CheckInterval time.Duration
+
+	BatchWindow     time.Duration
+	MaxBatchSize    int
+	EnableBroadcast bool
 }
 
 // DefaultPresenceConfig returns sensible defaults.
@@ -28,11 +38,20 @@ func DefaultPresenceConfig() *PresenceConfig {
 	return &PresenceConfig{
 		HeartbeatInterval: 60 * time.Second,
 		TimeoutDuration:   120 * time.Second,
+		CheckInterval:     30 * time.Second,
 		BatchWindow:       2 * time.Second,
 		MaxBatchSize:      50,
 		EnableBroadcast:   true,
 	}
 }
+
+// heartbeatPageSize bounds the peer IDs carried by one heartbeat message.
+//
+// GossipSub drops messages over about 1 MiB. A peer ID is around 55 bytes
+// as JSON, so a single message holds under 19k of them; a server with more
+// connected peers than that would silently stop heartbeating. 4096 IDs is
+// roughly 225 KiB, well inside the cap with room for the envelope.
+const heartbeatPageSize = 4096
 
 // PresenceTopic returns the GossipSub topic for a server's presence events.
 func PresenceTopic(serverID peer.ID) string {
@@ -47,7 +66,9 @@ type Service struct {
 	config *PresenceConfig
 	logger *slog.Logger
 
-	// Connected peer tracking
+	// connectedPeers is the online set: every peer the network has a
+	// connection to, keyed to the time it was first seen connected. The
+	// notifier keeps it current; the reconcile loop corrects any drift.
 	connectedPeers map[peer.ID]time.Time
 	mu             sync.RWMutex
 
@@ -88,10 +109,13 @@ func (s *Service) Start(ctx context.Context) error {
 	ctx, cancel := context.WithCancel(ctx)
 	s.cancel = cancel
 
-	// Join GossipSub topic
-	if err := s.node.JoinTopic(s.topic); err != nil {
-		cancel()
-		return err
+	// The topic is only needed to publish, so a service that does not
+	// broadcast needs no node at all.
+	if s.config.EnableBroadcast {
+		if err := s.node.JoinTopic(s.topic); err != nil {
+			cancel()
+			return err
+		}
 	}
 
 	// Register network notifiee for connect/disconnect callbacks
@@ -106,7 +130,7 @@ func (s *Service) Start(ctx context.Context) error {
 
 	// Start background goroutines
 	go s.heartbeatLoop(ctx)
-	go s.timeoutCheckLoop(ctx)
+	go s.reconcileLoop(ctx)
 
 	s.logger.Info("presence service started", "topic", s.topic)
 	return nil
@@ -152,20 +176,7 @@ func (s *Service) onPeerConnected(pid peer.ID) {
 	s.connectedPeers[pid] = now
 	s.mu.Unlock()
 
-	// Update cache
-	s.cache.Set(pid, &PresenceStatus{
-		PeerID:    pid,
-		State:     Online,
-		LastSeen:  now,
-		CheckedAt: now,
-	})
-
-	s.queueChange(PresenceChange{
-		PeerID:     pid,
-		State:      Online,
-		TTLSeconds: int(s.config.TimeoutDuration.Seconds()),
-	})
-
+	s.markOnline(pid, now)
 	s.logger.Debug("peer connected", "peer_id", pid)
 }
 
@@ -176,20 +187,39 @@ func (s *Service) onPeerDisconnected(pid peer.ID) {
 	delete(s.connectedPeers, pid)
 	s.mu.Unlock()
 
-	// Update cache
+	s.markOffline(pid, now)
+	s.logger.Debug("peer disconnected", "peer_id", pid)
+}
+
+// markOnline records an Online status in the cache and queues the change
+// for broadcast.
+func (s *Service) markOnline(pid peer.ID, now time.Time) {
+	s.cache.Set(pid, &PresenceStatus{
+		PeerID:    pid,
+		State:     Online,
+		LastSeen:  now,
+		CheckedAt: now,
+	})
+	s.queueChange(PresenceChange{
+		PeerID:     pid,
+		State:      Online,
+		TTLSeconds: int(s.config.TimeoutDuration.Seconds()),
+	})
+}
+
+// markOffline records an Offline status in the cache and queues the change
+// for broadcast.
+func (s *Service) markOffline(pid peer.ID, now time.Time) {
 	s.cache.Set(pid, &PresenceStatus{
 		PeerID:    pid,
 		State:     Offline,
 		LastSeen:  now,
 		CheckedAt: now,
 	})
-
 	s.queueChange(PresenceChange{
 		PeerID: pid,
 		State:  Offline,
 	})
-
-	s.logger.Debug("peer disconnected", "peer_id", pid)
 }
 
 // queueChange adds a presence change to the batch and starts the batch timer.
@@ -274,45 +304,71 @@ func (s *Service) heartbeatLoop(ctx context.Context) {
 	}
 }
 
+// publishHeartbeat publishes the online set as one heartbeat sequence,
+// split across as many pages as heartbeatPageSize requires.
 func (s *Service) publishHeartbeat(ctx context.Context) {
 	if !s.config.EnableBroadcast {
 		return
 	}
 
-	s.mu.RLock()
-	peerIDs := make([]peer.ID, 0, len(s.connectedPeers))
-	for pid := range s.connectedPeers {
-		peerIDs = append(peerIDs, pid)
-	}
-	s.mu.RUnlock()
-
+	peerIDs := s.GetOnlinePeers()
 	s.heartbeatSeq++
-	hb := &PresenceHeartbeat{
-		ServerID:          s.host.ID(),
-		Timestamp:         time.Now(),
-		OnlineCount:       len(peerIDs),
-		OnlinePeerIDs:     peerIDs,
-		HeartbeatSequence: s.heartbeatSeq,
-	}
+	pages := heartbeatPages(s.host.ID(), s.heartbeatSeq, time.Now(), peerIDs, heartbeatPageSize)
 
-	data, err := hb.Encode()
-	if err != nil {
-		s.logger.Warn("failed to encode heartbeat", "error", err)
-		return
+	for _, hb := range pages {
+		data, err := hb.Encode()
+		if err != nil {
+			s.logger.Warn("failed to encode heartbeat", "error", err)
+			return
+		}
+		if err := s.node.Publish(ctx, s.topic, data); err != nil {
+			s.logger.Warn("failed to publish heartbeat", "error", err, "page", hb.Page)
+			return
+		}
 	}
-
-	if err := s.node.Publish(ctx, s.topic, data); err != nil {
-		s.logger.Warn("failed to publish heartbeat", "error", err)
-	} else {
-		s.logger.Debug("published heartbeat", "online_count", len(peerIDs), "seq", s.heartbeatSeq)
-	}
+	s.logger.Debug("published heartbeat",
+		"online_count", len(peerIDs), "seq", s.heartbeatSeq, "pages", len(pages))
 }
 
-// timeoutCheckLoop removes peers that haven't been seen recently.
-func (s *Service) timeoutCheckLoop(ctx context.Context) {
-	interval := s.config.TimeoutDuration / 2
-	if interval < 10*time.Second {
-		interval = 10 * time.Second
+// heartbeatPages splits an online set into heartbeat messages of at most
+// pageSize peer IDs each. Every page carries the same sequence, timestamp
+// and total count, so a subscriber can tell the pages of one heartbeat
+// apart from the next. An empty set still produces one page: the heartbeat
+// is a liveness signal as well as a roster.
+func heartbeatPages(serverID peer.ID, seq uint64, at time.Time, peerIDs []peer.ID, pageSize int) []*PresenceHeartbeat {
+	if pageSize <= 0 {
+		pageSize = heartbeatPageSize
+	}
+	pageCount := (len(peerIDs) + pageSize - 1) / pageSize
+	if pageCount == 0 {
+		pageCount = 1
+	}
+
+	pages := make([]*PresenceHeartbeat, 0, pageCount)
+	for page := 0; page < pageCount; page++ {
+		start := page * pageSize
+		end := start + pageSize
+		if end > len(peerIDs) {
+			end = len(peerIDs)
+		}
+		pages = append(pages, &PresenceHeartbeat{
+			ServerID:          serverID,
+			Timestamp:         at,
+			OnlineCount:       len(peerIDs),
+			OnlinePeerIDs:     peerIDs[start:end],
+			HeartbeatSequence: seq,
+			Page:              page,
+			PageCount:         pageCount,
+		})
+	}
+	return pages
+}
+
+// reconcileLoop periodically corrects the online set against the network.
+func (s *Service) reconcileLoop(ctx context.Context) {
+	interval := s.config.CheckInterval
+	if interval <= 0 {
+		interval = DefaultPresenceConfig().CheckInterval
 	}
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
@@ -322,35 +378,56 @@ func (s *Service) timeoutCheckLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			s.checkTimeouts()
+			s.reconcile()
 		}
 	}
 }
 
-func (s *Service) checkTimeouts() {
+// reconcile makes the online set match the peers the network is connected
+// to right now. A peer is online for exactly as long as it has a connection,
+// however long that is: a peer connected for hours is still online. The
+// notifier normally keeps the set current; this catches a notification
+// that was missed or arrived out of order, and refreshes the cache entry
+// of every connected peer so it does not expire underneath them.
+func (s *Service) reconcile() {
 	now := time.Now()
-	var timedOut []peer.ID
+	connected := s.host.Network().Peers()
+	connectedSet := make(map[peer.ID]struct{}, len(connected))
+	for _, pid := range connected {
+		connectedSet[pid] = struct{}{}
+	}
 
+	var gone, appeared []peer.ID
 	s.mu.Lock()
-	for pid, lastSeen := range s.connectedPeers {
-		if now.Sub(lastSeen) > s.config.TimeoutDuration {
-			timedOut = append(timedOut, pid)
+	for pid := range s.connectedPeers {
+		if _, ok := connectedSet[pid]; !ok {
+			gone = append(gone, pid)
 			delete(s.connectedPeers, pid)
+		}
+	}
+	for _, pid := range connected {
+		if _, ok := s.connectedPeers[pid]; !ok {
+			appeared = append(appeared, pid)
+			s.connectedPeers[pid] = now
 		}
 	}
 	s.mu.Unlock()
 
-	for _, pid := range timedOut {
+	for _, pid := range gone {
+		s.markOffline(pid, now)
+		s.logger.Debug("peer no longer connected", "peer_id", pid)
+	}
+	for _, pid := range appeared {
+		s.markOnline(pid, now)
+		s.logger.Debug("peer connected without notification", "peer_id", pid)
+	}
+	for _, pid := range connected {
 		s.cache.Set(pid, &PresenceStatus{
 			PeerID:    pid,
-			State:     Offline,
+			State:     Online,
+			LastSeen:  now,
 			CheckedAt: now,
 		})
-		s.queueChange(PresenceChange{
-			PeerID: pid,
-			State:  Offline,
-		})
-		s.logger.Debug("peer timed out", "peer_id", pid)
 	}
 
 	// Clean up expired cache entries

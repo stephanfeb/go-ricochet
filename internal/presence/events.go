@@ -37,7 +37,15 @@ func DecodePresenceEvent(data []byte) (*PresenceEvent, error) {
 	return &e, nil
 }
 
-// PresenceHeartbeat is a periodic liveness signal from a server.
+// PresenceHeartbeat is a periodic liveness signal from a server carrying
+// its online set.
+//
+// A large online set is split across pages: every page of one heartbeat
+// shares the HeartbeatSequence, Timestamp and OnlineCount, and carries its
+// own slice of OnlinePeerIDs. A subscriber has the whole set once it holds
+// all PageCount pages of a sequence. A heartbeat with PageCount of 0 or 1
+// is complete on its own, so a message from before paging still reads the
+// same way.
 type PresenceHeartbeat struct {
 	Type              string    `json:"type"` // "heartbeat"
 	ServerID          peer.ID   `json:"serverId"`
@@ -45,6 +53,8 @@ type PresenceHeartbeat struct {
 	OnlineCount       int       `json:"onlineCount"`
 	OnlinePeerIDs     []peer.ID `json:"onlinePeerIds"`
 	HeartbeatSequence uint64    `json:"heartbeatSequence"`
+	Page              int       `json:"page,omitempty"`
+	PageCount         int       `json:"pageCount,omitempty"`
 }
 
 // Encode serializes a PresenceHeartbeat to JSON bytes.

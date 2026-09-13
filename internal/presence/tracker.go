@@ -23,6 +23,18 @@ type Tracker struct {
 
 	// Callback for presence changes
 	onChange func(pid peer.ID, state PresenceState)
+
+	// partial holds the pages of a multi-page heartbeat received so far,
+	// per server, until the sequence is complete.
+	partial map[peer.ID]*heartbeatAssembly
+}
+
+// heartbeatAssembly collects the pages of one heartbeat sequence.
+type heartbeatAssembly struct {
+	seq    uint64
+	pages  map[int]struct{}
+	total  int
+	online map[peer.ID]bool
 }
 
 // NewTracker creates a new client-side presence tracker.
@@ -31,6 +43,7 @@ func NewTracker(node *node.Node, cache *Cache, logger *slog.Logger) *Tracker {
 		node:     node,
 		cache:    cache,
 		contacts: make(map[peer.ID]bool),
+		partial:  make(map[peer.ID]*heartbeatAssembly),
 		logger:   logger.With("component", "presence-tracker"),
 	}
 }
@@ -176,14 +189,65 @@ func (t *Tracker) processEvent(event *PresenceEvent) {
 	}
 }
 
+// processHeartbeat reconciles contacts against a server's online set. A
+// paged heartbeat is applied only once every page of its sequence has
+// arrived; acting on one page alone would mark every contact on the other
+// pages offline.
 func (t *Tracker) processHeartbeat(hb *PresenceHeartbeat) {
-	now := time.Now()
-
-	// Build set of online peers from heartbeat
-	onlineSet := make(map[peer.ID]bool, len(hb.OnlinePeerIDs))
-	for _, pid := range hb.OnlinePeerIDs {
-		onlineSet[pid] = true
+	onlineSet, complete := t.assembleHeartbeat(hb)
+	if !complete {
+		return
 	}
+	t.reconcileContacts(onlineSet)
+}
+
+// assembleHeartbeat folds a page into the server's pending sequence and
+// returns the full online set once the last page is in. A single-page
+// heartbeat completes immediately. A page from a newer sequence discards
+// whatever was pending: the server has moved on, and the old set would be
+// stale anyway.
+func (t *Tracker) assembleHeartbeat(hb *PresenceHeartbeat) (map[peer.ID]bool, bool) {
+	if hb.PageCount <= 1 {
+		onlineSet := make(map[peer.ID]bool, len(hb.OnlinePeerIDs))
+		for _, pid := range hb.OnlinePeerIDs {
+			onlineSet[pid] = true
+		}
+		return onlineSet, true
+	}
+	if hb.Page < 0 || hb.Page >= hb.PageCount {
+		t.logger.Warn("heartbeat page out of range",
+			"server", hb.ServerID, "page", hb.Page, "page_count", hb.PageCount)
+		return nil, false
+	}
+
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	asm := t.partial[hb.ServerID]
+	if asm == nil || asm.seq != hb.HeartbeatSequence || asm.total != hb.PageCount {
+		asm = &heartbeatAssembly{
+			seq:    hb.HeartbeatSequence,
+			pages:  make(map[int]struct{}, hb.PageCount),
+			total:  hb.PageCount,
+			online: make(map[peer.ID]bool, hb.OnlineCount),
+		}
+		t.partial[hb.ServerID] = asm
+	}
+	asm.pages[hb.Page] = struct{}{}
+	for _, pid := range hb.OnlinePeerIDs {
+		asm.online[pid] = true
+	}
+	if len(asm.pages) < asm.total {
+		return nil, false
+	}
+	delete(t.partial, hb.ServerID)
+	return asm.online, true
+}
+
+// reconcileContacts sets every contact Online or Offline according to the
+// online set and reports the ones that changed.
+func (t *Tracker) reconcileContacts(onlineSet map[peer.ID]bool) {
+	now := time.Now()
 
 	t.mu.RLock()
 	contacts := make(map[peer.ID]bool, len(t.contacts))

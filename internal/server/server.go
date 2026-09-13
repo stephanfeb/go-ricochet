@@ -464,6 +464,7 @@ func (s *Server) initializeServices(ctx context.Context) {
 		presCfg := &presence.PresenceConfig{
 			HeartbeatInterval: s.config.PresenceHeartbeatInterval,
 			TimeoutDuration:   s.config.PresenceTimeoutDuration,
+			CheckInterval:     s.config.PresenceCheckInterval,
 			BatchWindow:       s.config.PresenceBatchWindow,
 			MaxBatchSize:      50,
 			EnableBroadcast:   true,

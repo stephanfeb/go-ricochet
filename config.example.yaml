@@ -130,8 +130,15 @@ intervals:
   service_announcement_min: 60
   health_check_min: 5
   cleanup_min: 5
+  # presence_check_sec: how often the presence service reconciles its online
+  # set with the network's live connections. A peer is online for as long as
+  # it is connected; this sweep only repairs a missed connect or disconnect.
   presence_check_sec: 30
+  # presence_heartbeat_sec: how often the full online set is published on the
+  # presence topic, in pages of at most 4096 peer IDs.
   presence_heartbeat_sec: 60
+  # presence_timeout_sec: the TTL advertised on an Online event, i.e. how long
+  # a subscriber may trust it without a heartbeat. It never disconnects anyone.
   presence_timeout_sec: 120
 
 # Feature flags
