@@ -328,6 +328,10 @@ func (s *Server) buildForgeConfig() *forge.Config {
 	cfg.Host.YamuxKeepAlive = 15 * time.Second
 	cfg.Host.YamuxWriteTimeout = 10 * time.Second
 
+	// Connection cap. Enforced by the libp2p resource manager, with a
+	// connection manager trimming idle peers before the cap is reached.
+	cfg.Host.MaxConnections = s.config.MaxConcurrentConnections
+
 	// Relay
 	cfg.Host.EnableRelay = s.config.EnableRelay
 	cfg.Host.EnableRelayService = s.config.EnableRelayService

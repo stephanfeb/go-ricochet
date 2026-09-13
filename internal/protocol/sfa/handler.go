@@ -108,7 +108,7 @@ func (r *FeedResponse) StatusCode() int { return r.Status }
 func NewPipeline(logger *slog.Logger, pool *codec.BufferPool, reg *forge.Registry) *forge.Pipeline {
 	limiter := ratelimit.FromRegistry(reg).SFA
 
-	return forge.NewPipeline(logger,
+	return wire.Bounded(forge.NewPipeline(logger,
 		metrics.Middleware(metrics.FromRegistry(reg), "sfa", ""),
 		middleware.Recovery(),
 		feedResponseWriter(),
@@ -125,7 +125,7 @@ func NewPipeline(logger *slog.Logger, pool *codec.BufferPool, reg *forge.Registr
 			OpLIST:      listHandler,
 			OpBATCH_GET: batchGetHandler,
 		}),
-	).WithRegistry(reg)
+	).WithRegistry(reg), reg)
 }
 
 // isWriteClassifier inspects raw JSON bytes to classify CREATE, APPEND, and DELETE
@@ -163,7 +163,7 @@ func feedResponseWriter() forge.Middleware {
 			sc.Logger.Error("failed to marshal response", "error", err)
 			return
 		}
-		if err := codec.WriteFrame(sc.Stream, data); err != nil {
+		if err := sc.WriteFrame(data); err != nil {
 			sc.Logger.Error("failed to write response", "error", err)
 		}
 	}

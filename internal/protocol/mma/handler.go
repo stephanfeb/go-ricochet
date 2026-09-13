@@ -138,7 +138,7 @@ func NewPipeline(logger *slog.Logger, pool *codec.BufferPool, reg *forge.Registr
 		OpGetMailboxInfo: middleware.Chain(forge.JSONDeserialize[AdminRequest](), handleGetMailboxInfo),
 	}
 
-	return forge.NewPipeline(logger,
+	return wire.Bounded(forge.NewPipeline(logger,
 		metrics.Middleware(metrics.FromRegistry(reg), "mma", ""),
 		middleware.Recovery(),
 		adminResponseWriter(),
@@ -147,7 +147,7 @@ func NewPipeline(logger *slog.Logger, pool *codec.BufferPool, reg *forge.Registr
 		admission.Middleware(admission.FromRegistry(reg)),
 		dartNormalize(),
 		middleware.OperationRouter("operationType", routes),
-	).WithRegistry(reg)
+	).WithRegistry(reg), reg)
 }
 
 // adminResponseWriter writes an AdminResponse as a JSON frame. On pipeline
@@ -181,7 +181,7 @@ func adminResponseWriter() forge.Middleware {
 			sc.Logger.Error("failed to marshal response", "error", err)
 			return
 		}
-		if err := codec.WriteFrame(sc.Stream, data); err != nil {
+		if err := sc.WriteFrame(data); err != nil {
 			sc.Logger.Error("failed to write response", "error", err)
 		}
 	}

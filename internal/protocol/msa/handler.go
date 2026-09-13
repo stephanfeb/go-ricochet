@@ -39,7 +39,7 @@ const maxBatchMessages = 100
 func NewPipeline(logger *slog.Logger, pool *codec.BufferPool, reg *forge.Registry) *forge.Pipeline {
 	limiter := ratelimit.FromRegistry(reg).MSA
 
-	return forge.NewPipeline(logger,
+	return wire.Bounded(forge.NewPipeline(logger,
 		metrics.Middleware(metrics.FromRegistry(reg), "msa", "submit"),
 		middleware.Recovery(),
 		ackResponseWriter(),
@@ -48,7 +48,7 @@ func NewPipeline(logger *slog.Logger, pool *codec.BufferPool, reg *forge.Registr
 		admission.Middleware(admission.FromRegistry(reg)),
 		deserializeMessage(),
 		submitHandler,
-	).WithRegistry(reg)
+	).WithRegistry(reg), reg)
 }
 
 // BatchSubmitRequest is the JSON request format for a batch submission.
@@ -67,7 +67,7 @@ type BatchSubmitResponse struct {
 func NewBatchPipeline(logger *slog.Logger, pool *codec.BufferPool, reg *forge.Registry) *forge.Pipeline {
 	limiter := ratelimit.FromRegistry(reg).MSABatch
 
-	return forge.NewPipeline(logger,
+	return wire.Bounded(forge.NewPipeline(logger,
 		metrics.Middleware(metrics.FromRegistry(reg), "msa_batch", "batch_submit"),
 		middleware.Recovery(),
 		batchResponseWriter(),
@@ -75,7 +75,7 @@ func NewBatchPipeline(logger *slog.Logger, pool *codec.BufferPool, reg *forge.Re
 		middleware.RateLimitMiddleware(limiter),
 		admission.Middleware(admission.FromRegistry(reg)),
 		batchSubmitHandler,
-	).WithRegistry(reg)
+	).WithRegistry(reg), reg)
 }
 
 // batchResponseWriter writes a BatchSubmitResponse, converting a pipeline error
@@ -108,7 +108,7 @@ func batchResponseWriter() forge.Middleware {
 			sc.Logger.Error("failed to marshal batch ack", "error", err)
 			return
 		}
-		if err := codec.WriteFrame(sc.Stream, data); err != nil {
+		if err := sc.WriteFrame(data); err != nil {
 			sc.Logger.Error("failed to write batch ack", "error", err)
 		}
 	}
@@ -221,7 +221,7 @@ func ackResponseWriter() forge.Middleware {
 			sc.Logger.Error("failed to marshal ack", "error", err)
 			return
 		}
-		if err := codec.WriteFrame(sc.Stream, data); err != nil {
+		if err := sc.WriteFrame(data); err != nil {
 			sc.Logger.Error("failed to write ack", "error", err)
 		}
 	}

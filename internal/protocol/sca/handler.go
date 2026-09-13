@@ -91,7 +91,7 @@ func (r *CollectionResponse) StatusCode() int { return r.Status }
 func NewPipeline(logger *slog.Logger, pool *codec.BufferPool, reg *forge.Registry) *forge.Pipeline {
 	limiter := ratelimit.FromRegistry(reg).SCA
 
-	return forge.NewPipeline(logger,
+	return wire.Bounded(forge.NewPipeline(logger,
 		metrics.Middleware(metrics.FromRegistry(reg), "sca", ""),
 		middleware.Recovery(),
 		collectionResponseWriter(),
@@ -108,7 +108,7 @@ func NewPipeline(logger *slog.Logger, pool *codec.BufferPool, reg *forge.Registr
 			OpLIST:   handleList,
 			OpQUERY:  handleQuery,
 		}),
-	).WithRegistry(reg)
+	).WithRegistry(reg), reg)
 }
 
 // isWriteClassifier inspects the raw JSON bytes to determine if a request is
@@ -158,7 +158,7 @@ func collectionResponseWriter() forge.Middleware {
 			sc.Logger.Error("failed to marshal response", "error", err)
 			return
 		}
-		if err := codec.WriteFrame(sc.Stream, data); err != nil {
+		if err := sc.WriteFrame(data); err != nil {
 			sc.Logger.Error("failed to write response", "error", err)
 		}
 	}

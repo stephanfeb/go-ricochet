@@ -18,10 +18,10 @@ path to horizontal scale.**
 
 | # | Finding | Status | Where it lives now |
 |---|---------|--------|--------------------|
-| 1 | `NullResourceManager` disables all libp2p limits | **Open** — and no longer in this repo | `../go-p2p-forge/host/host.go:89` |
+| 1 | `NullResourceManager` disables all libp2p limits | **Fixed** (audit B5, 2026-09-13) — forge installs a real resource manager and connection manager sized from `max_connections`, caps yamux inbound streams per connection, and bounds every inbound stream with an idle and a request timeout | `../go-p2p-forge/host/limits.go`, `../go-p2p-forge/pipeline.go` |
 | 2 | DB pool size of 10 | **Fixed** (`42948dc`) — 25 default / 50 production | `internal/core/config.go` |
 | 3 | `GetNextSequence` race | **Fixed** (`c8b0c4a`) — `UPDATE ... RETURNING` in the delivery transaction | `internal/storage/postgres/postgres.go` |
-| 4 | `MaxConcurrentConnections` never enforced | **Open** — parsed, never read | `internal/core/config.go` only |
+| 4 | `MaxConcurrentConnections` never enforced | **Fixed** (audit B5) — passed to forge as the hard connection cap; `connection_timeout` is now the per-stream idle budget | `internal/server/server.go` `buildForgeConfig`, `internal/protocol/wire/timeouts.go` |
 | 5 | Rate-limit memory leak | **Fixed** — MTA closed by A4 | forge `middleware/tokenbucket.go` / `internal/ratelimit/limiters.go` |
 | 6 | Mailbox cache has no eviction | **Open** | `internal/mda/delivery.go:26` |
 | 7 | Global mutex on MTA rate limiter | **Fixed** — MTA now uses the sharded limiter | `internal/mta/router.go` |
@@ -119,10 +119,12 @@ bloat the autovacuum then has to chase. Batch it with a bounded loop.
 
 ### N6 — there is no connection manager at all
 
-Beyond `NullResourceManager` (#1), forge sets no `libp2p.ConnectionManager` either. There is no
-low/high watermark, no trimming, no grace period. Combined with #4 — `MaxConcurrentConnections`
-being config-only — the server has **no admission control of any kind** on the connection path.
-For a "large connection counts" target this is the first thing that has to change.
+**Closed with #1 and #4 (audit B5).** Forge now creates a `connmgr.BasicConnMgr` with the
+high-water mark at 90% and the low-water mark at 80% of `max_connections`, a 30 s grace period
+for new connections, under a resource manager whose system and transient limits are derived
+from the same number. The frame decoder no longer allocates a declared frame size up front, so a
+peer that sends only a length prefix costs nothing until bytes arrive, and it is dropped after
+the idle timeout.
 
 ---
 

@@ -157,7 +157,7 @@ func NewPipeline(logger *slog.Logger, pool *codec.BufferPool, reg *forge.Registr
 		OpDIRECTORY: middleware.Chain(forge.JSONDeserialize[DocRequest](), handleDirectory),
 	}
 
-	return forge.NewPipeline(logger,
+	return wire.Bounded(forge.NewPipeline(logger,
 		metrics.Middleware(metrics.FromRegistry(reg), "sda", ""),
 		middleware.Recovery(),
 		docResponseWriter(),
@@ -166,7 +166,7 @@ func NewPipeline(logger *slog.Logger, pool *codec.BufferPool, reg *forge.Registr
 		admission.Middleware(admission.FromRegistry(reg)),
 		commonValidation(),
 		middleware.OperationRouter("operation", routes),
-	).WithRegistry(reg)
+	).WithRegistry(reg), reg)
 }
 
 // isWriteClassifier peeks at the raw bytes to determine if the request is a write operation.
@@ -212,7 +212,7 @@ func docResponseWriter() forge.Middleware {
 			sc.Logger.Error("failed to marshal response", "error", err)
 			return
 		}
-		if err := codec.WriteFrame(sc.Stream, data); err != nil {
+		if err := sc.WriteFrame(data); err != nil {
 			sc.Logger.Error("failed to write response", "error", err)
 		}
 	}

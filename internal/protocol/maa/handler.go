@@ -44,7 +44,7 @@ func NewPipeline(logger *slog.Logger, pool *codec.BufferPool, reg *forge.Registr
 		"deleteMessages": middleware.Chain(forge.JSONDeserialize[core.DeleteMessagesRequest](), handleDeleteMessages),
 	}
 
-	return forge.NewPipeline(logger,
+	return wire.Bounded(forge.NewPipeline(logger,
 		metrics.Middleware(metrics.FromRegistry(reg), "maa", ""),
 		middleware.Recovery(),
 		maaResponseWriter(),
@@ -53,7 +53,7 @@ func NewPipeline(logger *slog.Logger, pool *codec.BufferPool, reg *forge.Registr
 		admission.Middleware(admission.FromRegistry(reg)),
 		defaultOperationType(),
 		middleware.OperationRouter("operationType", routes),
-	).WithRegistry(reg)
+	).WithRegistry(reg), reg)
 }
 
 // ErrorResponse is the MAA failure envelope.
@@ -99,7 +99,7 @@ func maaResponseWriter() forge.Middleware {
 
 		// Check for pre-encoded raw bytes (compound retrieve response).
 		if raw, ok := sc.Response.(rawResponse); ok {
-			if err := codec.WriteFrame(sc.Stream, []byte(raw)); err != nil {
+			if err := sc.WriteFrame([]byte(raw)); err != nil {
 				sc.Logger.Error("failed to write raw response", "error", err)
 			}
 			return
@@ -111,7 +111,7 @@ func maaResponseWriter() forge.Middleware {
 			sc.Logger.Error("failed to marshal response", "error", err)
 			return
 		}
-		if err := codec.WriteFrame(sc.Stream, data); err != nil {
+		if err := sc.WriteFrame(data); err != nil {
 			sc.Logger.Error("failed to write response", "error", err)
 		}
 	}

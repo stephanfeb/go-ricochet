@@ -68,7 +68,7 @@ func (n *Notifier) notifyDirect(ctx context.Context, ownerID peer.ID, notificati
 	}
 
 	// Create a timeout context for the notification.
-	notifyCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	notifyCtx, cancel := context.WithTimeout(ctx, notifyWriteTimeout)
 	defer cancel()
 
 	stream, err := n.host.NewStream(notifyCtx, ownerID, notify.ProtocolID)
@@ -84,13 +84,17 @@ func (n *Notifier) notifyDirect(ctx context.Context, ownerID peer.ID, notificati
 		return
 	}
 
-	if err := codec.WriteFrame(stream, data); err != nil {
+	if err := codec.WriteFrameWithTimeout(stream, data, notifyWriteTimeout); err != nil {
 		n.logger.Debug("cannot write notification", "peer_id", ownerID.String(), "error", err)
 		return
 	}
 
 	n.logger.Debug("sent direct notification", "peer_id", ownerID.String(), "mailbox", notification.MailboxPath)
 }
+
+// notifyWriteTimeout bounds opening the notification stream and writing to
+// it, so a client that has gone quiet cannot hold the notifier.
+const notifyWriteTimeout = 5 * time.Second
 
 // notifyPubSub publishes a notification via GossipSub.
 func (n *Notifier) notifyPubSub(ctx context.Context, ownerPeerID, folderPath string, notification *notify.Notification) {
