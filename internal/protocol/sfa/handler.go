@@ -214,6 +214,24 @@ func commonValidation() forge.Middleware {
 			}
 		}
 
+		// Title and description are stored and listed; the entry type is
+		// an index key. Bound them before any operation sees them.
+		for _, f := range []struct {
+			name  string
+			value string
+			max   int
+		}{
+			{"title", req.Title, wire.MaxFeedTitleLength},
+			{"description", req.Description, wire.MaxFeedDescriptionLength},
+			{"entryType", req.EntryType, wire.MaxEntryTypeLength},
+		} {
+			if err := wire.CheckString(f.name, f.value, f.max); err != nil {
+				sc.Response = &FeedResponse{Status: StatusBadRequest,
+					Headers: map[string]any{"Error": err.Error()}}
+				return
+			}
+		}
+
 		// Enforce owner-only access for write operations. The one exception
 		// is APPEND to a feed its owner created as collaborative. A missing
 		// feed is a 404 for a non-owner: the server used to create it on

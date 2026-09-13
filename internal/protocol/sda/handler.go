@@ -360,6 +360,11 @@ func handlePut(sc *forge.StreamContext, next func()) {
 	if ct, ok := req.Headers["Content-Type"]; ok {
 		contentType = ct
 	}
+	if err := wire.CheckString("Content-Type", contentType, wire.MaxContentTypeLength); err != nil {
+		sc.Response = &DocResponse{Status: StatusBadRequest,
+			Headers: map[string]any{"Error": err.Error()}}
+		return
+	}
 
 	// If-Match for conditional put (optimistic locking)
 	var ifMatch *string
@@ -587,6 +592,12 @@ func handleBatchPut(sc *forge.StreamContext, next func()) {
 		contentType := bd.ContentType
 		if contentType == "" {
 			contentType = "application/octet-stream"
+		}
+		if err := wire.CheckString("contentType", contentType, wire.MaxContentTypeLength); err != nil {
+			results[i].Status = StatusBadRequest
+			results[i].Error = err.Error()
+			decoded = append(decoded, pending{})
+			continue
 		}
 		var ifMatch *string
 		if bd.IfMatch != "" {
@@ -863,6 +874,11 @@ func handleDirectoryJoin(sc *forge.StreamContext, req *DocRequest) {
 			Headers: map[string]any{"Error": "displayName is required"}}
 		return
 	}
+	if err := checkListingFields(listing.DisplayName, listing.Bio, listing.AvatarHash, listing.Extras); err != nil {
+		sc.Response = &DocResponse{Status: StatusBadRequest,
+			Headers: map[string]any{"Error": err.Error()}}
+		return
+	}
 
 	ctx, cancel := context.WithTimeout(sc.Ctx, 30*time.Second)
 	defer cancel()
@@ -1022,6 +1038,12 @@ func maybeUpdateDirectoryListing(ctx context.Context, logger *slog.Logger, store
 	if listing.DisplayName == "" {
 		return
 	}
+	if err := checkListingFields(listing.DisplayName, listing.Bio, listing.AvatarHash, listing.Extras); err != nil {
+		// The document itself was stored within the document size limit;
+		// only its projection into the directory is refused.
+		logger.Warn("directory-listing document not materialized", "error", err)
+		return
+	}
 
 	entry := &storage.DirectoryEntry{
 		OwnerPeerID: ownerID.String(),
@@ -1069,6 +1091,21 @@ func writeErrorResponse(logger *slog.Logger, err error) *DocResponse {
 }
 
 // validatePath checks that a document path conforms to requirements.
+// checkListingFields bounds what a directory listing may carry; each field
+// is stored and echoed in every browse result.
+func checkListingFields(displayName, bio, avatarHash string, extras map[string]any) error {
+	if err := wire.CheckString("displayName", displayName, wire.MaxDisplayNameLength); err != nil {
+		return err
+	}
+	if err := wire.CheckString("bio", bio, wire.MaxBioLength); err != nil {
+		return err
+	}
+	if err := wire.CheckString("avatarHash", avatarHash, wire.MaxAvatarHashLength); err != nil {
+		return err
+	}
+	return wire.CheckJSONSize("extras", extras, wire.MaxDirectoryExtrasBytes)
+}
+
 func validatePath(path string) error {
 	if path == "" {
 		return fmt.Errorf("path is required")

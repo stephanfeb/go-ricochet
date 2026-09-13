@@ -141,6 +141,10 @@ func classify(err error) (status int, retryAfter time.Duration, msg string) {
 	if errors.As(err, &badPath) {
 		return StatusBadRequest, 0, badPath.Error()
 	}
+	var badField *FieldError
+	if errors.As(err, &badField) {
+		return StatusBadRequest, 0, badField.Error()
+	}
 	var invalid *mta.ValidationError
 	if errors.As(err, &invalid) {
 		return StatusBadRequest, 0, invalid.Error()

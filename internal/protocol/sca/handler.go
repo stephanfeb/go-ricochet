@@ -199,6 +199,19 @@ func commonValidation() forge.Middleware {
 			}
 		}
 
+		// A key and a name are index keys and listing text; bound them
+		// before any operation sees them.
+		if err := wire.CheckString("key", req.Key, wire.MaxCollectionKeyLength); err != nil {
+			sc.Response = &CollectionResponse{Status: StatusBadRequest,
+				Headers: map[string]any{"Error": err.Error()}}
+			return
+		}
+		if err := wire.CheckString("name", req.Name, wire.MaxCollectionNameLength); err != nil {
+			sc.Response = &CollectionResponse{Status: StatusBadRequest,
+				Headers: map[string]any{"Error": err.Error()}}
+			return
+		}
+
 		// Enforce owner-only access for write operations
 		isWrite := req.Operation == OpCREATE || req.Operation == OpPUT || req.Operation == OpDELETE
 		if isWrite && sc.PeerID != ownerID {
