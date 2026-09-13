@@ -3,6 +3,7 @@ package mda
 import (
 	"context"
 	"log/slog"
+	"sync/atomic"
 	"time"
 
 	"github.com/libp2p/go-libp2p/core/host"
@@ -22,6 +23,9 @@ type Notifier struct {
 	node     *node.Node
 	presence *presence.Monitor
 	logger   *slog.Logger
+
+	workers chan struct{}
+	dropped atomic.Int64
 }
 
 // NewNotifier creates a new push notification sender.
@@ -34,8 +38,26 @@ func NewNotifier(h host.Host, node *node.Node, pm *presence.Monitor, logger *slo
 	}
 }
 
+// WithWorkers bounds how many notifications may be in flight at once. This
+// is worker_threads: each notification is a presence check and a stream
+// open to a client that may be slow or gone, and before the bound there was
+// one goroutine per delivery with nothing to stop a burst of deliveries
+// becoming a burst of goroutines. Zero or less leaves the bound unset.
+func (n *Notifier) WithWorkers(count int) *Notifier {
+	if count > 0 {
+		n.workers = make(chan struct{}, count)
+	}
+	return n
+}
+
+// Dropped reports how many notifications were skipped because every worker
+// was busy.
+func (n *Notifier) Dropped() int64 { return n.dropped.Load() }
+
 // NotifyNewMessage sends a push notification for a newly delivered message.
-// This is fire-and-forget -- it never blocks message delivery.
+// This is fire-and-forget -- it never blocks message delivery, and when all
+// workers are busy the notification is dropped rather than queued: the
+// client polls anyway, and a queue here would be a second mailbox.
 func (n *Notifier) NotifyNewMessage(ctx context.Context, addr *core.MailboxAddress, msg *core.Message) {
 	notification := &notify.Notification{
 		MailboxPath:  addr.FolderPath,
@@ -45,11 +67,40 @@ func (n *Notifier) NotifyNewMessage(ctx context.Context, addr *core.MailboxAddre
 		ServerPeerID: n.host.ID().String(),
 	}
 
-	switch addr.Type {
-	case core.MailboxPrivate:
-		go n.notifyDirect(ctx, addr.OwnerID, notification)
-	case core.MailboxShared, core.MailboxPublic:
-		go n.notifyPubSub(ctx, addr.OwnerID.String(), addr.FolderPath, notification)
+	// The request that delivered the message is answered before this
+	// notification goes out, and its context is cancelled with it.
+	ctx = context.WithoutCancel(ctx)
+
+	release, ok := n.acquireWorker()
+	if !ok {
+		n.dropped.Add(1)
+		n.logger.Debug("notification dropped: all workers busy",
+			"mailbox", addr.FullPath(), "workers", cap(n.workers))
+		return
+	}
+
+	go func() {
+		defer release()
+		switch addr.Type {
+		case core.MailboxPrivate:
+			n.notifyDirect(ctx, addr.OwnerID, notification)
+		case core.MailboxShared, core.MailboxPublic:
+			n.notifyPubSub(ctx, addr.OwnerID.String(), addr.FolderPath, notification)
+		}
+	}()
+}
+
+// acquireWorker takes a worker slot without waiting. With no bound
+// configured every call succeeds.
+func (n *Notifier) acquireWorker() (release func(), ok bool) {
+	if n.workers == nil {
+		return func() {}, true
+	}
+	select {
+	case n.workers <- struct{}{}:
+		return func() { <-n.workers }, true
+	default:
+		return nil, false
 	}
 }
 

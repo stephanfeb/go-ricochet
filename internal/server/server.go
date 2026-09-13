@@ -36,6 +36,7 @@ import (
 	"github.com/twostack/go-ricochet/internal/registry"
 	"github.com/twostack/go-ricochet/internal/storage"
 	"github.com/twostack/go-ricochet/internal/storage/postgres"
+	"github.com/twostack/go-ricochet/internal/trust"
 )
 
 // Server is the main Ricochet store-and-forward server.
@@ -52,6 +53,7 @@ type Server struct {
 	admission   *admission.Controller
 	metrics     *metrics.Metrics
 	capacity    *capacity.Sampler
+	trusted     *trust.Peers
 	opsSrv      *opsapi.Server
 
 	// bufferPool is shared by every pipeline. It is a field rather than a
@@ -99,6 +101,18 @@ func (s *Server) Start(parentCtx context.Context) error {
 		return fmt.Errorf("initialize storage: %w", err)
 	}
 
+	// The trusted-peer set backs enable_authentication (as a connection
+	// gate) and enable_forwarding (as the set that may forward). Parsed once,
+	// before the host exists, since the gate is installed at host creation.
+	trusted, err := trust.Parse(s.config.TrustedPeers)
+	if err != nil {
+		return fmt.Errorf("trusted peers: %w", err)
+	}
+	s.trusted = trusted
+	if s.config.EnableForwarding && trusted.Len() == 0 {
+		s.logger.Warn("enable_forwarding is on but trusted_peers is empty; no peer may forward")
+	}
+
 	// Build and start forge server (host + node)
 	if err := s.initializeP2P(s.ctx); err != nil {
 		return fmt.Errorf("initialize p2p: %w", err)
@@ -116,6 +130,7 @@ func (s *Server) Start(parentCtx context.Context) error {
 	s.forgeServer.Provide(admission.RegistryKey, s.admission)
 	s.forgeServer.Provide(metrics.RegistryKey, s.metrics)
 	s.forgeServer.Provide(capacity.RegistryKey, s.capacity)
+	s.forgeServer.Provide(trust.RegistryKey, s.trusted)
 
 	// Register protocol handlers
 	s.registerProtocolHandlers()
@@ -332,6 +347,13 @@ func (s *Server) buildForgeConfig() *forge.Config {
 	// connection manager trimming idle peers before the cap is reached.
 	cfg.Host.MaxConnections = s.config.MaxConcurrentConnections
 
+	// Authentication: with it on, only trusted peers may connect at all.
+	if s.config.EnableAuthentication {
+		cfg.Host.ConnectionGater = trust.NewGater(s.trusted, s.logger)
+		s.logger.Info("authentication enabled: inbound connections limited to trusted peers",
+			"trusted_peers", s.trusted.Len())
+	}
+
 	// Relay
 	cfg.Host.EnableRelay = s.config.EnableRelay
 	cfg.Host.EnableRelayService = s.config.EnableRelayService
@@ -411,12 +433,14 @@ func (s *Server) initializeServices(ctx context.Context) {
 	s.logger.Info("MDA initialized")
 
 	// Create MTA
-	s.mtaRtr = mta.NewRouter(s.mdaSrv, s.limiters.MTA, s.logger)
+	s.mtaRtr = mta.NewRouter(s.mdaSrv, s.limiters.MTA, s.logger).
+		WithForwarding(s.config.EnableForwarding, s.trusted)
 	s.logger.Info("MTA initialized")
 
 	// Create push notifier
 	if s.config.EnablePushDelivery {
-		notifier := mda.NewNotifier(s.forgeServer.Host(), s.forgeServer.Node(), s.presenceMonitor, s.logger)
+		notifier := mda.NewNotifier(s.forgeServer.Host(), s.forgeServer.Node(), s.presenceMonitor, s.logger).
+			WithWorkers(s.config.WorkerThreads)
 		s.mdaSrv.SetNotifier(notifier)
 		s.logger.Info("push notifier initialized")
 	}

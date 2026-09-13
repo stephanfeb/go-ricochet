@@ -1,7 +1,6 @@
 package sca
 
 import (
-	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -97,6 +96,7 @@ func NewPipeline(logger *slog.Logger, pool *codec.BufferPool, reg *forge.Registr
 		middleware.Recovery(),
 		collectionResponseWriter(),
 		forge.FrameDecodeMiddleware(pool),
+		wire.RequestDeadline(reg),
 		middleware.DualRateLimitMiddleware(limiter, isWriteClassifier),
 		admission.Middleware(admission.FromRegistry(reg)),
 		capacity.WriteGate(capacity.FromRegistry(reg), isWriteClassifier),
@@ -236,7 +236,7 @@ func handleCreate(sc *forge.StreamContext, next func()) {
 		return
 	}
 
-	ctx := context.Background()
+	ctx := sc.Ctx
 	coll, err := store.CreateCollection(ctx, ownerID, req.Path, req.Name)
 	if err != nil {
 		sc.Logger.Error("failed to create collection", "error", err)
@@ -287,7 +287,7 @@ func handleGetMetadata(sc *forge.StreamContext, next func()) {
 		return
 	}
 
-	ctx := context.Background()
+	ctx := sc.Ctx
 	coll, err := store.GetCollection(ctx, ownerID, req.Path)
 	if err != nil {
 		sc.Logger.Error("failed to get collection", "error", err)
@@ -327,7 +327,7 @@ func handleGetItem(sc *forge.StreamContext, next func()) {
 	req := sc.Request.(*CollectionRequest)
 	ownerID := ownerIDFrom(sc)
 
-	ctx := context.Background()
+	ctx := sc.Ctx
 	coll, err := store.GetCollection(ctx, ownerID, req.Path)
 	if err != nil {
 		sc.Logger.Error("failed to get collection", "error", err)
@@ -378,7 +378,7 @@ func handlePut(sc *forge.StreamContext, next func()) {
 		return
 	}
 
-	ctx := context.Background()
+	ctx := sc.Ctx
 
 	// Look up collection
 	coll, err := store.GetCollection(ctx, ownerID, req.Path)
@@ -463,7 +463,7 @@ func handleDeleteCollection(sc *forge.StreamContext, next func()) {
 		return
 	}
 
-	ctx := context.Background()
+	ctx := sc.Ctx
 	deleted, err := store.DeleteCollection(ctx, ownerID, req.Path)
 	if err != nil {
 		sc.Logger.Error("failed to delete collection", "error", err)
@@ -484,7 +484,7 @@ func handleDeleteItem(sc *forge.StreamContext, next func()) {
 	req := sc.Request.(*CollectionRequest)
 	ownerID := ownerIDFrom(sc)
 
-	ctx := context.Background()
+	ctx := sc.Ctx
 	coll, err := store.GetCollection(ctx, ownerID, req.Path)
 	if err != nil {
 		sc.Logger.Error("failed to get collection", "error", err)
@@ -528,7 +528,7 @@ func handleListCollections(sc *forge.StreamContext, next func()) {
 	store, _ := forge.ServiceFrom[storage.Storage](sc, "storage")
 	ownerID := ownerIDFrom(sc)
 
-	ctx := context.Background()
+	ctx := sc.Ctx
 	collections, err := store.ListCollections(ctx, ownerID)
 	if err != nil {
 		sc.Logger.Error("failed to list collections", "error", err)
@@ -576,7 +576,7 @@ func handleListKeys(sc *forge.StreamContext, next func()) {
 	req := sc.Request.(*CollectionRequest)
 	ownerID := ownerIDFrom(sc)
 
-	ctx := context.Background()
+	ctx := sc.Ctx
 	coll, err := store.GetCollection(ctx, ownerID, req.Path)
 	if err != nil {
 		sc.Logger.Error("failed to get collection", "error", err)
@@ -636,7 +636,7 @@ func handleQuery(sc *forge.StreamContext, next func()) {
 		return
 	}
 
-	ctx := context.Background()
+	ctx := sc.Ctx
 	coll, err := store.GetCollection(ctx, ownerID, req.Path)
 	if err != nil {
 		sc.Logger.Error("failed to get collection", "error", err)

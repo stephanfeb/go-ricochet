@@ -1,7 +1,6 @@
 package msa
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -45,6 +44,7 @@ func NewPipeline(logger *slog.Logger, pool *codec.BufferPool, reg *forge.Registr
 		middleware.Recovery(),
 		ackResponseWriter(),
 		forge.FrameDecodeMiddleware(pool),
+		wire.RequestDeadline(reg),
 		middleware.RateLimitMiddleware(limiter),
 		admission.Middleware(admission.FromRegistry(reg)),
 		capacity.WriteGate(capacity.FromRegistry(reg), nil),
@@ -74,6 +74,7 @@ func NewBatchPipeline(logger *slog.Logger, pool *codec.BufferPool, reg *forge.Re
 		middleware.Recovery(),
 		batchResponseWriter(),
 		forge.FrameDecodeMiddleware(pool),
+		wire.RequestDeadline(reg),
 		middleware.RateLimitMiddleware(limiter),
 		admission.Middleware(admission.FromRegistry(reg)),
 		capacity.WriteGate(capacity.FromRegistry(reg), nil),
@@ -149,7 +150,7 @@ func batchSubmitHandler(sc *forge.StreamContext, next func()) {
 		return
 	}
 
-	ctx := context.Background()
+	ctx := sc.Ctx
 	acks := make([]core.StoreAck, 0, len(req.Messages))
 	accepted := 0
 
@@ -249,24 +250,24 @@ func submitHandler(sc *forge.StreamContext, next func()) {
 	router, _ := forge.ServiceFrom[*mta.Router](sc, "mta")
 	msg := sc.Request.(*core.Message)
 
-	// Validate sender matches caller
-	if msg.SenderPeerID != sc.PeerID.String() {
-		sc.Response = &core.StoreAck{
-			Success:      false,
-			ErrorMessage: "unauthorized: sender does not match connection",
-		}
-		return
-	}
-
 	sc.Logger.Info("submitting message",
 		"message_id", msg.MessageID,
 		"from", msg.SenderPeerID,
 		"to", msg.RecipientPeerID,
+		"via", sc.PeerID.String(),
 	)
 
-	// Hand off to MTA for routing and delivery
-	ctx := context.Background()
-	messageID, err := router.AcceptMessage(ctx, msg, sc.PeerID)
+	// Hand off to MTA for routing and delivery. A submission whose sender is
+	// not the peer on the connection is a forwarded one, which the router
+	// accepts only from trusted forwarders with enable_forwarding on.
+	ctx := sc.Ctx
+	var messageID string
+	var err error
+	if msg.SenderPeerID == sc.PeerID.String() {
+		messageID, err = router.AcceptMessage(ctx, msg, sc.PeerID)
+	} else {
+		messageID, err = router.AcceptForwarded(ctx, msg, sc.PeerID)
+	}
 
 	ack := &core.StoreAck{
 		MessageID: messageID,

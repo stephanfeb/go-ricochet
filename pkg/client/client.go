@@ -210,7 +210,24 @@ func (c *Client) SendMessage(ctx context.Context, recipient peer.ID, payload []b
 	if err != nil {
 		return nil, err
 	}
+	return c.submit(ctx, msg)
+}
 
+// ForwardMessage submits a message on its original sender's behalf, as a
+// server or gateway relaying mail would. The message goes as it is: sender,
+// recipient, payload and flags are the original sender's, and the server
+// marks it forwarded and advances its hop count. Servers accept forwarded
+// submissions only from peers they list as trusted, with forwarding enabled;
+// otherwise the result carries a 403.
+func (c *Client) ForwardMessage(ctx context.Context, msg *core.Message) (*SendResult, error) {
+	if msg == nil {
+		return nil, fmt.Errorf("forward: nil message")
+	}
+	return c.submit(ctx, msg)
+}
+
+// submit writes one message to the selected server and reads its ack.
+func (c *Client) submit(ctx context.Context, msg *core.Message) (*SendResult, error) {
 	msgData, err := frame.EncodeMessage(msg)
 	if err != nil {
 		return nil, fmt.Errorf("encode message: %w", err)

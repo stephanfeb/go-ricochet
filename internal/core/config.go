@@ -2,6 +2,7 @@ package core
 
 import (
 	"fmt"
+	"github.com/libp2p/go-libp2p/core/peer"
 	"net"
 	"os"
 	"strconv"
@@ -485,7 +486,6 @@ func ProductionConfig() *ServerConfig {
 	cfg.MaxStorageBytes = 50 * 1024 * 1024 * 1024 // 50GB
 	cfg.MaxConcurrentConnections = 10000
 	cfg.Storage.Postgres.PoolSize = 50
-	cfg.EnableAuthentication = true
 	return cfg
 }
 
@@ -495,7 +495,6 @@ func HighCapacityConfig() *ServerConfig {
 	cfg.MaxStorageBytes = 100 * 1024 * 1024 * 1024 // 100GB
 	cfg.MaxConcurrentConnections = 50000
 	cfg.EnableForwarding = true
-	cfg.EnableAuthentication = true
 	cfg.WorkerThreads = 8
 	return cfg
 }
@@ -519,6 +518,23 @@ func (c *ServerConfig) Validate() error {
 	}
 	if c.MaxEntriesPerFeed <= 0 {
 		return fmt.Errorf("max_entries_per_feed must be positive")
+	}
+	// Authentication is an allow-list: on with nobody listed would refuse
+	// every connection, which no operator has ever meant. Presets therefore
+	// cannot turn it on; only a config file naming the peers can.
+	if c.EnableAuthentication && len(c.TrustedPeers) == 0 {
+		return fmt.Errorf("enable_authentication requires at least one entry in trusted_peers")
+	}
+	for _, p := range c.TrustedPeers {
+		if _, err := peer.Decode(p); err != nil {
+			return fmt.Errorf("trusted_peers entry %q is not a peer ID: %w", p, err)
+		}
+	}
+	if c.WorkerThreads < 0 {
+		return fmt.Errorf("worker_threads must not be negative")
+	}
+	if c.MessageTimeout < 0 || c.ConnectionTimeout < 0 {
+		return fmt.Errorf("timeouts must not be negative")
 	}
 	// A ratio above 1 would make the near-capacity count silently unreachable
 	// for a mailbox that is merely full, which is the state it exists to warn
@@ -646,6 +662,10 @@ type yamlFileConfig struct {
 		EnableHolePunching       bool `yaml:"enable_hole_punching"`
 		EnableAutoNAT            bool `yaml:"enable_autonat"`
 	} `yaml:"features"`
+
+	Security struct {
+		TrustedPeers []string `yaml:"trusted_peers"`
+	} `yaml:"security"`
 
 	RelayLimits struct {
 		MaxReservations        int   `yaml:"max_reservations"`
@@ -822,6 +842,11 @@ func LoadConfigFromFile(path string, base *ServerConfig) error {
 	base.EnableAutoRelay = yc.Features.EnableAutoRelay
 	base.EnableHolePunching = yc.Features.EnableHolePunching
 	base.EnableAutoNAT = yc.Features.EnableAutoNAT
+
+	// Security section
+	if len(yc.Security.TrustedPeers) > 0 {
+		base.TrustedPeers = yc.Security.TrustedPeers
+	}
 
 	// Relay limits section
 	if yc.RelayLimits.MaxReservations > 0 {

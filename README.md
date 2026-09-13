@@ -264,12 +264,23 @@ cl.RegisterNotificationHandler(func(n *notify.Notification) {
 | Setting | Default | Development | Production | High-Capacity |
 |---------|---------|-------------|------------|---------------|
 | Storage | 10 GB | 1 GB | 50 GB | 100 GB |
-| Connections | 10,000 | 100 | 10,000 | 50,000 |
+| Connections (hard cap) | 10,000 | 100 | 10,000 | 50,000 |
 | Messages/Mailbox | 1,000 | 1,000 | 1,000 | 1,000 |
+| Folders/Owner | 100 | 100 | 100 | 100 |
 | Retention | 30 days | 30 days | 30 days | 30 days |
-| Authentication | off | off | on | on |
-| Rate Limit | 100/min | 100/min | 100/min | 100/min |
-| Workers | 4 | 4 | 4 | 8 |
+| Authentication | off | off | off | off |
+| Forwarding | off | off | off | on |
+| Rate limits | off | off | off | off |
+| Push workers | 4 | 4 | 4 | 8 |
+
+Every row is enforced. Authentication is an allow-list, so no preset can turn
+it on: set `features.enable_authentication: true` and list the peers in
+`security.trusted_peers`, and only those peers may connect. Forwarding lets a
+trusted peer submit mail on another sender's behalf; with nobody trusted it is
+on but unusable. Rate limits are off by design — the server bounds
+concurrency (`admission_control`) and connections rather than request rate —
+and can be turned on per protocol under `rate_limits`. Select a preset with
+`--development`, `--production` or `--high-capacity`.
 
 ## Security
 
@@ -282,6 +293,15 @@ Messages can be encrypted client-side using NaCl box:
 - **Wire Format**: `[24-byte nonce][ciphertext + Poly1305 tag]`
 
 The server never sees plaintext when encryption is enabled. Keys are derived from the libp2p peer identity, so no additional key exchange is needed.
+
+### Trusted Peers
+
+`security.trusted_peers` is one list with two uses. With
+`enable_authentication` on it is the set of peers allowed to connect at all;
+an untrusted peer costs one Noise handshake and is refused before any stream
+opens. With `enable_forwarding` on it is the set of peers allowed to submit a
+message whose sender is not themselves: the message is marked forwarded, its
+hop count advanced, and it is refused past the hop limit.
 
 ### Transport Security
 

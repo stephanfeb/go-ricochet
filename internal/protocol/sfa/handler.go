@@ -1,7 +1,6 @@
 package sfa
 
 import (
-	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -116,6 +115,7 @@ func NewPipeline(logger *slog.Logger, pool *codec.BufferPool, reg *forge.Registr
 		middleware.Recovery(),
 		feedResponseWriter(),
 		forge.FrameDecodeMiddleware(pool),
+		wire.RequestDeadline(reg),
 		middleware.DualRateLimitMiddleware(limiter, isWriteClassifier),
 		admission.Middleware(admission.FromRegistry(reg)),
 		capacity.WriteGate(capacity.FromRegistry(reg), isWriteClassifier),
@@ -228,7 +228,7 @@ func commonValidation() forge.Middleware {
 				return
 			}
 			store, _ := forge.ServiceFrom[storage.Storage](sc, "storage")
-			feed, err := store.GetFeed(context.Background(), ownerID, req.Path)
+			feed, err := store.GetFeed(sc.Ctx, ownerID, req.Path)
 			if err != nil {
 				sc.Response = &FeedResponse{Status: StatusInternalError,
 					Headers: map[string]any{"Error": "failed to check feed"}}
@@ -265,7 +265,7 @@ func createHandler(sc *forge.StreamContext, next func()) {
 	req := sc.Request.(*FeedRequest)
 	ownerID, _ := sc.Get("ownerID")
 
-	ctx := context.Background()
+	ctx := sc.Ctx
 	feed, err := store.CreateFeed(ctx, ownerID.(peer.ID), req.Path, req.Title, req.Description, req.Collaborative)
 	if err != nil {
 		sc.Logger.Error("failed to create feed", "error", err)
@@ -301,7 +301,7 @@ func getHandler(sc *forge.StreamContext, next func()) {
 	req := sc.Request.(*FeedRequest)
 	ownerID, _ := sc.Get("ownerID")
 
-	ctx := context.Background()
+	ctx := sc.Ctx
 
 	// Look up the feed
 	feed, err := store.GetFeed(ctx, ownerID.(peer.ID), req.Path)
@@ -354,7 +354,7 @@ func handleGetMetadata(sc *forge.StreamContext, feed *storage.FeedRecord) {
 
 // handleGetEntry returns a single feed entry by sequence number.
 func handleGetEntry(sc *forge.StreamContext, store storage.Storage, feed *storage.FeedRecord, seq int) {
-	ctx := context.Background()
+	ctx := sc.Ctx
 	entry, err := store.GetFeedEntry(ctx, feed.ID, seq)
 	if err != nil {
 		sc.Logger.Error("failed to get feed entry", "error", err)
@@ -387,7 +387,7 @@ func handleGetEntries(sc *forge.StreamContext, store storage.Storage, feed *stor
 		limit = *req.Limit
 	}
 
-	ctx := context.Background()
+	ctx := sc.Ctx
 	entries, hasMore, err := store.GetFeedEntries(ctx, feed.ID, req.FromSequence, req.ToSequence, req.EntryType, limit)
 	if err != nil {
 		sc.Logger.Error("failed to get feed entries", "error", err)
@@ -446,7 +446,7 @@ func appendHandler(sc *forge.StreamContext, next func()) {
 	ownerID, _ := sc.Get("ownerID")
 	callerID := sc.PeerID
 
-	ctx := context.Background()
+	ctx := sc.Ctx
 
 	// Look up the feed
 	feed, err := store.GetFeed(ctx, ownerID.(peer.ID), req.Path)
@@ -508,7 +508,7 @@ func deleteHandler(sc *forge.StreamContext, next func()) {
 	req := sc.Request.(*FeedRequest)
 	ownerID, _ := sc.Get("ownerID")
 
-	ctx := context.Background()
+	ctx := sc.Ctx
 	deleted, err := store.DeleteFeed(ctx, ownerID.(peer.ID), req.Path)
 	if err != nil {
 		sc.Logger.Error("failed to delete feed", "error", err)
@@ -529,7 +529,7 @@ func listHandler(sc *forge.StreamContext, next func()) {
 	store, _ := forge.ServiceFrom[storage.Storage](sc, "storage")
 	ownerID, _ := sc.Get("ownerID")
 
-	ctx := context.Background()
+	ctx := sc.Ctx
 	feeds, err := store.ListFeeds(ctx, ownerID.(peer.ID))
 	if err != nil {
 		sc.Logger.Error("failed to list feeds", "error", err)
@@ -610,7 +610,7 @@ func batchGetHandler(sc *forge.StreamContext, next func()) {
 		})
 	}
 
-	ctx := context.Background()
+	ctx := sc.Ctx
 	results, err := store.GetMultiFeedEntries(ctx, queries)
 	if err != nil {
 		sc.Logger.Error("failed to batch get feed entries", "error", err)

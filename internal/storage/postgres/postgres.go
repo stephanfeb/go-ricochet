@@ -57,6 +57,9 @@ func (s *PostgresStorage) InitializeWithConfig(ctx context.Context, cfg *core.Po
 	if err != nil {
 		return fmt.Errorf("parse postgres config: %w", err)
 	}
+	if cfg.ConnectTimeout > 0 {
+		poolCfg.ConnConfig.ConnectTimeout = cfg.ConnectTimeout
+	}
 
 	pool, err := pgxpool.NewWithConfig(ctx, poolCfg)
 	if err != nil {

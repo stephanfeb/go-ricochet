@@ -28,6 +28,7 @@ func main() {
 	port := flag.Int("port", 0, "Listen port (default: 55223)")
 	development := flag.Bool("development", false, "Use development configuration")
 	production := flag.Bool("production", false, "Use production configuration")
+	highCapacity := flag.Bool("high-capacity", false, "Use high-capacity configuration")
 	dataDir := flag.String("data-dir", "", "Data directory path")
 	identityFile := flag.String("identity-file", "", "Path to identity key file")
 
@@ -46,11 +47,24 @@ func main() {
 
 	// Build configuration: preset → config file → CLI overrides
 	var cfg *core.ServerConfig
-	if *development {
+	presets := 0
+	for _, on := range []bool{*development, *production, *highCapacity} {
+		if on {
+			presets++
+		}
+	}
+	if presets > 1 {
+		fmt.Fprintln(os.Stderr, "choose one of --development, --production, --high-capacity")
+		os.Exit(2)
+	}
+	switch {
+	case *development:
 		cfg = core.DevelopmentConfig()
-	} else if *production {
+	case *production:
 		cfg = core.ProductionConfig()
-	} else {
+	case *highCapacity:
+		cfg = core.HighCapacityConfig()
+	default:
 		cfg = core.DefaultConfig()
 	}
 

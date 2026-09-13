@@ -106,7 +106,13 @@ performance:
   # stream is dropped. Refreshed as data arrives, so it does not limit how
   # long a large transfer may take.
   connection_timeout_sec: 30
+  # Deadline for the work a request does once it has been read: storage
+  # calls and the handler. A database that stops answering releases the
+  # request at this point instead of holding it for the stream's whole life.
   message_timeout_sec: 10
+  # Push notifications in flight at once. Each is a presence check and a
+  # stream to a client that may be slow or gone; a burst of deliveries past
+  # this many drops the surplus notifications, and clients poll regardless.
   worker_threads: 4
 
 # Service intervals
@@ -132,11 +138,16 @@ intervals:
 # every flag unconditionally — so omitting one turns it OFF rather than leaving
 # the default in place. List them all.
 features:
+  # Accept mail submitted on another sender's behalf by a peer listed in
+  # security.trusted_peers. Off, a submission whose sender is not the peer
+  # on the connection is refused.
   enable_forwarding: false
   enable_push_delivery: true
   enable_presence_monitoring: true
   enable_presence_broadcast: true
   enable_metrics: true              # gates /metrics on the ops listener
+  # Only peers listed in security.trusted_peers may connect. On with an
+  # empty list is a startup error, since it would refuse everyone.
   enable_authentication: false
   enable_relay: true
   enable_relay_service: true
@@ -323,3 +334,9 @@ admission_control:
 #
 # Library-level logging (DHT, relay, host) is controlled separately by the
 # --debug-dht flag and by GOLOG_LOG_LEVEL.
+
+# Peers this server trusts, by peer ID. Consulted by enable_authentication
+# (who may connect) and enable_forwarding (who may forward).
+security:
+  trusted_peers: []
+  #  - 12D3KooW...

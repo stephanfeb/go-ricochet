@@ -1,7 +1,6 @@
 package mma
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -143,6 +142,7 @@ func NewPipeline(logger *slog.Logger, pool *codec.BufferPool, reg *forge.Registr
 		middleware.Recovery(),
 		adminResponseWriter(),
 		forge.FrameDecodeMiddleware(pool),
+		wire.RequestDeadline(reg),
 		middleware.RateLimitMiddleware(limiter),
 		admission.Middleware(admission.FromRegistry(reg)),
 		dartNormalize(),
@@ -267,7 +267,7 @@ func handleCreateMailbox(sc *forge.StreamContext, next func()) {
 		return
 	}
 
-	ctx := context.Background()
+	ctx := sc.Ctx
 	if err := mailboxServer.CreateMailbox(ctx, addr, maxMessages, retentionDays, retentionCount); err != nil {
 		sc.Response = &AdminResponse{Success: false, ErrorMessage: fmt.Sprintf("failed to create mailbox: %v", err)}
 		return
@@ -303,7 +303,7 @@ func handleDeleteMailbox(sc *forge.StreamContext, next func()) {
 		FolderPath: req.FolderPath,
 	}
 
-	ctx := context.Background()
+	ctx := sc.Ctx
 	if err := mailboxServer.DeleteMailbox(ctx, addr); err != nil {
 		sc.Response = &AdminResponse{Success: false, ErrorMessage: fmt.Sprintf("failed to delete mailbox: %v", err)}
 		return
@@ -353,7 +353,7 @@ func handleGrantAccess(sc *forge.StreamContext, next func()) {
 		}
 	}
 
-	ctx := context.Background()
+	ctx := sc.Ctx
 
 	// Find the mailbox
 	record, err := mailboxServer.Storage.FindMailbox(ctx, callerID, req.FolderPath)
@@ -407,7 +407,7 @@ func handleRevokeAccess(sc *forge.StreamContext, next func()) {
 		return
 	}
 
-	ctx := context.Background()
+	ctx := sc.Ctx
 
 	// Find the mailbox
 	record, err := mailboxServer.Storage.FindMailbox(ctx, callerID, req.FolderPath)
@@ -449,7 +449,7 @@ func handleListACL(sc *forge.StreamContext, next func()) {
 		return
 	}
 
-	ctx := context.Background()
+	ctx := sc.Ctx
 
 	// Find the mailbox
 	record, err := mailboxServer.Storage.FindMailbox(ctx, callerID, req.FolderPath)
@@ -494,7 +494,7 @@ func handleListMailboxes(sc *forge.StreamContext, next func()) {
 		return
 	}
 
-	ctx := context.Background()
+	ctx := sc.Ctx
 	records, err := mailboxServer.ListMailboxes(ctx, callerID)
 	if err != nil {
 		sc.Response = &AdminResponse{Success: false, ErrorMessage: fmt.Sprintf("failed to list mailboxes: %v", err)}
@@ -529,7 +529,7 @@ func handleUpdateConfig(sc *forge.StreamContext, next func()) {
 		return
 	}
 
-	ctx := context.Background()
+	ctx := sc.Ctx
 
 	record, err := mailboxServer.Storage.FindMailbox(ctx, callerID, req.FolderPath)
 	if err != nil {
@@ -574,7 +574,7 @@ func handleGetMailboxInfo(sc *forge.StreamContext, next func()) {
 		return
 	}
 
-	ctx := context.Background()
+	ctx := sc.Ctx
 
 	record, err := mailboxServer.Storage.FindMailbox(ctx, callerID, req.FolderPath)
 	if err != nil {

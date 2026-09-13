@@ -23,6 +23,7 @@ import (
 	"github.com/twostack/go-ricochet/internal/admission"
 	"github.com/twostack/go-ricochet/internal/capacity"
 	"github.com/twostack/go-ricochet/internal/mda/mailboxes"
+	"github.com/twostack/go-ricochet/internal/mta"
 )
 
 // Status codes. They are HTTP's, because the semantics line up and every
@@ -101,6 +102,10 @@ func Classify(err error) (status int, retryAfter time.Duration) {
 	// refusal.
 	var unauthorized *mailboxes.UnauthorizedError
 	if errors.As(err, &unauthorized) {
+		return StatusForbidden, 0
+	}
+	var forwarding *mta.ForwardingRefusedError
+	if errors.As(err, &forwarding) {
 		return StatusForbidden, 0
 	}
 	var notFound *mailboxes.NotFoundError

@@ -36,6 +36,7 @@ import (
 	"github.com/twostack/go-ricochet/internal/ratelimit"
 	"github.com/twostack/go-ricochet/internal/storage"
 	"github.com/twostack/go-ricochet/internal/storage/postgres"
+	"github.com/twostack/go-ricochet/internal/trust"
 	client "github.com/twostack/go-ricochet/pkg/client"
 )
 
@@ -129,7 +130,12 @@ func newTestServer(t *testing.T, configure ...func(*core.ServerConfig)) *testSer
 	// Wired as server.go wires it, so the configured mailbox cap reaches the
 	// delivery path in tests too.
 	mdaSrv := mda.NewMailboxServer(store, mda.DefaultsFromConfig(cfg), logger)
-	mtaRtr := mta.NewRouter(mdaSrv, limiters.MTA, logger)
+	trusted, err := trust.Parse(cfg.TrustedPeers)
+	if err != nil {
+		t.Fatalf("trusted peers: %v", err)
+	}
+	mtaRtr := mta.NewRouter(mdaSrv, limiters.MTA, logger).
+		WithForwarding(cfg.EnableForwarding, trusted)
 
 	// Register protocol handlers — mirrors server.go registerProtocolHandlers.
 	reg := forge.NewRegistry()
@@ -141,6 +147,7 @@ func newTestServer(t *testing.T, configure ...func(*core.ServerConfig)) *testSer
 	reg.Provide(admission.RegistryKey, admissionCtl)
 	reg.Provide(metrics.RegistryKey, met)
 	reg.Provide(capacity.RegistryKey, sampler)
+	reg.Provide(trust.RegistryKey, trusted)
 	pool := codec.NewBufferPool()
 	if err := met.Register(metrics.NewBufferPoolCollector(pool)); err != nil {
 		t.Fatalf("register buffer pool collector: %v", err)
@@ -194,6 +201,14 @@ func newTestClient(t *testing.T, server *testServer) *client.Client {
 	if err != nil {
 		t.Fatalf("generate key: %v", err)
 	}
+	return newTestClientWithKey(t, server, priv)
+}
+
+// newTestClientWithKey creates a client with a known identity, for tests
+// that must name the client's peer ID in the server's config before the
+// client exists.
+func newTestClientWithKey(t *testing.T, server *testServer, priv crypto.PrivKey) *client.Client {
+	t.Helper()
 
 	h := createHost(t, priv)
 

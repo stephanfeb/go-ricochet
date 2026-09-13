@@ -1,7 +1,6 @@
 package maa
 
 import (
-	"context"
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
@@ -49,6 +48,7 @@ func NewPipeline(logger *slog.Logger, pool *codec.BufferPool, reg *forge.Registr
 		middleware.Recovery(),
 		maaResponseWriter(),
 		forge.FrameDecodeMiddleware(pool),
+		wire.RequestDeadline(reg),
 		middleware.RateLimitMiddleware(limiter),
 		admission.Middleware(admission.FromRegistry(reg)),
 		defaultOperationType(),
@@ -235,7 +235,7 @@ func handleRetrieve(sc *forge.StreamContext, next func()) {
 		fromSeq = &v
 	}
 
-	ctx := context.Background()
+	ctx := sc.Ctx
 	messages, hasMore, err := mailbox.Retrieve(ctx, addr, callerID, mda.RetrieveOpts{
 		FromSequence: fromSeq,
 		MaxMessages:  req.MaxMessages,
@@ -270,7 +270,7 @@ func handleMarkDelivered(sc *forge.StreamContext, next func()) {
 	req := sc.Request.(*core.MarkDeliveredRequest)
 	mailbox, _ := forge.ServiceFrom[*mda.MailboxServer](sc, "mda")
 
-	ctx := context.Background()
+	ctx := sc.Ctx
 	updatedCount, err := mailbox.MarkDelivered(ctx, sc.PeerID, req.MessageIDs)
 	if err != nil {
 		sc.Logger.Error("failed to mark messages delivered", "error", err)
@@ -289,7 +289,7 @@ func handleUpdateFlags(sc *forge.StreamContext, next func()) {
 	req := sc.Request.(*core.UpdateFlagsRequest)
 	mailbox, _ := forge.ServiceFrom[*mda.MailboxServer](sc, "mda")
 
-	ctx := context.Background()
+	ctx := sc.Ctx
 	newFlags, err := mailbox.UpdateFlags(ctx, sc.PeerID, req.MessageID, req.AddFlags, req.RemoveFlags)
 	if err != nil {
 		sc.Logger.Error("failed to update flags", "error", err)
@@ -322,7 +322,7 @@ func handleExpunge(sc *forge.StreamContext, next func()) {
 		return
 	}
 
-	ctx := context.Background()
+	ctx := sc.Ctx
 	var deletedCount int
 	if req.FolderPath != "" {
 		record, err := mailbox.Storage.FindMailbox(ctx, callerID, req.FolderPath)
@@ -346,7 +346,7 @@ func handleDeleteMessages(sc *forge.StreamContext, next func()) {
 	req := sc.Request.(*core.DeleteMessagesRequest)
 	mailbox, _ := forge.ServiceFrom[*mda.MailboxServer](sc, "mda")
 
-	ctx := context.Background()
+	ctx := sc.Ctx
 	deleted, err := mailbox.DeleteMessages(ctx, sc.PeerID, req.MessageIDs)
 	if err != nil {
 		sc.Logger.Error("failed to delete messages", "error", err)

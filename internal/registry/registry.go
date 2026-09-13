@@ -32,6 +32,9 @@ type SFServerInfo struct {
 	Capabilities    []string `json:"capabilities"`
 	MaxStorage      string   `json:"max_storage"`
 	RetentionPolicy string   `json:"retention_policy"`
+	// Region is where this server runs (server_region); Regions is what it
+	// serves (supported_regions).
+	Region          string   `json:"region,omitempty"`
 	Regions         []string `json:"regions"`
 	UptimeScore     float64  `json:"uptime_score"`
 	Timestamp       time.Time `json:"timestamp"`
@@ -171,6 +174,7 @@ func (r *Registry) announceServer(ctx context.Context) {
 		Capabilities:    []string{"store-and-forward", "mailbox", "document-sync"},
 		MaxStorage:      r.config.MaxStorageHuman(),
 		RetentionPolicy: r.config.RetentionPolicy.String(),
+		Region:          r.config.ServerRegion,
 		Regions:         r.config.SupportedRegions,
 		UptimeScore:     1.0,
 		Timestamp:       time.Now(),

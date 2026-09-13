@@ -163,6 +163,7 @@ func NewPipeline(logger *slog.Logger, pool *codec.BufferPool, reg *forge.Registr
 		middleware.Recovery(),
 		docResponseWriter(),
 		forge.FrameDecodeMiddleware(pool),
+		wire.RequestDeadline(reg),
 		middleware.DualRateLimitMiddleware(limiter, isWriteClassifier),
 		admission.Middleware(admission.FromRegistry(reg)),
 		capacity.WriteGate(capacity.FromRegistry(reg), isWriteClassifier),
@@ -297,7 +298,7 @@ func handleGet(sc *forge.StreamContext, next func()) {
 	store, _ := forge.ServiceFrom[storage.Storage](sc, "storage")
 	ownerID, _ := sc.Get("ownerID")
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(sc.Ctx, 30*time.Second)
 	defer cancel()
 
 	doc, err := store.GetDocument(ctx, ownerID.(peer.ID), req.Path)
@@ -365,7 +366,7 @@ func handlePut(sc *forge.StreamContext, next func()) {
 		ifMatch = &im
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(sc.Ctx, 30*time.Second)
 	defer cancel()
 
 	result, err := store.PutDocument(ctx, ownerID.(peer.ID), req.Path, content, contentType, sc.PeerID, ifMatch)
@@ -418,7 +419,7 @@ func handlePatch(sc *forge.StreamContext, next func()) {
 		ifMatch = &im
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(sc.Ctx, 30*time.Second)
 	defer cancel()
 
 	result, err := store.PatchDocument(ctx, ownerID.(peer.ID), req.Path, patch, sc.PeerID, ifMatch)
@@ -445,7 +446,7 @@ func handleHead(sc *forge.StreamContext, next func()) {
 	store, _ := forge.ServiceFrom[storage.Storage](sc, "storage")
 	ownerID, _ := sc.Get("ownerID")
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(sc.Ctx, 30*time.Second)
 	defer cancel()
 
 	doc, err := store.GetDocument(ctx, ownerID.(peer.ID), req.Path)
@@ -494,7 +495,7 @@ func handleDelete(sc *forge.StreamContext, next func()) {
 	store, _ := forge.ServiceFrom[storage.Storage](sc, "storage")
 	ownerID, _ := sc.Get("ownerID")
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(sc.Ctx, 30*time.Second)
 	defer cancel()
 
 	deleted, err := store.DeleteDocument(ctx, ownerID.(peer.ID), req.Path)
@@ -600,7 +601,7 @@ func handleBatchPut(sc *forge.StreamContext, next func()) {
 		})
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(sc.Ctx, 60*time.Second)
 	defer cancel()
 
 	applied := 0
@@ -672,7 +673,7 @@ func handleList(sc *forge.StreamContext, next func()) {
 	ownerID, _ := sc.Get("ownerID")
 	req := sc.Request.(*DocRequest)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(sc.Ctx, 30*time.Second)
 	defer cancel()
 
 	limit := 0
@@ -736,7 +737,7 @@ func handleHistory(sc *forge.StreamContext, next func()) {
 	store, _ := forge.ServiceFrom[storage.Storage](sc, "storage")
 	ownerID, _ := sc.Get("ownerID")
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(sc.Ctx, 30*time.Second)
 	defer cancel()
 
 	// If a specific version is requested, return that single version
@@ -862,7 +863,7 @@ func handleDirectoryJoin(sc *forge.StreamContext, req *DocRequest) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(sc.Ctx, 30*time.Second)
 	defer cancel()
 
 	entry := &storage.DirectoryEntry{
@@ -886,7 +887,7 @@ func handleDirectoryLeave(sc *forge.StreamContext) {
 	store, _ := forge.ServiceFrom[storage.Storage](sc, "storage")
 	ownerID, _ := sc.Get("ownerID")
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(sc.Ctx, 30*time.Second)
 	defer cancel()
 
 	if err := store.RemoveDirectoryEntry(ctx, ownerID.(peer.ID).String()); err != nil {
@@ -911,7 +912,7 @@ func handleDirectoryBrowse(sc *forge.StreamContext, req *DocRequest) {
 		"limit", limit,
 	)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(sc.Ctx, 30*time.Second)
 	defer cancel()
 
 	page, err := store.BrowseDirectory(ctx, req.DirectoryQuery, req.DirectoryCursor, limit)
@@ -959,7 +960,7 @@ func handleDirectoryGet(sc *forge.StreamContext) {
 	store, _ := forge.ServiceFrom[storage.Storage](sc, "storage")
 	ownerID, _ := sc.Get("ownerID")
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(sc.Ctx, 30*time.Second)
 	defer cancel()
 
 	entry, err := store.GetDirectoryEntry(ctx, ownerID.(peer.ID).String())
