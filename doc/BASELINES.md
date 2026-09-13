@@ -180,6 +180,78 @@ retrieve baseline from here on.
 stores** on both servers, so that finding is a property of the operation
 (a JSONB insert then an unfiltered query) and not of anything since.
 
+## Session of 2026-09-14: where the `sca` time goes
+
+The row above is put item + unfiltered query, and the query's default page
+is the first 50 items with their full content. The bench's item is a 1 KB
+random payload hex-encoded into one JSON field, 2,060 bytes of JSONB, so
+the page is 103 KB of item JSON, 137 KB once the handler base64-encodes it
+into the response body. The other per-operation rows move about 2 KB per
+request. To separate the pieces, a harness in this session's scratch
+directory (same client library and libp2p stack as the bench) ran each
+half alone against HEAD (`5c75c8a`) on an idle 12-core host, 2,000
+requests at 10 workers, every collection holding 100 items first so a
+query sees the same page whatever ran before it:
+
+| Operation | req/s | p50 | p99 | UDP datagrams per request |
+|---|---:|---:|---:|---:|
+| put item (new key) | 5,528 | 1.6ms | 4.1ms | 25 |
+| put item (existing key) | 5,608 | 1.7ms | 3.5ms | |
+| query, default page (50 items, 137 KB body) | 706 | 13.5ms | 25.7ms | 246 |
+| query, `limit=1` | 6,807 | 1.4ms | 2.6ms | 49 |
+| list keys, default page | 8,013 | 1.2ms | 2.3ms | |
+| put + query (the bench's row) | 618 | 15.6ms | 27.9ms | |
+| query, default page, 64-byte payload (5 KB body) | 3,087 | 3.2ms | 5.2ms | |
+
+Datagram counts are the host's UDP receive counter across the run (both
+directions of loopback traffic), divided by requests, minus the run's own
+seeding. The count for `limit=1` includes the harness seeding its
+collections; the marginal query is about 24, the same as a put.
+
+**The store is fine.** A put runs at the document store's speed, and a
+one-item query faster than that. `EXPLAIN (ANALYZE, BUFFERS)` on the
+default page of a 200-item collection: index scan on
+`(collection_id, key)`, 192 buffer hits, 0.57 ms, all of it in
+`WindowAgg`. Postgres is under 3% of the server's CPU profile during the
+query run and the whole `handleQuery` about 10%, `json.Marshal` of the
+page 6% (that is `json.RawMessage` being re-validated for each item).
+
+**The time is the transport moving 137 KB as 100 datagrams and getting
+100 acknowledgements back.** Server profile over 15 s of the query run
+(2.05 cores busy): 46% of samples in the UDP send and receive syscalls.
+The UDX multiplexer has one read loop per socket that handles every
+datagram inline, and the receiver acknowledges every data packet at once
+by sending from that same loop (`go-udx` `connection.go`, `HandlePacket`
+→ `sendPacket(buildAckFrame)`), so the loop spent 7.4 s in `recvfrom` and
+6.9 s in `sendto` out of 15.1 s: one core, saturated. The client side is
+worse: 3.5 cores busy, 56% of its samples in the same syscalls, 53% of
+them under the ACK it sends per data packet received, plus 5.5% in
+`buildAckFrame` walking the map of received sequence numbers (up to 500
+entries) on every one. With a 64-byte payload the same 50-item page runs
+four times faster, and a 1-item page of 2 KB items runs at document
+speed, which is the same statement from the other side.
+
+**A first page also counts the whole collection.** `COUNT(*) OVER()` makes
+the window aggregate consume every matching row before `LIMIT` applies:
+the plan shows the index scan returning all 200 rows for a 51-row limit.
+At 100 items that is nothing; at 5,000 items the default page went from
+5.8 ms to 7.6 ms p50 at 2 workers and the 1-item page from 1.4 ms to
+1.9 ms, and it grows linearly. `ListCollectionKeys` has the same shape.
+
+**What this means for the table.** The `sca` row is a heavier operation
+than its neighbours by construction (a 2 KB write then a 137 KB read),
+not a slow store. It stays in the table as taken, since it is what the
+bench measures, but read it as the cost of a 50-item page. The levers,
+in order of size, are in the backlog: acknowledging every second packet
+or on a short timer instead of every packet, and taking the ACK send off
+the read loop (N10); counting a collection from its maintained
+`record_count` instead of scanning it on every first page (N11); and
+sending the page as JSON instead of base64-in-JSON, a third fewer bytes
+(N12). The harness recipe (build in a scratch module with a `replace` to
+this repository, `-mode put|query|query1|list|bench`, `-prefill`,
+`-limit`, `-payload-size`, `-cpuprofile`) is in the N10 backlog row so
+the next session can re-take these after each lever.
+
 ## Batched
 
 One request carries 100 items. Requests per second is not the interesting
@@ -251,4 +323,6 @@ were also pacing themselves under a rate limit that no longer exists.
   `maa`, whose gap is the non-destructive retrieve doing ten times the work.
   The session table for 2026-09-13 stays as a record of what a saturated
   host does to these numbers.
-- **`sca` throughput** as noted above.
+- **`sca` throughput** is the transport carrying a 137 KB page as one datagram
+  and one acknowledgement per 1.4 KB, not the store: see "where the `sca` time
+  goes" above and backlog N10–N12 (2026-09-14).
