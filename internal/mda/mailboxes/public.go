@@ -64,12 +64,12 @@ func (m *PublicMailbox) StoreMessage(ctx context.Context, msg *core.Message) err
 	return nil
 }
 
-func (m *PublicMailbox) RetrieveMessages(ctx context.Context, readerID *peer.ID, opts RetrieveOpts) ([]*core.Message, error) {
+func (m *PublicMailbox) RetrieveMessages(ctx context.Context, readerID *peer.ID, opts RetrieveOpts) ([]*core.Message, bool, error) {
 	startSequence := opts.FromSequence
 	if startSequence == nil && readerID != nil {
 		cursor, err := m.storage.GetCursor(ctx, m.record.ID, *readerID)
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		if cursor > 0 {
 			next := cursor + 1
@@ -84,9 +84,9 @@ func (m *PublicMailbox) RetrieveMessages(ctx context.Context, readerID *peer.ID,
 		startSequence = &one
 	}
 
-	messages, err := m.storage.RetrieveMessages(ctx, m.record, startSequence, opts.MaxMessages, opts.MinPriority)
+	messages, hasMore, err := fetchPage(ctx, m.storage, m.record, startSequence, opts)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 
 	if readerID != nil && len(messages) > 0 {
@@ -98,5 +98,5 @@ func (m *PublicMailbox) RetrieveMessages(ctx context.Context, readerID *peer.ID,
 		}
 	}
 
-	return messages, nil
+	return messages, hasMore, nil
 }

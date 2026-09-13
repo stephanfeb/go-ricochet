@@ -163,8 +163,17 @@ messages, err := cl.RetrieveMessages(ctx,
 ### Message Flags
 
 ```go
-// Mark as delivered (seen)
+// Acknowledge: removes non-persistent messages, marks persistent ones seen.
+// Retrieval never removes anything on its own.
 ack, err := cl.MarkDelivered(ctx, []string{msg.MessageID})
+
+// Page through a large mailbox (default page 100, never more than one frame)
+page, err := cl.RetrievePage(ctx, client.WithMaxMessages(50))
+for page.HasMore {
+    last := page.Messages[len(page.Messages)-1]
+    page, err = cl.RetrievePage(ctx, client.WithMaxMessages(50),
+        client.WithFromSequence(last.SequenceNumber+1))
+}
 
 // Flag a message
 ack, err := cl.UpdateFlags(ctx, msg.MessageID, uint32(core.MsgFlagFlagged), 0)

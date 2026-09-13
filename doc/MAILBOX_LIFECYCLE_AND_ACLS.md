@@ -47,10 +47,19 @@ facts, each of which bit us:
      (`ErrForbidden`). Before 2026-09 a cross-peer read auto-created the folder as
      *public*, which let any peer squat another peer's inbox.
 3. **The relay never drains a mailbox for you.** Retrieving messages does **not**
-   remove them. On the private/shared write path there is no age-based pruning
-   either (only `public.go:60` calls `EnforceRetentionPolicy`). Messages sit until
-   the client **explicitly deletes** them — or until the mailbox hits
-   `storage.max_messages_per_mailbox` (default **1000**) and rejects everything.
+   remove them; the same page comes back until you act on it. The acknowledgement
+   that consumes is `markDelivered`: it **deletes non-persistent** messages and sets
+   `\Seen` on **persistent** ones. (Before 2026-09 the private mailbox deleted
+   non-persistent messages *during* retrieval, before the response was written, so a
+   dropped connection or an oversized page lost them.) On the private/shared write
+   path there is no age-based pruning either (only `public.go` calls
+   `EnforceRetentionPolicy`). Persistent messages sit until the client **explicitly
+   deletes** them — or until the mailbox hits `storage.max_messages_per_mailbox`
+   (default **1000**) and rejects everything.
+4. **Retrieval is paged.** A retrieve returns at most `maxMessages` (default 100,
+   cap 1000) and never more than fits one 10 MB frame. `hasMore` in the response
+   metadata says a further page exists; fetch it with `fromSequence` set past the
+   last message's `sequenceNumber`. The Go client exposes this as `RetrievePage`.
 
 Hold those three and the gotchas below are corollaries.
 

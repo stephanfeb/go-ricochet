@@ -11,7 +11,12 @@ import (
 )
 
 // PrivateMailbox is a single-owner mailbox.
-// Messages are deleted after retrieval unless marked as persistent.
+//
+// Reading it changes nothing. Messages that were not sent as persistent are
+// removed when the owner marks them delivered; persistent ones stay until
+// deleted or expunged. Retrieval used to delete non-persistent messages
+// before the response was even written, so a client that disconnected
+// mid-read, or whose page did not fit in a frame, lost them for good.
 type PrivateMailbox struct {
 	record  *storage.MailboxRecord
 	storage storage.Storage
@@ -57,35 +62,11 @@ func (m *PrivateMailbox) StoreMessage(ctx context.Context, msg *core.Message) er
 	return nil
 }
 
-func (m *PrivateMailbox) RetrieveMessages(ctx context.Context, readerID *peer.ID, opts RetrieveOpts) ([]*core.Message, error) {
+func (m *PrivateMailbox) RetrieveMessages(ctx context.Context, readerID *peer.ID, opts RetrieveOpts) ([]*core.Message, bool, error) {
 	// Verify reader is owner
 	if readerID != nil && readerID.String() != m.record.OwnerPeerID {
-		return nil, &UnauthorizedError{Message: "not mailbox owner"}
+		return nil, false, &UnauthorizedError{Message: "not mailbox owner"}
 	}
 
-	messages, err := m.storage.RetrieveMessages(ctx, m.record, opts.FromSequence, opts.MaxMessages, opts.MinPriority)
-	if err != nil {
-		return nil, err
-	}
-
-	// Delete non-persistent messages after retrieval
-	var toDelete []string
-	for _, msg := range messages {
-		if !msg.Persistent {
-			toDelete = append(toDelete, msg.MessageID)
-		}
-	}
-
-	if len(toDelete) > 0 {
-		if err := m.storage.DeleteMessages(ctx, toDelete); err != nil {
-			m.logger.Warn("failed to delete non-persistent messages", "error", err)
-		} else {
-			m.logger.Debug("deleted non-persistent messages",
-				"count", len(toDelete),
-				"mailbox", m.record.FullPath(),
-			)
-		}
-	}
-
-	return messages, nil
+	return fetchPage(ctx, m.storage, m.record, opts.FromSequence, opts)
 }

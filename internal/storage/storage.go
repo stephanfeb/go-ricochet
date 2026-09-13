@@ -51,6 +51,8 @@ type Storage interface {
 	// on it. Each reports how many rows it touched so an acknowledgement can
 	// say what actually happened rather than what was asked.
 	DeleteOwnedMessages(ctx context.Context, ownerID peer.ID, messageIDs []string) (int, error)
+	// MarkMessagesDelivered removes the non-persistent messages among
+	// messageIDs and sets \Seen on the persistent ones, atomically.
 	MarkMessagesDelivered(ctx context.Context, ownerID peer.ID, messageIDs []string) (int, error)
 	// UpdateMessageFlags returns the resulting flags, or nil when no message
 	// with that ID exists in a mailbox ownerID owns.

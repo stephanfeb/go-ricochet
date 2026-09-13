@@ -33,13 +33,6 @@ func NewRouter(mailboxServer *mda.MailboxServer, limiter middleware.Limiter, log
 	}
 }
 
-// RetrieveOpts holds options for message retrieval.
-type RetrieveOpts struct {
-	FromSequence *int
-	MaxMessages  *int
-	MinPriority  *core.MessagePriority
-}
-
 // AcceptMessage validates and delivers a message to the local MDA.
 func (r *Router) AcceptMessage(ctx context.Context, msg *core.Message, senderID peer.ID) (string, error) {
 	// Validate message
@@ -63,31 +56,6 @@ func (r *Router) AcceptMessage(ctx context.Context, msg *core.Message, senderID 
 	)
 
 	return msg.MessageID, nil
-}
-
-// HandleRetrieve forwards a retrieve request to the MDA.
-func (r *Router) HandleRetrieve(ctx context.Context, addr *core.MailboxAddress, callerID peer.ID, opts RetrieveOpts) ([]*core.Message, error) {
-	// Check rate limit
-	if !r.checkRateLimit(callerID) {
-		return nil, &RateLimitError{PeerID: callerID.String()}
-	}
-
-	messages, err := r.mda.Retrieve(ctx, addr, callerID, mda.RetrieveOpts{
-		FromSequence: opts.FromSequence,
-		MaxMessages:  opts.MaxMessages,
-		MinPriority:  opts.MinPriority,
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	r.logger.Info("retrieved messages",
-		"count", len(messages),
-		"caller", callerID.String(),
-		"mailbox", addr.FullPath(),
-	)
-
-	return messages, nil
 }
 
 func (r *Router) validateMessage(msg *core.Message, senderID peer.ID) error {

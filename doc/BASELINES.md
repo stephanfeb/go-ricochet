@@ -56,6 +56,9 @@ SFA and SCA which each do a write **and** a read.
 |---|---:|---:|---:|---:|
 | `msa` submit | 5,428 | 1.3ms | 3.6ms | 18.8ms |
 | `maa` retrieve | 7,886 | 0.97ms | 2.6ms | 3.8ms |
+
+> The `maa` row predates the change that made retrieval non-destructive (2026-09). It was measured while a private mailbox deleted what it returned, so after ten requests per worker most retrieves were of an empty mailbox. Re-run before comparing: each retrieve now returns ten real messages.
+
 | `sda` put + get | 5,674 | 1.7ms | 2.5ms | 3.0ms |
 | `sfa` append + get | 5,451 | 1.8ms | 2.6ms | 3.1ms |
 | `sca` put item + query | 1,076 | 8.8ms | 16.8ms | 19.1ms |

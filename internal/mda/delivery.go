@@ -19,6 +19,8 @@ type RetrieveOpts struct {
 	FromSequence *int
 	MaxMessages  *int
 	MinPriority  *core.MessagePriority
+	// MaxBytes bounds the encoded page; see mailboxes.RetrieveOpts.
+	MaxBytes int
 }
 
 // Fallbacks for a MailboxDefaults built without values. They mirror
@@ -270,7 +272,7 @@ func (s *MailboxServer) wrapRecord(record *storage.MailboxRecord) (mailboxes.Mai
 // A mailbox that does not exist is an empty result for its owner — a fresh
 // identity reading its own inbox before anything was delivered is not an
 // error — and a NotFoundError for anyone else.
-func (s *MailboxServer) Retrieve(ctx context.Context, addr *core.MailboxAddress, callerID peer.ID, opts RetrieveOpts) ([]*core.Message, error) {
+func (s *MailboxServer) Retrieve(ctx context.Context, addr *core.MailboxAddress, callerID peer.ID, opts RetrieveOpts) ([]*core.Message, bool, error) {
 	s.logger.Info("retrieving messages",
 		"mailbox", addr.FullPath(),
 		"caller", callerID.String(),
@@ -278,22 +280,23 @@ func (s *MailboxServer) Retrieve(ctx context.Context, addr *core.MailboxAddress,
 
 	mb, err := s.findMailbox(ctx, addr)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if mb == nil {
 		if callerID == addr.OwnerID {
-			return []*core.Message{}, nil
+			return []*core.Message{}, false, nil
 		}
-		return nil, &mailboxes.NotFoundError{Path: addr.FullPath()}
+		return nil, false, &mailboxes.NotFoundError{Path: addr.FullPath()}
 	}
 
-	messages, err := mb.RetrieveMessages(ctx, &callerID, mailboxes.RetrieveOpts{
+	messages, hasMore, err := mb.RetrieveMessages(ctx, &callerID, mailboxes.RetrieveOpts{
 		FromSequence: opts.FromSequence,
 		MaxMessages:  opts.MaxMessages,
 		MinPriority:  opts.MinPriority,
+		MaxBytes:     opts.MaxBytes,
 	})
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 
 	s.logger.Info("retrieved messages",
@@ -301,13 +304,15 @@ func (s *MailboxServer) Retrieve(ctx context.Context, addr *core.MailboxAddress,
 		"mailbox", addr.FullPath(),
 	)
 
-	return messages, nil
+	return messages, hasMore, nil
 }
 
-// MarkDelivered sets \Seen on the caller's own messages and reports how many
-// were touched. IDs that are not in a mailbox the caller owns are ignored, not
-// refused: a message ID is sender-chosen and travels in every acknowledgement,
-// so it must not be a capability.
+// MarkDelivered acknowledges the caller's own messages and reports how many
+// were touched: non-persistent ones are removed, persistent ones gain \Seen.
+// This is the one place a read-side operation removes mail, and it is
+// explicit — retrieval itself never does. IDs that are not in a mailbox the
+// caller owns are ignored, not refused: a message ID is sender-chosen and
+// travels in every acknowledgement, so it must not be a capability.
 func (s *MailboxServer) MarkDelivered(ctx context.Context, callerID peer.ID, messageIDs []string) (int, error) {
 	return s.Storage.MarkMessagesDelivered(ctx, callerID, messageIDs)
 }

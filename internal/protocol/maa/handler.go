@@ -25,6 +25,13 @@ import (
 // ProtocolID is the MAA protocol identifier.
 const ProtocolID = protocol.ID("/sf-network/access/1.0.0")
 
+// retrievePageBudget is how many bytes of encoded messages one retrieve
+// response may carry. The whole page travels as a single frame, and a frame
+// over codec.MaxFrameSize is refused by the writer — which used to happen
+// after the messages had already been deleted. The margin covers the
+// metadata header and the per-message length prefixes.
+const retrievePageBudget = codec.MaxFrameSize - 64*1024
+
 // NewPipeline creates a forge pipeline for the Mail Access Agent.
 func NewPipeline(logger *slog.Logger, pool *codec.BufferPool, reg *forge.Registry) *forge.Pipeline {
 	limiter := ratelimit.FromRegistry(reg).MAA
@@ -229,10 +236,11 @@ func handleRetrieve(sc *forge.StreamContext, next func()) {
 	}
 
 	ctx := context.Background()
-	messages, err := mailbox.Retrieve(ctx, addr, callerID, mda.RetrieveOpts{
+	messages, hasMore, err := mailbox.Retrieve(ctx, addr, callerID, mda.RetrieveOpts{
 		FromSequence: fromSeq,
 		MaxMessages:  req.MaxMessages,
 		MinPriority:  req.MinPriority,
+		MaxBytes:     retrievePageBudget,
 	})
 	if err != nil {
 		// Surface the refusal as a classified error envelope rather than an
@@ -243,7 +251,7 @@ func handleRetrieve(sc *forge.StreamContext, next func()) {
 		return
 	}
 
-	compoundBytes, err := encodeCompoundRetrieveResponse(messages, false)
+	compoundBytes, err := encodeCompoundRetrieveResponse(messages, hasMore)
 	if err != nil {
 		sc.Logger.Error("failed to encode retrieve response", "error", err)
 		sc.Response = map[string]string{"error": "internal encoding error"}

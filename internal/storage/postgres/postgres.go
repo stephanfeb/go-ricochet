@@ -387,17 +387,40 @@ func (s *PostgresStorage) MarkMessagesDelivered(ctx context.Context, ownerID pee
 	if len(messageIDs) == 0 {
 		return 0, nil
 	}
-	tag, err := s.pool.Exec(ctx, `
+
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("begin: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	// Non-persistent messages are queue entries: acknowledging one consumes
+	// it. Persistent ones are kept and flagged, IMAP-style.
+	deleted, err := tx.Exec(ctx, `
+		DELETE FROM stored_messages
+		WHERE message_id = ANY($1)
+		  AND NOT persistent
+		  AND mailbox_id IN (SELECT id FROM mailboxes WHERE owner_peer_id = $2)`,
+		messageIDs, ownerID.String(),
+	)
+	if err != nil {
+		return 0, fmt.Errorf("consume delivered: %w", err)
+	}
+	seen, err := tx.Exec(ctx, `
 		UPDATE stored_messages
 		SET flags_bitmap = flags_bitmap | $1
 		WHERE message_id = ANY($2)
+		  AND persistent
 		  AND mailbox_id IN (SELECT id FROM mailboxes WHERE owner_peer_id = $3)`,
 		uint32(core.MsgFlagSeen), messageIDs, ownerID.String(),
 	)
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("flag delivered: %w", err)
 	}
-	return int(tag.RowsAffected()), nil
+	if err := tx.Commit(ctx); err != nil {
+		return 0, fmt.Errorf("commit: %w", err)
+	}
+	return int(deleted.RowsAffected() + seen.RowsAffected()), nil
 }
 
 // =============================================================================

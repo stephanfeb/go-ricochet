@@ -67,9 +67,9 @@ func (m *SharedMailbox) StoreMessage(ctx context.Context, msg *core.Message) err
 	return nil
 }
 
-func (m *SharedMailbox) RetrieveMessages(ctx context.Context, readerID *peer.ID, opts RetrieveOpts) ([]*core.Message, error) {
+func (m *SharedMailbox) RetrieveMessages(ctx context.Context, readerID *peer.ID, opts RetrieveOpts) ([]*core.Message, bool, error) {
 	if readerID == nil {
-		return nil, fmt.Errorf("readerId required for shared mailbox")
+		return nil, false, fmt.Errorf("readerId required for shared mailbox")
 	}
 
 	isOwner := readerID.String() == m.record.OwnerPeerID
@@ -77,10 +77,10 @@ func (m *SharedMailbox) RetrieveMessages(ctx context.Context, readerID *peer.ID,
 	if !isOwner {
 		canRead, err := m.storage.CheckAccess(ctx, m.record.ID, *readerID, core.AccessReadOnly)
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		if !canRead {
-			return nil, &UnauthorizedError{Message: "no read access to shared mailbox"}
+			return nil, false, &UnauthorizedError{Message: "no read access to shared mailbox"}
 		}
 	}
 
@@ -88,7 +88,7 @@ func (m *SharedMailbox) RetrieveMessages(ctx context.Context, readerID *peer.ID,
 	if startSequence == nil {
 		cursor, err := m.storage.GetCursor(ctx, m.record.ID, *readerID)
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		if cursor > 0 {
 			next := cursor + 1
@@ -99,9 +99,9 @@ func (m *SharedMailbox) RetrieveMessages(ctx context.Context, readerID *peer.ID,
 		}
 	}
 
-	messages, err := m.storage.RetrieveMessages(ctx, m.record, startSequence, opts.MaxMessages, opts.MinPriority)
+	messages, hasMore, err := fetchPage(ctx, m.storage, m.record, startSequence, opts)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 
 	if len(messages) > 0 {
@@ -113,5 +113,5 @@ func (m *SharedMailbox) RetrieveMessages(ctx context.Context, readerID *peer.ID,
 		}
 	}
 
-	return messages, nil
+	return messages, hasMore, nil
 }

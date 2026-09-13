@@ -375,6 +375,28 @@ func (c *Client) SendMessages(ctx context.Context, msgs []BatchMessage) ([]Batch
 // RetrieveMessages retrieves messages from the server. By default it retrieves
 // messages for the client's own peer ID from the inbox folder.
 func (c *Client) RetrieveMessages(ctx context.Context, opts ...RetrieveOption) ([]*core.Message, error) {
+	page, err := c.RetrievePage(ctx, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return page.Messages, nil
+}
+
+// RetrievePage is one page of a mailbox.
+//
+// HasMore reports that the server cut the page short — at the requested
+// count, at its own page cap, or at the frame size — and that a further
+// retrieve with WithFromSequence set past the last message's sequence
+// number would return more. Retrieval is not consumption: the same messages
+// come back until they are marked delivered, deleted or expire.
+type RetrievePage struct {
+	Messages []*core.Message
+	HasMore  bool
+}
+
+// RetrievePage retrieves messages and says whether more remain. It is
+// RetrieveMessages with the paging signal kept.
+func (c *Client) RetrievePage(ctx context.Context, opts ...RetrieveOption) (*RetrievePage, error) {
 	cfg := retrieveConfig{}
 	for _, o := range opts {
 		o(&cfg)
@@ -462,7 +484,7 @@ func (c *Client) RetrieveMessages(ctx context.Context, opts ...RetrieveOption) (
 		}
 	}
 
-	return resp.Messages, nil
+	return &RetrievePage{Messages: resp.Messages, HasMore: resp.HasMore}, nil
 }
 
 // MarkDelivered marks the given message IDs as delivered (seen) on the server.
