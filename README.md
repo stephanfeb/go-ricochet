@@ -326,6 +326,19 @@ Server and client identities are Ed25519 keypairs. Identity can be provided via:
 2. `--identity-file` CLI flag
 3. Auto-generated and persisted to `{data-dir}/identity.key`
 
+### Dependency Advisories
+
+CI runs `govulncheck` on every push. Two advisories it reports have no
+upstream fix, and neither reaches code this server runs:
+
+- **GO-2026-4479** (`pion/dtls/v2`, AES-GCM nonce reuse) is linked through
+  go-libp2p's WebRTC transport. The host is built with `libp2p.NoTransports`
+  and only the UDX transport, so no DTLS handshake ever happens.
+- **GO-2024-3218** (`go-libp2p-kad-dht`, content censorship via Sybil peers)
+  concerns IPFS content routing: provider records for a CID. Ricochet uses
+  the DHT for peer routing only and never publishes or looks up provider
+  records, so there is nothing to censor.
+
 ## Networking
 
 ### Transport Stack

@@ -42,6 +42,13 @@ jobs:
       - name: README examples compile from an external module
         run: ./scripts/check-readme-examples.sh
 
+      # Informational: two reachable advisories have no upstream fix and are
+      # documented in README "Dependency Advisories", so a non-zero exit here
+      # is expected until they are resolved. Read the log for anything new.
+      - name: govulncheck
+        continue-on-error: true
+        run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+
       - name: Load schema
         env:
           PGPASSWORD: testpw
