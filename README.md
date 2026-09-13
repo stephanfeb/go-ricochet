@@ -15,7 +15,7 @@ go-ricochet is the Go implementation of the Ricochet protocol (module `github.co
 - **Relay Support** -- Circuit Relay v2 service, on by default. AutoRelay through static relays and DCUtR hole punching are off by default and take their relay candidates from `bootstrap_peers`; see [NAT Traversal](#nat-traversal)
 - **IMAP-Style Flags** -- Seen, flagged, deleted, draft flags with expunge support
 - **Presence Detection** -- Real-time peer online/offline status with TTL-based caching
-- **Service Discovery** -- GossipSub-based server announcements; a server that stops announcing drops out of the list after two hours
+- **Service Discovery** -- GossipSub-based server announcements and heartbeats; a server whose self-check fails leaves the list at its next heartbeat, and one that goes silent drops out after two hours
 - **PostgreSQL Storage** -- Production-grade storage with BYTEA binary encoding and connection pooling
 
 ## Architecture
@@ -474,7 +474,9 @@ server:
 
 ### Service Discovery
 
-Servers announce themselves via GossipSub on the `/sf-network/services/announce` topic. Announcements include capabilities, storage capacity and region. They also carry an uptime score, which is a constant 1.0: nothing measures uptime yet, and clients that sort on it see every server as equal.
+Servers announce themselves via GossipSub on the `/sf-network/services/announce` topic every `intervals.service_announcement_min`. Announcements include capabilities, storage capacity and region.
+
+Between announcements, every `intervals.health_check_min` a server runs the readiness checks behind `/readyz` (today: a database ping) and publishes the verdict on `/sf-network/services/heartbeat`. Other servers refresh the entry from the heartbeat, so a healthy server never goes stale, and drop a server from the available list as soon as it reports a failed check. The uptime score in both messages is measured: the share of the server's last 288 checks that passed, 24 hours at the default interval. Both messages are accepted only from the server they name, verified by the GossipSub signature.
 
 ## Project Structure
 

@@ -527,7 +527,8 @@ func (s *Server) initializeServices(ctx context.Context) {
 	}
 
 	// Create service registry
-	s.registry = registry.NewRegistry(s.forgeServer.Node(), s.config, s.forgeServer.PeerID(), s.logger)
+	s.registry = registry.NewRegistry(s.forgeServer.Node(), s.config, s.forgeServer.PeerID(), s.logger).
+		WithHealthCheck(s.selfCheck)
 	s.logger.Info("service registry initialized")
 
 	// Create presence broadcast service

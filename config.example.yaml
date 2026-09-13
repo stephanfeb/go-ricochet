@@ -142,6 +142,10 @@ performance:
 # sampledAt, so a figure that has gone stale says so.
 intervals:
   service_announcement_min: 60
+  # health_check_min: how often the server runs its own readiness checks (the
+  # same ones /readyz runs) and publishes the verdict as a heartbeat to other
+  # servers. The uptime score it announces is the share of the last 288 checks
+  # that passed: 24 hours at this interval.
   health_check_min: 5
   cleanup_min: 5
   # presence_check_sec: how often the presence service reconciles its online

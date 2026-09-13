@@ -138,6 +138,7 @@ func TestExampleValuesActuallyApply(t *testing.T) {
 	cfg.Ops.Port = 1
 	cfg.Ops.QueryTimeout = time.Second
 	cfg.NearCapacityRatio = 0.11
+	cfg.HealthCheckInterval = time.Second
 
 	if err := LoadConfigFromFile(examplePath, cfg); err != nil {
 		t.Fatalf("load example: %v", err)
@@ -161,6 +162,7 @@ func TestExampleValuesActuallyApply(t *testing.T) {
 		{"ops.port", cfg.Ops.Port, 9090},
 		{"ops.query_timeout", cfg.Ops.QueryTimeout, 10 * time.Second},
 		{"storage.near_capacity_ratio", cfg.NearCapacityRatio, 0.9},
+		{"intervals.health_check_min", cfg.HealthCheckInterval, 5 * time.Minute},
 	}
 	for _, c := range checks {
 		if c.got != c.want {

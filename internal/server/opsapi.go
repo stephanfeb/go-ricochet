@@ -115,6 +115,19 @@ func (s *Server) readinessChecks() []opsapi.Check {
 	}}
 }
 
+// selfCheck runs the readiness checks the way /readyz does and returns the
+// first failure, named. The registry runs it every health_check interval to
+// pace its heartbeats and measure the uptime score it announces, so the
+// verdict a load balancer sees and the one other servers see are the same.
+func (s *Server) selfCheck(ctx context.Context) error {
+	for _, check := range s.readinessChecks() {
+		if err := check.Func(ctx); err != nil {
+			return fmt.Errorf("%s: %w", check.Name, err)
+		}
+	}
+	return nil
+}
+
 // opsDetails contributes diagnostic state to the /readyz body: how loaded the
 // instance is, and how close the database pool is to exhaustion.
 //
