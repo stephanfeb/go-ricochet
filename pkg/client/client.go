@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strconv"
+	"sync/atomic"
 	"time"
 
 	libp2pcrypto "github.com/libp2p/go-libp2p/core/crypto"
@@ -19,6 +21,7 @@ import (
 	"github.com/twostack/go-ricochet/internal/protocol/maa"
 	"github.com/twostack/go-ricochet/internal/protocol/mma"
 	"github.com/twostack/go-ricochet/internal/protocol/msa"
+	"github.com/twostack/go-ricochet/internal/protocol/notify"
 	"github.com/twostack/go-ricochet/internal/protocol/sda"
 	"github.com/twostack/go-ricochet/pkg/wire"
 )
@@ -28,7 +31,13 @@ type Client struct {
 	host    host.Host
 	cfg     Config
 	privKey libp2pcrypto.PrivKey
+
+	closed    atomic.Bool
+	notifying atomic.Bool
 }
+
+// ErrClosed is returned by every request made after Close.
+var ErrClosed = errors.New("client is closed")
 
 // Config configures the Client.
 type Config struct {
@@ -125,16 +134,71 @@ func (c *Client) PeerID() peer.ID {
 }
 
 // selectServer returns the highest-priority preferred server.
-func (c *Client) selectServer() (peer.ID, error) {
-	if len(c.cfg.PreferredServers) == 0 {
-		return "", fmt.Errorf("no preferred servers configured")
+// Close stops the client. It removes the stream handlers the client
+// registered on the host and makes every later request fail with ErrClosed.
+// The host was the caller's to begin with and stays open: a host commonly
+// serves more than this client, and closing it here would take the rest
+// down with it.
+func (c *Client) Close() error {
+	if !c.closed.CompareAndSwap(false, true) {
+		return nil
 	}
+	if c.notifying.Swap(false) {
+		c.host.RemoveStreamHandler(notify.ProtocolID)
+	}
+	return nil
+}
+
+// servers returns the preferred servers in the order to try them: by
+// priority, then by weight so that the order is stable between calls.
+func (c *Client) servers() []peer.ID {
 	sorted := make([]ServerPreference, len(c.cfg.PreferredServers))
 	copy(sorted, c.cfg.PreferredServers)
-	sort.Slice(sorted, func(i, j int) bool {
-		return sorted[i].Priority < sorted[j].Priority
+	sort.SliceStable(sorted, func(i, j int) bool {
+		if sorted[i].Priority != sorted[j].Priority {
+			return sorted[i].Priority < sorted[j].Priority
+		}
+		return sorted[i].Weight > sorted[j].Weight
 	})
-	return sorted[0].PeerID, nil
+	ids := make([]peer.ID, len(sorted))
+	for i, s := range sorted {
+		ids[i] = s.PeerID
+	}
+	return ids
+}
+
+// dial opens a stream for one request and reports which server took it.
+//
+// With an explicit server there is exactly one attempt. Otherwise the
+// preferred servers are tried in order and a server that cannot be dialled
+// is passed over for the next: the point of listing more than one is that
+// the client keeps working when one is down. A server that answers is
+// never second-guessed, so a refusal is reported from the first server
+// that gave one rather than retried elsewhere.
+func (c *Client) dial(ctx context.Context, pid protocol.ID, explicit *peer.ID) (network.Stream, peer.ID, error) {
+	if c.closed.Load() {
+		return nil, "", ErrClosed
+	}
+	if explicit != nil {
+		s, err := c.openStream(ctx, *explicit, pid)
+		return s, *explicit, err
+	}
+	servers := c.servers()
+	if len(servers) == 0 {
+		return nil, "", fmt.Errorf("no preferred servers configured")
+	}
+	var attempts []error
+	for _, id := range servers {
+		s, err := c.openStream(ctx, id, pid)
+		if err == nil {
+			return s, id, nil
+		}
+		attempts = append(attempts, err)
+		if ctx.Err() != nil {
+			break
+		}
+	}
+	return nil, "", fmt.Errorf("no preferred server reachable: %w", errors.Join(attempts...))
 }
 
 // openStream opens a libp2p stream to the given server with the specified protocol.
@@ -233,12 +297,7 @@ func (c *Client) submit(ctx context.Context, msg *wire.Message) (*SendResult, er
 		return nil, fmt.Errorf("encode message: %w", err)
 	}
 
-	serverID, err := c.selectServer()
-	if err != nil {
-		return nil, err
-	}
-
-	s, err := c.openStream(ctx, serverID, msa.ProtocolID)
+	s, serverID, err := c.dial(ctx, msa.ProtocolID, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -336,12 +395,7 @@ func (c *Client) SendMessages(ctx context.Context, msgs []BatchMessage) ([]Batch
 		return nil, fmt.Errorf("marshal batch submit: %w", err)
 	}
 
-	serverID, err := c.selectServer()
-	if err != nil {
-		return nil, err
-	}
-
-	s, err := c.openStream(ctx, serverID, msa.BatchProtocolID)
+	s, _, err := c.dial(ctx, msa.BatchProtocolID, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -437,12 +491,7 @@ func (c *Client) RetrievePage(ctx context.Context, opts ...RetrieveOption) (*Ret
 		return nil, fmt.Errorf("encode retrieve request: %w", err)
 	}
 
-	serverID, err := c.selectServer()
-	if err != nil {
-		return nil, err
-	}
-
-	s, err := c.openStream(ctx, serverID, maa.ProtocolID)
+	s, _, err := c.dial(ctx, maa.ProtocolID, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -518,12 +567,7 @@ func (c *Client) MarkDelivered(ctx context.Context, messageIDs []string) (*wire.
 		return nil, fmt.Errorf("encode mark delivered: %w", err)
 	}
 
-	serverID, err := c.selectServer()
-	if err != nil {
-		return nil, err
-	}
-
-	s, err := c.openStream(ctx, serverID, maa.ProtocolID)
+	s, _, err := c.dial(ctx, maa.ProtocolID, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -564,12 +608,7 @@ func (c *Client) UpdateFlags(ctx context.Context, messageID string, addFlags, re
 		return nil, fmt.Errorf("encode update flags: %w", err)
 	}
 
-	serverID, err := c.selectServer()
-	if err != nil {
-		return nil, err
-	}
-
-	s, err := c.openStream(ctx, serverID, maa.ProtocolID)
+	s, _, err := c.dial(ctx, maa.ProtocolID, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -614,12 +653,7 @@ func (c *Client) Expunge(ctx context.Context, opts ...ExpungeOption) (*wire.Expu
 		return nil, fmt.Errorf("encode expunge: %w", err)
 	}
 
-	serverID, err := c.selectServer()
-	if err != nil {
-		return nil, err
-	}
-
-	s, err := c.openStream(ctx, serverID, maa.ProtocolID)
+	s, _, err := c.dial(ctx, maa.ProtocolID, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -658,12 +692,7 @@ func (c *Client) DeleteMessages(ctx context.Context, messageIDs []string) (*wire
 		return nil, fmt.Errorf("encode delete messages: %w", err)
 	}
 
-	serverID, err := c.selectServer()
-	if err != nil {
-		return nil, err
-	}
-
-	s, err := c.openStream(ctx, serverID, maa.ProtocolID)
+	s, _, err := c.dial(ctx, maa.ProtocolID, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -704,12 +733,7 @@ func (c *Client) doAdminRaw(ctx context.Context, req *mma.AdminRequest) ([]byte,
 		return nil, fmt.Errorf("marshal admin request: %w", err)
 	}
 
-	serverID, err := c.selectServer()
-	if err != nil {
-		return nil, err
-	}
-
-	s, err := c.openStream(ctx, serverID, mma.ProtocolID)
+	s, _, err := c.dial(ctx, mma.ProtocolID, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -1153,17 +1177,7 @@ func (c *Client) doDoc(ctx context.Context, req *sda.DocRequest, opts []DocOptio
 		return nil, fmt.Errorf("marshal doc request: %w", err)
 	}
 
-	serverID := peer.ID("")
-	if cfg.ServerPeerID != nil {
-		serverID = *cfg.ServerPeerID
-	} else {
-		serverID, err = c.selectServer()
-		if err != nil {
-			return nil, err
-		}
-	}
-
-	s, err := c.openStream(ctx, serverID, sda.ProtocolID)
+	s, _, err := c.dial(ctx, sda.ProtocolID, cfg.ServerPeerID)
 	if err != nil {
 		return nil, err
 	}
@@ -1280,6 +1294,10 @@ func (c *Client) PatchDocument(ctx context.Context, ownerPeerID peer.ID, path st
 		return nil, err
 	}
 
+	if resp.Status >= 400 {
+		return nil, responseError("document patch", resp.Status, resp.Headers)
+	}
+
 	result := &wire.DocumentPutResponse{
 		Status: resp.Status,
 	}
@@ -1307,8 +1325,8 @@ func (c *Client) HeadDocument(ctx context.Context, ownerPeerID peer.ID, path str
 		return nil, err
 	}
 
-	if resp.Status == sda.StatusNotFound {
-		return nil, fmt.Errorf("document not found")
+	if resp.Status >= 400 {
+		return nil, responseError("document head", resp.Status, resp.Headers)
 	}
 
 	result := &wire.DocumentMetadata{}
@@ -1343,7 +1361,7 @@ func (c *Client) DeleteDocument(ctx context.Context, ownerPeerID peer.ID, path s
 		return false, err
 	}
 
-	return resp.Status != sda.StatusNotFound, nil
+	return deleteOutcome("document delete", resp.Status, resp.Headers)
 }
 
 // BatchDocumentPut is one document in a PutDocuments call. IfMatch is optional;

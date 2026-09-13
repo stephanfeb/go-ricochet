@@ -133,7 +133,21 @@ cl := client.New(h, client.Config{
     ConnectionTimeout: 10 * time.Second,
     MessageTimeout:    30 * time.Second,
 })
+defer cl.Close() // removes the client's handlers; the host stays yours to close
 ```
+
+Servers are tried in priority order and a server that cannot be dialled is
+passed over for the next, so listing more than one keeps the client working
+while one is down. A server that answers is never second-guessed: a refusal
+comes back from the first server that gave one. Naming a server explicitly
+(`WithDocServer` and friends) makes exactly one attempt.
+
+Every failure the server reports arrives as a typed error: `errors.Is(err,
+client.ErrForbidden)`, `client.ErrNotFound`, `client.ErrConflict` and so on,
+with the status and message on `*client.ProtocolError`. The delete calls
+return `false, nil` only for something that was already absent; a refusal or
+a server fault is an error, never "deleted". `GetDocument` is the one call
+that reports its status in the result, so a conditional get can see a 304.
 
 ### Sending Messages
 

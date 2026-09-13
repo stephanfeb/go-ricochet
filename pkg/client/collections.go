@@ -72,17 +72,7 @@ func (c *Client) doCollection(ctx context.Context, req *sca.CollectionRequest, o
 		return nil, fmt.Errorf("marshal collection request: %w", err)
 	}
 
-	var serverID peer.ID
-	if cfg.ServerPeerID != nil {
-		serverID = *cfg.ServerPeerID
-	} else {
-		serverID, err = c.selectServer()
-		if err != nil {
-			return nil, err
-		}
-	}
-
-	s, err := c.openStream(ctx, serverID, sca.ProtocolID)
+	s, _, err := c.dial(ctx, sca.ProtocolID, cfg.ServerPeerID)
 	if err != nil {
 		return nil, err
 	}
@@ -219,7 +209,7 @@ func (c *Client) DeleteCollection(ctx context.Context, path string, opts ...Coll
 		return false, err
 	}
 
-	return resp.Status != sca.StatusNotFound, nil
+	return deleteOutcome("collection delete", resp.Status, resp.Headers)
 }
 
 // ListCollections lists all collections for the given owner.
@@ -355,7 +345,7 @@ func (c *Client) DeleteCollectionItem(ctx context.Context, path, key string, opt
 		return false, err
 	}
 
-	return resp.Status != sca.StatusNotFound, nil
+	return deleteOutcome("collection item delete", resp.Status, resp.Headers)
 }
 
 // ListCollectionKeys returns one page of keys and the total. Use
@@ -382,9 +372,6 @@ func (c *Client) ListCollectionKeysPage(ctx context.Context, ownerPeerID peer.ID
 		return nil, err
 	}
 
-	if resp.Status == sca.StatusNotFound {
-		return nil, fmt.Errorf("collection not found")
-	}
 	if resp.Status != sca.StatusOK {
 		return nil, responseError("list collection keys", resp.Status, resp.Headers)
 	}
@@ -429,9 +416,6 @@ func (c *Client) QueryCollection(ctx context.Context, ownerPeerID peer.ID, path 
 		return nil, err
 	}
 
-	if resp.Status == sca.StatusNotFound {
-		return nil, fmt.Errorf("collection not found")
-	}
 	if resp.Status != sca.StatusOK {
 		return nil, responseError("query collection", resp.Status, resp.Headers)
 	}

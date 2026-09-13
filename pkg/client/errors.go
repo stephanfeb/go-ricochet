@@ -277,6 +277,21 @@ func headerError(op string, status int, headers map[string]any) error {
 // a 3xx arriving where the caller required a 200 — still has to surface as
 // something, or the caller gets a nil error alongside a nil result and reports
 // success it did not have.
+// deleteOutcome reads a delete reply. Absent is false with no error, gone is
+// true, and anything else is the typed error for its status: a 403 or a 500
+// used to read as "deleted", which is the one thing a delete must not lie
+// about.
+func deleteOutcome(op string, status int, headers map[string]any) (bool, error) {
+	switch {
+	case status == wire.StatusNotFound:
+		return false, nil
+	case status < 300:
+		return true, nil
+	default:
+		return false, responseError(op, status, headers)
+	}
+}
+
 func responseError(op string, status int, headers map[string]any) error {
 	if err := headerError(op, status, headers); err != nil {
 		return err

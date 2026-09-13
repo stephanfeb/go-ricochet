@@ -48,17 +48,7 @@ func (c *Client) doFeed(ctx context.Context, req *sfa.FeedRequest, opts []FeedOp
 		return nil, fmt.Errorf("marshal feed request: %w", err)
 	}
 
-	var serverID peer.ID
-	if cfg.ServerPeerID != nil {
-		serverID = *cfg.ServerPeerID
-	} else {
-		serverID, err = c.selectServer()
-		if err != nil {
-			return nil, err
-		}
-	}
-
-	s, err := c.openStream(ctx, serverID, sfa.ProtocolID)
+	s, _, err := c.dial(ctx, sfa.ProtocolID, cfg.ServerPeerID)
 	if err != nil {
 		return nil, err
 	}
@@ -445,7 +435,7 @@ func (c *Client) DeleteFeed(ctx context.Context, path string, opts ...FeedOption
 		return false, err
 	}
 
-	return resp.Status != sfa.StatusNotFound, nil
+	return deleteOutcome("feed delete", resp.Status, resp.Headers)
 }
 
 // ListFeeds lists all feeds for the given owner.

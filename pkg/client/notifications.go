@@ -19,6 +19,7 @@ type NotificationHandler func(*wire.Notification)
 // RegisterNotificationHandler registers a handler for incoming push notifications.
 // The handler is called on a separate goroutine for each notification.
 func (c *Client) RegisterNotificationHandler(handler NotificationHandler) {
+	c.notifying.Store(true)
 	c.host.SetStreamHandler(notify.ProtocolID, func(s network.Stream) {
 		defer s.Close()
 
