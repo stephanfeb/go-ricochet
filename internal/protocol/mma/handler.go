@@ -222,18 +222,6 @@ func dartNormalize() forge.Middleware {
 	}
 }
 
-// verifyOwner checks that the caller peer ID matches the claimed owner peer ID.
-func verifyOwner(ownerPeerIDStr string, callerID peer.ID) error {
-	if ownerPeerIDStr == "" {
-		// If no ownerPeerId provided, the caller is assumed to be the owner.
-		return nil
-	}
-	if ownerPeerIDStr != callerID.String() {
-		return fmt.Errorf("unauthorized: caller %s is not the mailbox owner %s", callerID.String(), ownerPeerIDStr)
-	}
-	return nil
-}
-
 // failed builds the response for a request the MDA or storage could not
 // serve. The prefix names the operation; the rest of the text is what the
 // client is allowed to see for that error, and the real error goes to the
@@ -256,8 +244,8 @@ func handleCreateMailbox(sc *forge.StreamContext, next func()) {
 	callerID := sc.PeerID
 
 	// Verify caller is the owner
-	if err := verifyOwner(req.OwnerPeerID, callerID); err != nil {
-		sc.Response = &AdminResponse{Success: false, ErrorMessage: err.Error()}
+	if err := wire.RequireSelf(sc, req.OwnerPeerID, "ownerPeerId"); err != nil {
+		sc.Err = err
 		return
 	}
 
@@ -314,8 +302,8 @@ func handleDeleteMailbox(sc *forge.StreamContext, next func()) {
 	mailboxServer, _ := forge.ServiceFrom[*mda.MailboxServer](sc, "mda")
 	callerID := sc.PeerID
 
-	if err := verifyOwner(req.OwnerPeerID, callerID); err != nil {
-		sc.Response = &AdminResponse{Success: false, ErrorMessage: err.Error()}
+	if err := wire.RequireSelf(sc, req.OwnerPeerID, "ownerPeerId"); err != nil {
+		sc.Err = err
 		return
 	}
 
@@ -349,8 +337,8 @@ func handleGrantAccess(sc *forge.StreamContext, next func()) {
 	mailboxServer, _ := forge.ServiceFrom[*mda.MailboxServer](sc, "mda")
 	callerID := sc.PeerID
 
-	if err := verifyOwner(req.OwnerPeerID, callerID); err != nil {
-		sc.Response = &AdminResponse{Success: false, ErrorMessage: err.Error()}
+	if err := wire.RequireSelf(sc, req.OwnerPeerID, "ownerPeerId"); err != nil {
+		sc.Err = err
 		return
 	}
 
@@ -412,8 +400,8 @@ func handleRevokeAccess(sc *forge.StreamContext, next func()) {
 	mailboxServer, _ := forge.ServiceFrom[*mda.MailboxServer](sc, "mda")
 	callerID := sc.PeerID
 
-	if err := verifyOwner(req.OwnerPeerID, callerID); err != nil {
-		sc.Response = &AdminResponse{Success: false, ErrorMessage: err.Error()}
+	if err := wire.RequireSelf(sc, req.OwnerPeerID, "ownerPeerId"); err != nil {
+		sc.Err = err
 		return
 	}
 
@@ -465,8 +453,8 @@ func handleListACL(sc *forge.StreamContext, next func()) {
 	mailboxServer, _ := forge.ServiceFrom[*mda.MailboxServer](sc, "mda")
 	callerID := sc.PeerID
 
-	if err := verifyOwner(req.OwnerPeerID, callerID); err != nil {
-		sc.Response = &AdminResponse{Success: false, ErrorMessage: err.Error()}
+	if err := wire.RequireSelf(sc, req.OwnerPeerID, "ownerPeerId"); err != nil {
+		sc.Err = err
 		return
 	}
 
@@ -515,8 +503,8 @@ func handleListMailboxes(sc *forge.StreamContext, next func()) {
 	mailboxServer, _ := forge.ServiceFrom[*mda.MailboxServer](sc, "mda")
 	callerID := sc.PeerID
 
-	if err := verifyOwner(req.OwnerPeerID, callerID); err != nil {
-		sc.Response = &AdminResponse{Success: false, ErrorMessage: err.Error()}
+	if err := wire.RequireSelf(sc, req.OwnerPeerID, "ownerPeerId"); err != nil {
+		sc.Err = err
 		return
 	}
 

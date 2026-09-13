@@ -319,9 +319,8 @@ func handleExpunge(sc *forge.StreamContext, next func()) {
 	mailbox, _ := forge.ServiceFrom[*mda.MailboxServer](sc, "mda")
 	callerID := sc.PeerID
 
-	// Verify requesting peer matches
-	if req.PeerID != callerID.String() {
-		sc.Response = map[string]string{"error": "unauthorized: can only expunge own mailboxes"}
+	if err := wire.RequireSelf(sc, req.PeerID, "peerId"); err != nil {
+		sc.Err = err
 		return
 	}
 

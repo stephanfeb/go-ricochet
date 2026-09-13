@@ -220,10 +220,11 @@ func commonValidation() forge.Middleware {
 
 		// Enforce owner-only access for write operations
 		isWrite := req.Operation == OpCREATE || req.Operation == OpPUT || req.Operation == OpDELETE
-		if isWrite && sc.PeerID != ownerID {
-			sc.Response = &CollectionResponse{Status: StatusForbidden,
-				Headers: map[string]any{"Error": "write operations require owner access"}}
-			return
+		if isWrite {
+			if err := wire.RequireOwner(sc, ownerID, "write operations"); err != nil {
+				sc.Err = err
+				return
+			}
 		}
 
 		sc.Logger.Debug("handling collection request",

@@ -244,8 +244,7 @@ func commonValidation() forge.Middleware {
 		isWrite := req.Operation == OpCREATE || req.Operation == OpAPPEND || req.Operation == OpDELETE
 		if isWrite && callerID != ownerID {
 			if req.Operation != OpAPPEND {
-				sc.Response = &FeedResponse{Status: StatusForbidden,
-					Headers: map[string]any{"Error": "write operations require owner access"}}
+				sc.Err = wire.RequireOwner(sc, ownerID, "write operations")
 				return
 			}
 			store, _ := forge.ServiceFrom[storage.Storage](sc, "storage")
@@ -261,8 +260,7 @@ func commonValidation() forge.Middleware {
 				return
 			}
 			if !feed.CollaborativeMode {
-				sc.Response = &FeedResponse{Status: StatusForbidden,
-					Headers: map[string]any{"Error": "write operations require owner access"}}
+				sc.Err = wire.RequireOwner(sc, ownerID, "write operations")
 				return
 			}
 			sc.Logger.Debug("allowing collaborative append",

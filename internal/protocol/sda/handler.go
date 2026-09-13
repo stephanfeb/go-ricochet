@@ -285,10 +285,11 @@ func commonValidation() forge.Middleware {
 		if envelope.Operation == OpDIRECTORY {
 			isWrite = envelope.DirectoryAction == "join" || envelope.DirectoryAction == "leave"
 		}
-		if isWrite && sc.PeerID != ownerID {
-			sc.Response = &DocResponse{Status: StatusForbidden,
-				Headers: map[string]any{"Error": "write operations require owner access"}}
-			return
+		if isWrite {
+			if err := wire.RequireOwner(sc, ownerID, "write operations"); err != nil {
+				sc.Err = err
+				return
+			}
 		}
 
 		next()

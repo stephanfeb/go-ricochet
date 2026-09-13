@@ -186,12 +186,12 @@ func batchSubmitHandler(sc *forge.StreamContext, next func()) {
 		// Same authorization rule as single submit: the sender must be the peer
 		// on the connection. Checked per message so a batch cannot smuggle a
 		// forged sender in alongside honest ones.
-		if msg.SenderPeerID != sc.PeerID.String() {
-			acks = append(acks, core.StoreAck{
-				MessageID:    msg.MessageID,
-				Success:      false,
-				ErrorMessage: "unauthorized: sender does not match connection",
-			})
+		if err := wire.RequireSelf(sc, msg.SenderPeerID, "sender"); err != nil {
+			ack := core.StoreAck{MessageID: msg.MessageID, Success: false}
+			ack.Status, _ = wire.Classify(err)
+			wire.LogRejection(sc, ack.Status, err)
+			ack.ErrorMessage = wire.ClientMessage(err)
+			acks = append(acks, ack)
 			continue
 		}
 
