@@ -61,7 +61,12 @@ The system follows an email-inspired agent separation:
 
 ### Database Setup
 
+The schema grants everything to a `ricochet` role. Create it with a password
+first; the schema creates it without one if it is missing, so the file runs on
+a fresh cluster either way.
+
 ```bash
+psql postgres -c "CREATE ROLE ricochet LOGIN PASSWORD 'secret'"
 createdb ricochet
 psql ricochet < schema.sql
 ```

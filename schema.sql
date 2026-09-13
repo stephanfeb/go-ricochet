@@ -336,6 +336,21 @@ CREATE TRIGGER trg_stored_messages_deleted
 -- PERMISSIONS
 -- =============================================================================
 
+-- The service role. Created here when it does not exist, so that this file
+-- runs on a fresh cluster: every grant below names the role, and on a server
+-- where nothing had created it the first grant failed with "role ricochet
+-- does not exist" and the rest of the file was never applied. A role created
+-- here has no password; set one before the server connects
+-- (ALTER ROLE ricochet PASSWORD '...'). A role created beforehand, as the
+-- deployment guide does, is left exactly as it was.
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'ricochet') THEN
+        CREATE ROLE ricochet LOGIN;
+    END IF;
+END
+$$;
+
 -- Grant schema usage to ricochet user
 GRANT USAGE ON SCHEMA public TO ricochet;
 
@@ -424,8 +439,6 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO ricochet;
 
 -- Grant sequence permissions (required for BIGSERIAL auto-increment columns)
 GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO ricochet;
-
--- Note: Views are covered by the GRANT ON ALL TABLES above (PostgreSQL treats views as tables for permissions)
 
 -- Set default privileges for future objects created in public schema
 -- This ensures new tables/sequences are automatically accessible
