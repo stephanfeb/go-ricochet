@@ -14,7 +14,7 @@ require (
 	github.com/prometheus/client_golang v1.24.1
 	github.com/prometheus/client_model v0.6.2
 	github.com/stephanfeb/go-libp2p-udx-transport v0.1.1
-	github.com/twostack/go-p2p-forge v0.1.4
+	github.com/twostack/go-p2p-forge v0.1.5
 	golang.org/x/crypto v0.54.0
 	gopkg.in/yaml.v3 v3.0.1
 )

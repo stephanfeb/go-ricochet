@@ -455,6 +455,10 @@ UDX (reliable UDP transport: ordered streams, congestion and flow control)
 UDP
 ```
 
+### DHT
+
+The server runs a Kademlia DHT in server mode for peer routing. A peer enters the server's routing table only while the server holds a direct connection to it that the server opened: a routing table entry is a promise to query that peer on its own, and an inbound connection from a client behind a NAT proves nothing about whether the server can reach it. Relayed connections never qualify. Bootstrap peers are dialled at start, and peers learned from lookups are dialled by the DHT, so the peers that belong in the table arrive over outbound connections; a peer that only ever dialled this server stays out until this server dials it.
+
 ### NAT Traversal
 
 The relay service is on by default, so a public server relays for the peers
