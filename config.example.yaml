@@ -136,10 +136,8 @@ intervals:
 
 # Feature flags
 #
-# All of them are listed with their defaults. Unlike most sections, a false
-# here is applied as false rather than treated as "unset" — the parser reads
-# every flag unconditionally — so omitting one turns it OFF rather than leaving
-# the default in place. List them all.
+# All of them are listed with their defaults. A flag you omit keeps the
+# preset's value; a flag you set, to true or false, is applied as written.
 features:
   # Accept mail submitted on another sender's behalf by a peer listed in
   # security.trusted_peers. Off, a submission whose sender is not the peer

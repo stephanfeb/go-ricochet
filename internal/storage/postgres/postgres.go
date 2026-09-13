@@ -48,17 +48,29 @@ func (s *PostgresStorage) Initialize(ctx context.Context) error {
 	return fmt.Errorf("Initialize must be called with InitializeWithConfig")
 }
 
-// InitializeWithConfig creates the connection pool using the provided config.
-func (s *PostgresStorage) InitializeWithConfig(ctx context.Context, cfg *core.PostgresConfig) error {
-	connStr := fmt.Sprintf("host=%s port=%d dbname=%s user=%s password=%s sslmode=%s pool_max_conns=%d",
-		cfg.Host, cfg.Port, cfg.Database, cfg.Username, cfg.Password, cfg.SSLMode, cfg.PoolSize)
-
-	poolCfg, err := pgxpool.ParseConfig(connStr)
+// poolConfig turns the parsed server config into a pool config. The
+// connection URI comes from core, which escapes every field; the pool size
+// and connect timeout are set on the parsed config rather than spliced into
+// a string.
+func poolConfig(cfg *core.PostgresConfig) (*pgxpool.Config, error) {
+	poolCfg, err := pgxpool.ParseConfig(cfg.ConnectionURI())
 	if err != nil {
-		return fmt.Errorf("parse postgres config: %w", err)
+		return nil, fmt.Errorf("parse postgres config: %w", err)
+	}
+	if cfg.PoolSize > 0 {
+		poolCfg.MaxConns = int32(cfg.PoolSize)
 	}
 	if cfg.ConnectTimeout > 0 {
 		poolCfg.ConnConfig.ConnectTimeout = cfg.ConnectTimeout
+	}
+	return poolCfg, nil
+}
+
+// InitializeWithConfig creates the connection pool using the provided config.
+func (s *PostgresStorage) InitializeWithConfig(ctx context.Context, cfg *core.PostgresConfig) error {
+	poolCfg, err := poolConfig(cfg)
+	if err != nil {
+		return err
 	}
 
 	pool, err := pgxpool.NewWithConfig(ctx, poolCfg)

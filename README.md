@@ -288,6 +288,12 @@ concurrency (`admission_control`) and connections rather than request rate —
 and can be turned on per protocol under `rate_limits`. Select a preset with
 `--development`, `--production` or `--high-capacity`.
 
+A config file (`--config`, or `/etc/ricochet/config.yaml` if present) is
+applied on top of the preset; `config.example.yaml` documents every key. A
+key the file omits keeps the preset's value, including feature flags. A file
+that cannot be read or parsed, or that contains a key the server does not
+know, stops the server at startup rather than running on the preset.
+
 ## Security
 
 ### End-to-End Encryption

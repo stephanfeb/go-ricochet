@@ -1,13 +1,17 @@
 package core
 
 import (
+	"bytes"
+	"errors"
 	"fmt"
-	"github.com/libp2p/go-libp2p/core/peer"
+	"io"
 	"net"
+	"net/url"
 	"os"
 	"strconv"
 	"time"
 
+	"github.com/libp2p/go-libp2p/core/peer"
 	"gopkg.in/yaml.v3"
 )
 
@@ -403,9 +407,28 @@ type PostgresConfig struct {
 }
 
 // ConnectionURI returns the PostgreSQL connection URI.
+//
+// It is assembled with net/url rather than formatted, so a password with
+// reserved characters, or no password at all, cannot shift the fields that
+// follow it. Formatting "password=%s sslmode=%s" with an empty password once
+// produced a password of "sslmode=disable" and a default sslmode.
 func (c *PostgresConfig) ConnectionURI() string {
-	return fmt.Sprintf("postgresql://%s:%s@%s:%d/%s?sslmode=%s",
-		c.Username, c.Password, c.Host, c.Port, c.Database, c.SSLMode)
+	u := url.URL{
+		Scheme: "postgresql",
+		Host:   net.JoinHostPort(c.Host, strconv.Itoa(c.Port)),
+		Path:   "/" + c.Database,
+	}
+	if c.Password != "" {
+		u.User = url.UserPassword(c.Username, c.Password)
+	} else {
+		u.User = url.User(c.Username)
+	}
+	q := url.Values{}
+	if c.SSLMode != "" {
+		q.Set("sslmode", c.SSLMode)
+	}
+	u.RawQuery = q.Encode()
+	return u.String()
 }
 
 // DefaultConfig returns the default server configuration.
@@ -649,18 +672,20 @@ type yamlFileConfig struct {
 		PresenceTimeoutSec     int `yaml:"presence_timeout_sec"`
 	} `yaml:"intervals"`
 
+	// Features are pointers so an omitted flag leaves the preset's value in
+	// place; only a flag the file actually sets is applied.
 	Features struct {
-		EnableForwarding         bool `yaml:"enable_forwarding"`
-		EnablePushDelivery       bool `yaml:"enable_push_delivery"`
-		EnablePresenceMonitoring bool `yaml:"enable_presence_monitoring"`
-		EnablePresenceBroadcast  bool `yaml:"enable_presence_broadcast"`
-		EnableMetrics            bool `yaml:"enable_metrics"`
-		EnableAuthentication     bool `yaml:"enable_authentication"`
-		EnableRelay              bool `yaml:"enable_relay"`
-		EnableRelayService       bool `yaml:"enable_relay_service"`
-		EnableAutoRelay          bool `yaml:"enable_auto_relay"`
-		EnableHolePunching       bool `yaml:"enable_hole_punching"`
-		EnableAutoNAT            bool `yaml:"enable_autonat"`
+		EnableForwarding         *bool `yaml:"enable_forwarding"`
+		EnablePushDelivery       *bool `yaml:"enable_push_delivery"`
+		EnablePresenceMonitoring *bool `yaml:"enable_presence_monitoring"`
+		EnablePresenceBroadcast  *bool `yaml:"enable_presence_broadcast"`
+		EnableMetrics            *bool `yaml:"enable_metrics"`
+		EnableAuthentication     *bool `yaml:"enable_authentication"`
+		EnableRelay              *bool `yaml:"enable_relay"`
+		EnableRelayService       *bool `yaml:"enable_relay_service"`
+		EnableAutoRelay          *bool `yaml:"enable_auto_relay"`
+		EnableHolePunching       *bool `yaml:"enable_hole_punching"`
+		EnableAutoNAT            *bool `yaml:"enable_autonat"`
 	} `yaml:"features"`
 
 	Security struct {
@@ -710,7 +735,10 @@ type yamlFileConfig struct {
 
 // LoadConfigFromFile reads a YAML config file and applies its values on top of
 // the provided base config. Only non-zero/non-empty values from the file
-// override the base.
+// override the base, except feature flags, which apply whenever present.
+//
+// Unknown keys are an error. A misspelt key that parsed as nothing would
+// leave the operator running with a setting they believe they changed.
 func LoadConfigFromFile(path string, base *ServerConfig) error {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -718,7 +746,9 @@ func LoadConfigFromFile(path string, base *ServerConfig) error {
 	}
 
 	var yc yamlFileConfig
-	if err := yaml.Unmarshal(data, &yc); err != nil {
+	dec := yaml.NewDecoder(bytes.NewReader(data))
+	dec.KnownFields(true)
+	if err := dec.Decode(&yc); err != nil && !errors.Is(err, io.EOF) {
 		return fmt.Errorf("parse config file: %w", err)
 	}
 
@@ -828,20 +858,25 @@ func LoadConfigFromFile(path string, base *ServerConfig) error {
 		base.PresenceTimeoutDuration = time.Duration(yc.Intervals.PresenceTimeoutSec) * time.Second
 	}
 
-	// Features section — booleans are applied unconditionally since we can't
-	// distinguish "not set" from "set to false" in YAML. The file should only
-	// contain values the operator intends.
-	base.EnableForwarding = yc.Features.EnableForwarding
-	base.EnablePushDelivery = yc.Features.EnablePushDelivery
-	base.EnablePresenceMonitoring = yc.Features.EnablePresenceMonitoring
-	base.EnablePresenceBroadcast = yc.Features.EnablePresenceBroadcast
-	base.EnableMetrics = yc.Features.EnableMetrics
-	base.EnableAuthentication = yc.Features.EnableAuthentication
-	base.EnableRelay = yc.Features.EnableRelay
-	base.EnableRelayService = yc.Features.EnableRelayService
-	base.EnableAutoRelay = yc.Features.EnableAutoRelay
-	base.EnableHolePunching = yc.Features.EnableHolePunching
-	base.EnableAutoNAT = yc.Features.EnableAutoNAT
+	// Features section. A flag the file does not mention keeps the preset's
+	// value; a config file that only sets what it means to change must not
+	// silently turn everything else off.
+	setFlag := func(dst *bool, src *bool) {
+		if src != nil {
+			*dst = *src
+		}
+	}
+	setFlag(&base.EnableForwarding, yc.Features.EnableForwarding)
+	setFlag(&base.EnablePushDelivery, yc.Features.EnablePushDelivery)
+	setFlag(&base.EnablePresenceMonitoring, yc.Features.EnablePresenceMonitoring)
+	setFlag(&base.EnablePresenceBroadcast, yc.Features.EnablePresenceBroadcast)
+	setFlag(&base.EnableMetrics, yc.Features.EnableMetrics)
+	setFlag(&base.EnableAuthentication, yc.Features.EnableAuthentication)
+	setFlag(&base.EnableRelay, yc.Features.EnableRelay)
+	setFlag(&base.EnableRelayService, yc.Features.EnableRelayService)
+	setFlag(&base.EnableAutoRelay, yc.Features.EnableAutoRelay)
+	setFlag(&base.EnableHolePunching, yc.Features.EnableHolePunching)
+	setFlag(&base.EnableAutoNAT, yc.Features.EnableAutoNAT)
 
 	// Security section
 	if len(yc.Security.TrustedPeers) > 0 {

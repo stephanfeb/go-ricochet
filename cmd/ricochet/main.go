@@ -80,12 +80,15 @@ func main() {
 			cfgPath = "/etc/ricochet/config.yaml"
 		}
 	}
+	// A config file that cannot be read or parsed is fatal. Starting on the
+	// preset instead would run the server with settings the operator did not
+	// choose, announced by one warning line in a log nobody reads at boot.
 	if cfgPath != "" {
 		if err := core.LoadConfigFromFile(cfgPath, cfg); err != nil {
-			fmt.Fprintf(os.Stderr, "WARNING: failed to load config file %s: %v\n", cfgPath, err)
-		} else {
-			fmt.Printf("Loaded config from %s\n", cfgPath)
+			fmt.Fprintf(os.Stderr, "failed to load config file %s: %v\n", cfgPath, err)
+			os.Exit(2)
 		}
+		fmt.Printf("Loaded config from %s\n", cfgPath)
 	}
 
 	// Apply CLI overrides (take precedence over config file)
