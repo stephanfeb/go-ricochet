@@ -17,6 +17,9 @@ import (
 	"github.com/twostack/go-p2p-forge/middleware"
 
 	"github.com/twostack/go-ricochet/internal/admission"
+	"github.com/twostack/go-ricochet/internal/capacity"
+	"github.com/twostack/go-ricochet/internal/core"
+	"github.com/twostack/go-ricochet/internal/mda/mailboxes"
 	"github.com/twostack/go-ricochet/internal/metrics"
 	"github.com/twostack/go-ricochet/internal/protocol/wire"
 	"github.com/twostack/go-ricochet/internal/ratelimit"
@@ -115,6 +118,7 @@ func NewPipeline(logger *slog.Logger, pool *codec.BufferPool, reg *forge.Registr
 		forge.FrameDecodeMiddleware(pool),
 		middleware.DualRateLimitMiddleware(limiter, isWriteClassifier),
 		admission.Middleware(admission.FromRegistry(reg)),
+		capacity.WriteGate(capacity.FromRegistry(reg), isWriteClassifier),
 		forge.JSONDeserialize[FeedRequest](),
 		commonValidation(),
 		middleware.OperationRouter("operation", map[string]forge.Middleware{
@@ -209,44 +213,39 @@ func commonValidation() forge.Middleware {
 			}
 		}
 
-		// Enforce owner-only access for write operations.
-		// Exception: APPEND is allowed on collaborative feeds (auto-created if needed).
+		// Enforce owner-only access for write operations. The one exception
+		// is APPEND to a feed its owner created as collaborative. A missing
+		// feed is a 404 for a non-owner: the server used to create it on
+		// their behalf, as collaborative, which let anyone plant feeds under
+		// any identity that then showed in that identity's public listing
+		// and that the owner could not make private again.
 		callerID := sc.PeerID
 		isWrite := req.Operation == OpCREATE || req.Operation == OpAPPEND || req.Operation == OpDELETE
 		if isWrite && callerID != ownerID {
-			if req.Operation == OpAPPEND {
-				store, _ := forge.ServiceFrom[storage.Storage](sc, "storage")
-				ctx := context.Background()
-				feed, err := store.GetFeed(ctx, ownerID, req.Path)
-				if err != nil {
-					sc.Response = &FeedResponse{Status: StatusInternalError,
-						Headers: map[string]any{"Error": "failed to check feed"}}
-					return
-				}
-				if feed == nil {
-					// Auto-create as collaborative feed for non-owner appends
-					feed, err = store.CreateFeed(ctx, ownerID, req.Path, "", "", true)
-					if err != nil {
-						sc.Logger.Error("failed to auto-create collaborative feed",
-							"path", req.Path, "owner", ownerID, "error", err)
-						sc.Response = &FeedResponse{Status: StatusInternalError,
-							Headers: map[string]any{"Error": "failed to create feed"}}
-						return
-					}
-					sc.Logger.Info("auto-created collaborative feed for non-owner append",
-						"path", req.Path, "owner", ownerID, "contributor", callerID)
-				} else if !feed.CollaborativeMode {
-					sc.Response = &FeedResponse{Status: StatusForbidden,
-						Headers: map[string]any{"Error": "write operations require owner access"}}
-					return
-				}
-				sc.Logger.Debug("allowing collaborative append",
-					"feed", req.Path, "owner", ownerID, "contributor", callerID)
-			} else {
+			if req.Operation != OpAPPEND {
 				sc.Response = &FeedResponse{Status: StatusForbidden,
 					Headers: map[string]any{"Error": "write operations require owner access"}}
 				return
 			}
+			store, _ := forge.ServiceFrom[storage.Storage](sc, "storage")
+			feed, err := store.GetFeed(context.Background(), ownerID, req.Path)
+			if err != nil {
+				sc.Response = &FeedResponse{Status: StatusInternalError,
+					Headers: map[string]any{"Error": "failed to check feed"}}
+				return
+			}
+			if feed == nil {
+				sc.Response = &FeedResponse{Status: StatusNotFound,
+					Headers: map[string]any{"Error": "feed not found"}}
+				return
+			}
+			if !feed.CollaborativeMode {
+				sc.Response = &FeedResponse{Status: StatusForbidden,
+					Headers: map[string]any{"Error": "write operations require owner access"}}
+				return
+			}
+			sc.Logger.Debug("allowing collaborative append",
+				"feed", req.Path, "owner", ownerID, "contributor", callerID)
 		}
 
 		sc.Logger.Debug("handling feed request",
@@ -468,6 +467,23 @@ func appendHandler(sc *forge.StreamContext, next func()) {
 		sc.Response = &FeedResponse{Status: StatusBadRequest,
 			Headers: map[string]any{"Error": "invalid base64 body"}}
 		return
+	}
+
+	// Entries per feed are capped by the server. The feed's own max_entries
+	// is a rolling window applied by maintenance; this is the ceiling under
+	// which a collaborative feed cannot be filled without limit by whoever
+	// may append to it.
+	if cfg, ok := forge.ServiceFrom[*core.ServerConfig](sc, "config"); ok && cfg != nil && cfg.MaxEntriesPerFeed > 0 {
+		count, err := store.CountFeedEntries(ctx, feed.ID)
+		if err != nil {
+			sc.Logger.Error("failed to count feed entries", "error", err)
+			sc.Response = &FeedResponse{Status: StatusInternalError}
+			return
+		}
+		if count >= cfg.MaxEntriesPerFeed {
+			sc.Err = &mailboxes.QuotaExceededError{What: "entries per feed", Current: count, Max: cfg.MaxEntriesPerFeed}
+			return
+		}
 	}
 
 	entry, err := store.AppendFeedEntry(ctx, feed.ID, content, callerID, req.EntryType)

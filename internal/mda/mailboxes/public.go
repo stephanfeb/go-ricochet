@@ -48,6 +48,17 @@ func (m *PublicMailbox) StoreMessage(ctx context.Context, msg *core.Message) err
 		}
 	}
 
+	// The cap applies here as it does to the other types. It used to be
+	// missing, so a public mailbox was the one place an owner could store
+	// without limit.
+	count, err := m.storage.GetMessageCount(ctx, m.record.ID)
+	if err != nil {
+		return err
+	}
+	if count >= m.record.MaxMessages {
+		return &MailboxFullError{Current: count, Max: m.record.MaxMessages}
+	}
+
 	if _, err := m.storage.StoreMessage(ctx, m.record, msg); err != nil {
 		return err
 	}

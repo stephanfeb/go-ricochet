@@ -227,7 +227,6 @@ func verifyOwner(ownerPeerIDStr string, callerID peer.ID) error {
 func handleCreateMailbox(sc *forge.StreamContext, next func()) {
 	req := sc.Request.(*AdminRequest)
 	mailboxServer, _ := forge.ServiceFrom[*mda.MailboxServer](sc, "mda")
-	config, _ := forge.ServiceFrom[*core.ServerConfig](sc, "config")
 	callerID := sc.PeerID
 
 	// Verify caller is the owner
@@ -259,18 +258,17 @@ func handleCreateMailbox(sc *forge.StreamContext, next func()) {
 		return
 	}
 
-	maxMessages := config.MaxMessagesPerMailbox
-	if req.MaxMessages != nil {
-		maxMessages = *req.MaxMessages
-	}
-
-	retentionDays := 30
-	if req.RetentionDays != nil {
-		retentionDays = *req.RetentionDays
+	defaults := mailboxServer.MailboxDefaults()
+	maxMessages, retentionDays, retentionCount, err := clampMailboxSettings(defaults,
+		req.MaxMessages, req.RetentionDays, req.RetentionCount,
+		defaults.MaxMessages, defaults.RetentionDays, nil)
+	if err != nil {
+		sc.Response = &AdminResponse{Success: false, ErrorMessage: err.Error()}
+		return
 	}
 
 	ctx := context.Background()
-	if err := mailboxServer.CreateMailbox(ctx, addr, maxMessages, retentionDays, req.RetentionCount); err != nil {
+	if err := mailboxServer.CreateMailbox(ctx, addr, maxMessages, retentionDays, retentionCount); err != nil {
 		sc.Response = &AdminResponse{Success: false, ErrorMessage: fmt.Sprintf("failed to create mailbox: %v", err)}
 		return
 	}
@@ -543,14 +541,13 @@ func handleUpdateConfig(sc *forge.StreamContext, next func()) {
 		return
 	}
 
-	if req.MaxMessages != nil {
-		record.MaxMessages = *req.MaxMessages
-	}
-	if req.RetentionDays != nil {
-		record.RetentionDays = *req.RetentionDays
-	}
-	if req.RetentionCount != nil {
-		record.RetentionCount = req.RetentionCount
+	record.MaxMessages, record.RetentionDays, record.RetentionCount, err = clampMailboxSettings(
+		mailboxServer.MailboxDefaults(),
+		req.MaxMessages, req.RetentionDays, req.RetentionCount,
+		record.MaxMessages, record.RetentionDays, record.RetentionCount)
+	if err != nil {
+		sc.Response = &AdminResponse{Success: false, ErrorMessage: err.Error()}
+		return
 	}
 
 	if err := mailboxServer.Storage.UpdateMailbox(ctx, record); err != nil {
@@ -644,4 +641,45 @@ func handleQueryCapacity(sc *forge.StreamContext, next func()) {
 		Success:  true,
 		Capacity: view,
 	}
+}
+
+// clampMailboxSettings resolves the settings a client asked for against the
+// server's ceilings. A value the client did not send keeps its current
+// value. A value above the ceiling is lowered to it, not refused: a client
+// that asks for more than the server allows is asking for "as much as you
+// have", and older clients send their own defaults without knowing the
+// server's. A value of zero or less is refused, since it is never what
+// anyone meant: a cap of zero is a mailbox that accepts nothing, and a
+// negative retention deletes the future.
+//
+// Before this, the values went to storage as sent. An owner could set a
+// two-billion-message cap, or a retention of minus five days, and the
+// operator's capacity model with it.
+func clampMailboxSettings(defaults mda.MailboxDefaults, maxMessages, retentionDays, retentionCount *int,
+	curMax, curRetention int, curCount *int) (int, int, *int, error) {
+	outMax, outRetention, outCount := curMax, curRetention, curCount
+	if maxMessages != nil {
+		if *maxMessages <= 0 {
+			return 0, 0, nil, fmt.Errorf("maxMessages must be positive")
+		}
+		outMax = min(*maxMessages, defaults.MaxMessages)
+	}
+	if retentionDays != nil {
+		if *retentionDays <= 0 {
+			return 0, 0, nil, fmt.Errorf("retentionDays must be positive")
+		}
+		outRetention = min(*retentionDays, defaults.RetentionDays)
+	}
+	if retentionCount != nil {
+		if *retentionCount <= 0 {
+			return 0, 0, nil, fmt.Errorf("retentionCount must be positive")
+		}
+		c := min(*retentionCount, defaults.MaxMessages)
+		outCount = &c
+	}
+	// A mailbox already above the ceiling keeps what it has; lowering an
+	// existing cap out from under its owner is the operator's decision to
+	// make explicitly, not a side effect of the owner touching an
+	// unrelated setting.
+	return outMax, outRetention, outCount, nil
 }

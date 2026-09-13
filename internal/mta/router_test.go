@@ -86,8 +86,8 @@ func (m *mockStorage) Close() error                       { return nil }
 
 // --- Mailbox operations (not used by tests) ---
 
-func (m *mockStorage) FindMailbox(_ context.Context, _ peer.ID, _ string) (*storage.MailboxRecord, error) {
-	panic("not implemented")
+func (m *mockStorage) FindMailbox(_ context.Context, ownerID peer.ID, folderPath string) (*storage.MailboxRecord, error) {
+	return m.mailboxes[ownerID.String()+"/"+folderPath], nil
 }
 
 func (m *mockStorage) ListMailboxes(_ context.Context, _ peer.ID) ([]*storage.MailboxRecord, error) {
@@ -487,3 +487,16 @@ func TestAcceptMessage_RateLimit(t *testing.T) {
 		t.Fatalf("expected RateLimitError, got %T: %v", err, err)
 	}
 }
+
+func (m *mockStorage) CountMailboxes(_ context.Context, ownerID peer.ID) (int, int, error) {
+	owner := 0
+	for _, rec := range m.mailboxes {
+		if rec.OwnerPeerID == ownerID.String() {
+			owner++
+		}
+	}
+	return owner, len(m.mailboxes), nil
+}
+func (m *mockStorage) EnforceAllRetention(_ context.Context) (int, error)       { return 0, nil }
+func (m *mockStorage) EnforceAllFeedRetention(_ context.Context) (int, error)   { return 0, nil }
+func (m *mockStorage) CountFeedEntries(_ context.Context, _ int64) (int, error) { return 0, nil }

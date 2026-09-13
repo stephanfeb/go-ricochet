@@ -51,17 +51,33 @@ facts, each of which bit us:
    that consumes is `markDelivered`: it **deletes non-persistent** messages and sets
    `\Seen` on **persistent** ones. (Before 2026-09 the private mailbox deleted
    non-persistent messages *during* retrieval, before the response was written, so a
-   dropped connection or an oversized page lost them.) On the private/shared write
-   path there is no age-based pruning either (only `public.go` calls
-   `EnforceRetentionPolicy`). Persistent messages sit until the client **explicitly
-   deletes** them — or until the mailbox hits `storage.max_messages_per_mailbox`
-   (default **1000**) and rejects everything.
+   dropped connection or an oversized page lost them.) Persistent messages sit
+   until the client **explicitly deletes** them, until the mailbox's
+   `retentionDays` passes (default **30**, enforced for every mailbox type by the
+   maintenance sweep; before 2026-09 only public mailboxes were swept), or until
+   the mailbox hits its `maxMessages` cap (default **1000**) and rejects
+   everything. A message's own `expiryTimestamp` is clamped to the mailbox's
+   retention on delivery, so a sender cannot ask for longer than the owner keeps.
 4. **Retrieval is paged.** A retrieve returns at most `maxMessages` (default 100,
    cap 1000) and never more than fits one 10 MB frame. `hasMore` in the response
    metadata says a further page exists; fetch it with `fromSequence` set past the
    last message's `sequenceNumber`. The Go client exposes this as `RetrievePage`.
+5. **Everything is capped, and the caps are the server's.** A sender's folder
+   path is validated on delivery (at most 256 bytes, no control characters, no
+   leading, trailing or doubled `/`). An owner may hold at most
+   `storage.max_mailboxes_per_owner` folders (default **100**) whoever creates
+   them, and the server at most `storage.max_mailboxes`; the create that would
+   exceed either is a `507`. `maxMessages`, `retentionDays` and `retentionCount`
+   sent on `createMailbox`/`updateConfig` are clamped to the server's
+   `max_messages_per_mailbox` and `retention_days`, and refused if zero or
+   negative. Public mailboxes are capped like the others. Once the database on
+   disk reaches `max_storage_gb`, every write — submission, documents, feeds,
+   collections — is refused with a `507` until space is freed. What is *not*
+   bounded is who may write to a private mailbox: any peer can, up to those caps,
+   and identities are free, so a determined peer can still fill an open inbox to
+   its `maxMessages`. Use a shared mailbox with an ACL where that matters.
 
-Hold those three and the gotchas below are corollaries.
+Hold those and the gotchas below are corollaries.
 
 ---
 

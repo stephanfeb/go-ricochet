@@ -21,6 +21,7 @@ import (
 	"github.com/twostack/go-p2p-forge/middleware"
 
 	"github.com/twostack/go-ricochet/internal/admission"
+	"github.com/twostack/go-ricochet/internal/capacity"
 	"github.com/twostack/go-ricochet/internal/mda/mailboxes"
 )
 
@@ -79,6 +80,19 @@ func Classify(err error) (status int, retryAfter time.Duration) {
 	var full *mailboxes.MailboxFullError
 	if errors.As(err, &full) {
 		return StatusInsufficientStorage, 0
+	}
+	// A quota and a server over its storage budget are the same shape as a
+	// full mailbox: retrying does nothing until something is deleted.
+	var quota *mailboxes.QuotaExceededError
+	if errors.As(err, &quota) {
+		return StatusInsufficientStorage, 0
+	}
+	if errors.Is(err, capacity.ErrStorageFull) {
+		return StatusInsufficientStorage, 0
+	}
+	var badPath *mailboxes.InvalidPathError
+	if errors.As(err, &badPath) {
+		return StatusBadRequest, 0
 	}
 
 	// Access-control refusals from the mailbox types. Before these were

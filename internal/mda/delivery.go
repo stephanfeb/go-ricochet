@@ -41,6 +41,12 @@ const (
 type MailboxDefaults struct {
 	MaxMessages   int
 	RetentionDays int
+
+	// MaxMailboxesPerOwner and MaxMailboxes are the quotas a create is
+	// checked against. Zero means unlimited, which is only for hand-built
+	// servers in tests; DefaultsFromConfig always sets both.
+	MaxMailboxesPerOwner int
+	MaxMailboxes         int
 }
 
 // DefaultsFromConfig derives the delivery-time defaults from the server
@@ -56,8 +62,10 @@ func DefaultsFromConfig(cfg *core.ServerConfig) MailboxDefaults {
 		return MailboxDefaults{}.orFallbacks()
 	}
 	return MailboxDefaults{
-		MaxMessages:   cfg.MaxMessagesPerMailbox,
-		RetentionDays: retentionDays(cfg.RetentionPolicy),
+		MaxMessages:          cfg.MaxMessagesPerMailbox,
+		RetentionDays:        retentionDays(cfg.RetentionPolicy),
+		MaxMailboxesPerOwner: cfg.MaxMailboxesPerOwner,
+		MaxMailboxes:         cfg.MaxMailboxes,
 	}.orFallbacks()
 }
 
@@ -129,6 +137,17 @@ func (s *MailboxServer) MailboxDefaults() MailboxDefaults {
 
 // getMailbox gets or creates a mailbox, using the stored type from the database.
 func (s *MailboxServer) getMailbox(ctx context.Context, addr *core.MailboxAddress) (mailboxes.Mailbox, error) {
+	return s.getOrCreateMailbox(ctx, addr, s.defaults.MaxMessages, s.defaults.RetentionDays, nil)
+}
+
+// getOrCreateMailbox returns the existing mailbox at addr or creates it with
+// the given settings, refusing the create when it would exceed a quota.
+//
+// The quota check sits between find and create rather than inside the
+// storage upsert, so two concurrent creates can each pass it and land one
+// over the line. That is the trade: a single query on the rare create path
+// against a serialising lock on every delivery to a new address.
+func (s *MailboxServer) getOrCreateMailbox(ctx context.Context, addr *core.MailboxAddress, maxMessages, retentionDays int, retentionCount *int) (mailboxes.Mailbox, error) {
 	key := addr.FullPath()
 
 	s.mu.RLock()
@@ -138,11 +157,19 @@ func (s *MailboxServer) getMailbox(ctx context.Context, addr *core.MailboxAddres
 	}
 	s.mu.RUnlock()
 
-	// Get or create mailbox in storage. An existing mailbox keeps the settings
-	// it was created with; these apply only when delivery is what brings the
-	// mailbox into existence.
-	record, err := s.Storage.GetOrCreateMailbox(ctx, addr,
-		s.defaults.MaxMessages, s.defaults.RetentionDays, nil)
+	existing, err := s.Storage.FindMailbox(ctx, addr.OwnerID, addr.FolderPath)
+	if err != nil {
+		return nil, fmt.Errorf("find mailbox: %w", err)
+	}
+	if existing == nil {
+		if err := s.checkMailboxQuota(ctx, addr.OwnerID); err != nil {
+			return nil, err
+		}
+	}
+
+	// An existing mailbox keeps the settings it was created with; these
+	// apply only when this call is what brings the mailbox into existence.
+	record, err := s.Storage.GetOrCreateMailbox(ctx, addr, maxMessages, retentionDays, retentionCount)
 	if err != nil {
 		return nil, fmt.Errorf("get or create mailbox: %w", err)
 	}
@@ -165,6 +192,40 @@ func (s *MailboxServer) getMailbox(ctx context.Context, addr *core.MailboxAddres
 	return mb, nil
 }
 
+// checkMailboxQuota refuses a create that would take the owner or the
+// server past its configured mailbox count.
+func (s *MailboxServer) checkMailboxQuota(ctx context.Context, ownerID peer.ID) error {
+	perOwner, total := s.defaults.MaxMailboxesPerOwner, s.defaults.MaxMailboxes
+	if perOwner <= 0 && total <= 0 {
+		return nil
+	}
+	owned, all, err := s.Storage.CountMailboxes(ctx, ownerID)
+	if err != nil {
+		return fmt.Errorf("count mailboxes: %w", err)
+	}
+	if perOwner > 0 && owned >= perOwner {
+		return &mailboxes.QuotaExceededError{What: "mailboxes per owner", Current: owned, Max: perOwner}
+	}
+	if total > 0 && all >= total {
+		return &mailboxes.QuotaExceededError{What: "mailboxes", Current: all, Max: total}
+	}
+	return nil
+}
+
+// clampExpiry bounds a message's life to its mailbox's retention. The
+// sender chooses the expiry, and a sender who chose the year 2200 used to
+// get exactly that; a message now lives at most retention_days from now
+// whatever it asked for, and one that asked for nothing gets the same.
+func clampExpiry(msg *core.Message, record *storage.MailboxRecord, now time.Time) {
+	if record.RetentionDays <= 0 {
+		return
+	}
+	limit := now.Add(time.Duration(record.RetentionDays) * 24 * time.Hour).UnixMilli()
+	if msg.ExpiryTimestamp <= 0 || msg.ExpiryTimestamp > limit {
+		msg.ExpiryTimestamp = limit
+	}
+}
+
 // DeliverLocal delivers a message to a local mailbox.
 func (s *MailboxServer) DeliverLocal(ctx context.Context, msg *core.Message) (int, error) {
 	s.logger.Info("delivering message",
@@ -184,16 +245,20 @@ func (s *MailboxServer) DeliverLocal(ctx context.Context, msg *core.Message) (in
 		return 0, fmt.Errorf("decode recipient peer ID: %w", err)
 	}
 
-	addr := &core.MailboxAddress{
-		OwnerID:    recipientID,
-		FolderPath: folderPath,
-		Type:       core.MailboxPrivate, // Default for auto-created mailboxes
+	// The sender names the folder, so the path is validated here as it is
+	// on an explicit create; delivery used to skip that and accept anything
+	// up to a frame in length.
+	addr, err := core.NewMailboxAddress(recipientID, folderPath, core.MailboxPrivate)
+	if err != nil {
+		return 0, &mailboxes.InvalidPathError{Path: folderPath, Reason: err}
 	}
 
 	mb, err := s.getMailbox(ctx, addr)
 	if err != nil {
 		return 0, err
 	}
+
+	clampExpiry(msg, mb.Record(), time.Now())
 
 	if err := mb.StoreMessage(ctx, msg); err != nil {
 		return 0, err
@@ -330,11 +395,11 @@ func (s *MailboxServer) DeleteMessages(ctx context.Context, callerID peer.ID, me
 	return s.Storage.DeleteOwnedMessages(ctx, callerID, messageIDs)
 }
 
-// CreateMailbox creates a new mailbox with the given options.
+// CreateMailbox creates a new mailbox with the given options, subject to
+// the same quotas as a delivery-created one.
 func (s *MailboxServer) CreateMailbox(ctx context.Context, addr *core.MailboxAddress, maxMessages, retentionDays int, retentionCount *int) error {
-	_, err := s.Storage.GetOrCreateMailbox(ctx, addr, maxMessages, retentionDays, retentionCount)
-	if err != nil {
-		return fmt.Errorf("create mailbox: %w", err)
+	if _, err := s.getOrCreateMailbox(ctx, addr, maxMessages, retentionDays, retentionCount); err != nil {
+		return err
 	}
 
 	s.logger.Info("created mailbox",
@@ -383,23 +448,21 @@ func (s *MailboxServer) PerformMaintenance(ctx context.Context) error {
 		s.logger.Info("deleted expired messages", "count", expiredCount)
 	}
 
-	// Enforce retention on public mailboxes
-	s.mu.RLock()
-	var publicMailboxes []*storage.MailboxRecord
-	for _, mb := range s.mailboxCache {
-		if mb.Record().Type == core.MailboxPublic {
-			publicMailboxes = append(publicMailboxes, mb.Record())
-		}
+	// Retention for every mailbox, private ones included. This used to
+	// walk the delivery cache and act only on the public mailboxes in it,
+	// so retention_days on a private mailbox was decoration.
+	retained, err := s.Storage.EnforceAllRetention(ctx)
+	if err != nil {
+		s.logger.Warn("failed to enforce mailbox retention", "error", err)
+	} else if retained > 0 {
+		s.logger.Info("retention removed messages", "count", retained)
 	}
-	s.mu.RUnlock()
 
-	for _, record := range publicMailboxes {
-		if err := s.Storage.EnforceRetentionPolicy(ctx, record); err != nil {
-			s.logger.Warn("failed to enforce retention policy",
-				"mailbox", record.FullPath(),
-				"error", err,
-			)
-		}
+	feedRetained, err := s.Storage.EnforceAllFeedRetention(ctx)
+	if err != nil {
+		s.logger.Warn("failed to enforce feed retention", "error", err)
+	} else if feedRetained > 0 {
+		s.logger.Info("feed retention removed entries", "count", feedRetained)
 	}
 
 	s.logger.Info("MDA maintenance complete")

@@ -136,3 +136,30 @@ func trimToBytes(messages []*core.Message, maxBytes int) ([]*core.Message, bool,
 	}
 	return messages, false, nil
 }
+
+// QuotaExceededError refuses a create that would take an owner, or the
+// server, past a configured count. Like MailboxFullError it is a 507: the
+// condition clears only when something is deleted, so a client that retries
+// on a timer is wasting both ends' time.
+type QuotaExceededError struct {
+	What    string // "mailboxes per owner", "mailboxes", "entries per feed"
+	Current int
+	Max     int
+}
+
+func (e *QuotaExceededError) Error() string {
+	return fmt.Sprintf("quota exceeded: %s %d/%d", e.What, e.Current, e.Max)
+}
+
+// InvalidPathError refuses a folder path that fails validation. It is a
+// 400: the sender chose the path and can choose another.
+type InvalidPathError struct {
+	Path   string
+	Reason error
+}
+
+func (e *InvalidPathError) Error() string {
+	return fmt.Sprintf("invalid folder path %q: %v", e.Path, e.Reason)
+}
+
+func (e *InvalidPathError) Unwrap() error { return e.Reason }

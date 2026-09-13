@@ -16,6 +16,7 @@ import (
 	"github.com/twostack/go-p2p-forge/middleware"
 
 	"github.com/twostack/go-ricochet/internal/admission"
+	"github.com/twostack/go-ricochet/internal/capacity"
 	"github.com/twostack/go-ricochet/internal/metrics"
 	"github.com/twostack/go-ricochet/internal/protocol/wire"
 	"github.com/twostack/go-ricochet/internal/ratelimit"
@@ -98,6 +99,7 @@ func NewPipeline(logger *slog.Logger, pool *codec.BufferPool, reg *forge.Registr
 		forge.FrameDecodeMiddleware(pool),
 		middleware.DualRateLimitMiddleware(limiter, isWriteClassifier),
 		admission.Middleware(admission.FromRegistry(reg)),
+		capacity.WriteGate(capacity.FromRegistry(reg), isWriteClassifier),
 		forge.JSONDeserialize[CollectionRequest](),
 		commonValidation(),
 		middleware.OperationRouter("operation", map[string]forge.Middleware{

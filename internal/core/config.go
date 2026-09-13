@@ -24,7 +24,16 @@ type ServerConfig struct {
 	MaxStorageBytes       int64                `yaml:"max_storage_bytes" json:"maxStorageBytes"`
 	RetentionPolicy       time.Duration        `yaml:"retention_policy" json:"retentionPolicy"`
 	MaxMessagesPerMailbox int                  `yaml:"max_messages_per_mailbox" json:"maxMessagesPerMailbox"`
-	MaxMailboxes          int                  `yaml:"max_mailboxes" json:"maxMailboxes"`
+	// MaxMailboxes caps mailboxes across the whole server; a delivery or
+	// create that would exceed it is refused.
+	MaxMailboxes int `yaml:"max_mailboxes" json:"maxMailboxes"`
+	// MaxMailboxesPerOwner caps the folders one identity may hold. Delivery
+	// creates a folder on the sender's say-so, so without this any peer
+	// could give any other peer an unbounded number of them.
+	MaxMailboxesPerOwner int `yaml:"max_mailboxes_per_owner" json:"maxMailboxesPerOwner"`
+	// MaxEntriesPerFeed caps entries in one feed. A feed's own max_entries
+	// is a rolling window the owner chooses; this is the ceiling under it.
+	MaxEntriesPerFeed int `yaml:"max_entries_per_feed" json:"maxEntriesPerFeed"`
 
 	// NearCapacityRatio is the fill fraction at which a mailbox counts as
 	// near capacity, driving ricochet_mailboxes_near_capacity and the figure
@@ -408,6 +417,8 @@ func DefaultConfig() *ServerConfig {
 		RetentionPolicy:       30 * 24 * time.Hour,     // 30 days
 		MaxMessagesPerMailbox: 1000,
 		MaxMailboxes:          100000,
+		MaxMailboxesPerOwner:  100,
+		MaxEntriesPerFeed:     10000,
 		NearCapacityRatio:     0.9,
 
 		Storage: StorageBackendConfig{
@@ -500,6 +511,15 @@ func (c *ServerConfig) Validate() error {
 	if c.MaxMessagesPerMailbox <= 0 {
 		return fmt.Errorf("max_messages_per_mailbox must be positive")
 	}
+	if c.MaxMailboxes <= 0 {
+		return fmt.Errorf("max_mailboxes must be positive")
+	}
+	if c.MaxMailboxesPerOwner <= 0 {
+		return fmt.Errorf("max_mailboxes_per_owner must be positive")
+	}
+	if c.MaxEntriesPerFeed <= 0 {
+		return fmt.Errorf("max_entries_per_feed must be positive")
+	}
 	// A ratio above 1 would make the near-capacity count silently unreachable
 	// for a mailbox that is merely full, which is the state it exists to warn
 	// about. Zero means "use the default" and is handled downstream.
@@ -580,6 +600,9 @@ type yamlFileConfig struct {
 		RetentionDays int    `yaml:"retention_days"`
 		MaxMessages   int    `yaml:"max_messages_per_mailbox"`
 		MaxMailboxes  int    `yaml:"max_mailboxes"`
+
+		MaxMailboxesPerOwner int `yaml:"max_mailboxes_per_owner"`
+		MaxEntriesPerFeed    int `yaml:"max_entries_per_feed"`
 
 		NearCapacityRatio float64 `yaml:"near_capacity_ratio"`
 	} `yaml:"storage"`
@@ -714,6 +737,12 @@ func LoadConfigFromFile(path string, base *ServerConfig) error {
 	}
 	if yc.Storage.MaxMailboxes > 0 {
 		base.MaxMailboxes = yc.Storage.MaxMailboxes
+	}
+	if yc.Storage.MaxMailboxesPerOwner > 0 {
+		base.MaxMailboxesPerOwner = yc.Storage.MaxMailboxesPerOwner
+	}
+	if yc.Storage.MaxEntriesPerFeed > 0 {
+		base.MaxEntriesPerFeed = yc.Storage.MaxEntriesPerFeed
 	}
 	if yc.Storage.NearCapacityRatio != 0 {
 		base.NearCapacityRatio = yc.Storage.NearCapacityRatio

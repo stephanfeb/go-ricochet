@@ -33,6 +33,9 @@ type Storage interface {
 	UpdateMailbox(ctx context.Context, mailbox *MailboxRecord) error
 	DeleteMailbox(ctx context.Context, mailboxID int64) error
 	UpdateMailboxAccess(ctx context.Context, mailboxID int64) error
+	// CountMailboxes reports how many mailboxes ownerID holds and how many
+	// exist on the server, for quota checks before a create.
+	CountMailboxes(ctx context.Context, ownerID peer.ID) (owner int, total int, err error)
 
 	// Message operations
 	StoreMessage(ctx context.Context, mailbox *MailboxRecord, msg *core.Message) (int, error)
@@ -92,6 +95,11 @@ type Storage interface {
 	GetFeedEntry(ctx context.Context, feedID int64, sequenceNumber int) (*FeedEntryRecord, error)
 	GetFeedEntries(ctx context.Context, feedID int64, fromSeq, toSeq *int, entryType string, limit int) ([]*FeedEntryRecord, bool, error)
 	EnforceFeedRetention(ctx context.Context, feed *FeedRecord) (int, error)
+	// EnforceAllFeedRetention applies every feed's own max_entries and
+	// max_age_days in one pass and reports entries removed.
+	EnforceAllFeedRetention(ctx context.Context) (int, error)
+	// CountFeedEntries reports the live entries in a feed.
+	CountFeedEntries(ctx context.Context, feedID int64) (int, error)
 	GetMultiFeedEntries(ctx context.Context, queries []MultiFeedQuery) (map[string]*MultiFeedResult, error)
 
 	// Collection operations
@@ -114,6 +122,10 @@ type Storage interface {
 	// Cleanup operations
 	DeleteExpiredMessages(ctx context.Context) (int, error)
 	EnforceRetentionPolicy(ctx context.Context, mailbox *MailboxRecord) error
+	// EnforceAllRetention applies every mailbox's retention_days and
+	// retention_count in one pass, private mailboxes included, and reports
+	// messages removed.
+	EnforceAllRetention(ctx context.Context) (int, error)
 
 	// Operator views
 	//

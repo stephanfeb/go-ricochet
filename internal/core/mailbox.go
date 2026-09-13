@@ -3,6 +3,8 @@ package core
 import (
 	"fmt"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/libp2p/go-libp2p/core/peer"
 )
@@ -132,9 +134,25 @@ func (a *MailboxAddress) String() string {
 	return a.FullPath()
 }
 
+// MaxFolderPathLength bounds a folder path. Paths are index keys and are
+// echoed in every listing, and a sender can name one on delivery, so an
+// unbounded path was a way to store ten megabytes in the mailboxes table.
+const MaxFolderPathLength = 256
+
 func validateFolderPath(path string) error {
 	if path == "" {
 		return fmt.Errorf("folder path cannot be empty")
+	}
+	if len(path) > MaxFolderPathLength {
+		return fmt.Errorf("folder path exceeds %d bytes", MaxFolderPathLength)
+	}
+	if !utf8.ValidString(path) {
+		return fmt.Errorf("folder path is not valid UTF-8")
+	}
+	for _, r := range path {
+		if unicode.IsControl(r) {
+			return fmt.Errorf("folder path contains a control character")
+		}
 	}
 	if strings.HasPrefix(path, "/") {
 		return fmt.Errorf("folder path cannot start with /")

@@ -61,7 +61,24 @@ storage:
   retention_days: 30                 # default: 30
   max_messages_per_mailbox: 1000     # default: 1000
 
-  max_mailboxes: 100000              # default: 100000
+  # Mailbox quotas, both enforced: a delivery or create that would exceed
+  # one is refused with a 507. max_mailboxes_per_owner matters most — a
+  # sender names the folder it delivers into, and the folder is created if
+  # missing, so this is what stops one peer giving another an unbounded
+  # number of them.
+  max_mailboxes: 100000              # default: 100000, server-wide
+  max_mailboxes_per_owner: 100       # default: 100
+
+  # Entries one feed may hold. A feed's own max_entries is a rolling window
+  # its owner chooses; this is the ceiling under it, and it is what bounds a
+  # collaborative feed that anyone may append to.
+  max_entries_per_feed: 10000        # default: 10000
+
+  # max_storage_gb is enforced as well as reported: once the database on
+  # disk reaches it, message submission and document, feed and collection
+  # writes are refused with a 507 until space is freed. The check uses the
+  # periodic capacity sample, so a burst can run past the budget by up to
+  # one cleanup interval's worth of writes.
 
   # The fill fraction at which a mailbox counts as "near capacity". It drives
   # the ricochet_mailboxes_near_capacity gauge and the figure /ops/storage

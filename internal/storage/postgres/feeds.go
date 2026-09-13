@@ -377,6 +377,53 @@ func (s *PostgresStorage) EnforceFeedRetention(ctx context.Context, feed *storag
 	return totalDeleted, nil
 }
 
+// EnforceAllFeedRetention applies each feed's own limits in one pass. Until
+// it existed, EnforceFeedRetention had no caller: a feed's max_entries and
+// max_age_days were stored and never acted on.
+func (s *PostgresStorage) EnforceAllFeedRetention(ctx context.Context) (int, error) {
+	tag, err := s.pool.Exec(ctx, `
+		DELETE FROM feed_entries fe
+		USING feeds f
+		WHERE fe.feed_id = f.id
+		  AND f.max_age_days IS NOT NULL AND f.max_age_days > 0
+		  AND fe.created_at < NOW() - INTERVAL '1 day' * f.max_age_days`)
+	if err != nil {
+		return 0, fmt.Errorf("feed age retention: %w", err)
+	}
+	deleted := int(tag.RowsAffected())
+
+	tag, err = s.pool.Exec(ctx, `
+		DELETE FROM feed_entries
+		WHERE id IN (
+			SELECT fe.id
+			FROM feed_entries fe
+			JOIN feeds f ON f.id = fe.feed_id
+			WHERE f.max_entries IS NOT NULL AND f.max_entries > 0
+			  AND fe.sequence_number <= (
+				SELECT sequence_number FROM feed_entries x
+				WHERE x.feed_id = f.id
+				ORDER BY sequence_number DESC
+				OFFSET f.max_entries LIMIT 1
+			  )
+		)`)
+	if err != nil {
+		return deleted, fmt.Errorf("feed count retention: %w", err)
+	}
+	deleted += int(tag.RowsAffected())
+	if deleted > 0 {
+		s.logger.Info("Feed retention sweep removed entries", "count", deleted)
+	}
+	return deleted, nil
+}
+
+func (s *PostgresStorage) CountFeedEntries(ctx context.Context, feedID int64) (int, error) {
+	var n int
+	if err := s.pool.QueryRow(ctx, `SELECT count(*) FROM feed_entries WHERE feed_id = $1`, feedID).Scan(&n); err != nil {
+		return 0, fmt.Errorf("count feed entries: %w", err)
+	}
+	return n, nil
+}
+
 // =============================================================================
 // Helpers
 // =============================================================================

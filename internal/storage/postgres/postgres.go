@@ -145,6 +145,20 @@ func (s *PostgresStorage) FindMailbox(ctx context.Context, ownerID peer.ID, fold
 	return record, nil
 }
 
+func (s *PostgresStorage) CountMailboxes(ctx context.Context, ownerID peer.ID) (int, int, error) {
+	var owner, total int
+	err := s.pool.QueryRow(ctx, `
+		SELECT
+			(SELECT count(*) FROM mailboxes WHERE owner_peer_id = $1),
+			(SELECT count(*) FROM mailboxes)`,
+		ownerID.String(),
+	).Scan(&owner, &total)
+	if err != nil {
+		return 0, 0, fmt.Errorf("count mailboxes: %w", err)
+	}
+	return owner, total, nil
+}
+
 func (s *PostgresStorage) ListMailboxes(ctx context.Context, ownerID peer.ID) ([]*storage.MailboxRecord, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT id, owner_peer_id, folder_path, mailbox_type,
@@ -1061,6 +1075,47 @@ func (s *PostgresStorage) EnforceRetentionPolicy(ctx context.Context, mailbox *s
 		)
 	}
 	return err
+}
+
+// EnforceAllRetention sweeps every mailbox. Retention used to run only for
+// public mailboxes that happened to be in the delivery cache, so a private
+// mailbox's retention_days was a number that did nothing.
+func (s *PostgresStorage) EnforceAllRetention(ctx context.Context) (int, error) {
+	tag, err := s.pool.Exec(ctx, `
+		DELETE FROM stored_messages sm
+		USING mailboxes m
+		WHERE sm.mailbox_id = m.id
+		  AND m.retention_days > 0
+		  AND sm.created_at < NOW() - INTERVAL '1 day' * m.retention_days`)
+	if err != nil {
+		return 0, fmt.Errorf("time retention: %w", err)
+	}
+	deleted := int(tag.RowsAffected())
+
+	// Count-based retention keeps the newest retention_count messages of
+	// each mailbox that has one set.
+	tag, err = s.pool.Exec(ctx, `
+		DELETE FROM stored_messages
+		WHERE id IN (
+			SELECT sm.id
+			FROM stored_messages sm
+			JOIN mailboxes m ON m.id = sm.mailbox_id
+			WHERE m.retention_count IS NOT NULL
+			  AND sm.sequence_number <= (
+				SELECT sequence_number FROM stored_messages x
+				WHERE x.mailbox_id = m.id
+				ORDER BY sequence_number DESC
+				OFFSET m.retention_count LIMIT 1
+			  )
+		)`)
+	if err != nil {
+		return deleted, fmt.Errorf("count retention: %w", err)
+	}
+	deleted += int(tag.RowsAffected())
+	if deleted > 0 {
+		s.logger.Info("Retention sweep removed messages", "count", deleted)
+	}
+	return deleted, nil
 }
 
 // =============================================================================
