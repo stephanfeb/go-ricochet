@@ -292,6 +292,7 @@ type DocumentResponse struct {
 	ContentType  string `json:"contentType,omitempty"`
 	LastModified int64  `json:"lastModified,omitempty"`
 	Content      []byte `json:"content,omitempty"`
+	Visibility   string `json:"visibility,omitempty"` // private, shared or public
 }
 
 func (r *DocumentResponse) IsNotModified() bool { return r.Status == 304 }
@@ -319,6 +320,7 @@ type DocumentMetadata struct {
 	ContentType   string `json:"contentType"`
 	LastModified  int64  `json:"lastModified"`
 	ContentLength int    `json:"contentLength"`
+	Visibility    string `json:"visibility,omitempty"`
 }
 
 // DocumentInfo represents a document in a LIST response.
@@ -328,4 +330,5 @@ type DocumentInfo struct {
 	Size         int    `json:"size"`
 	ETag         string `json:"etag"`
 	LastModified int64  `json:"lastModified"`
+	Visibility   string `json:"visibility,omitempty"`
 }

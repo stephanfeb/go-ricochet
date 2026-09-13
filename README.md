@@ -281,6 +281,15 @@ docs, err := cl.ListDocuments(ctx, ownerID)
 
 // Delete
 deleted, err := cl.DeleteDocument(ctx, ownerID, "config/settings")
+
+// A document is private to its owner until told otherwise. Publish one,
+// or share one with named readers; feeds and collections take the same
+// options (WithFeedVisibility, WithCollectionVisibility) and methods.
+_, err = cl.PutDocument(ctx, ownerID, "profile", []byte(`{"name":"Ann"}`),
+    client.WithVisibility(wire.VisibilityPublic))
+_, err = cl.SetDocumentVisibility(ctx, "config/settings", wire.VisibilityShared)
+access, err := cl.GrantDocumentReader(ctx, "config/settings", friendPeerID)
+fmt.Println(access.Visibility, access.Readers) // shared [{friend ...}]
 ```
 
 ### Push Notifications
@@ -323,26 +332,44 @@ know, stops the server at startup rather than running on the preset.
 
 ## Security
 
-### What Any Peer Can Read
+### Who Can Read What
 
-Only mailboxes have access control. Every other store is public-read by
-design: any peer that knows an owner's peer ID can read everything that
-owner has put there. Writes are the owner's alone, with one exception.
+Every store but the directory carries the same access model: a resource is
+**private** (its owner reads it), **shared** (the owner and the peers on
+its reader list) or **public** (anyone). The peer identity behind every
+check is the one the connection authenticated, so nothing is claimed in a
+request. Writes are the owner's alone, with one exception.
 
-| Store | Readable by | Writable by |
-|-------|-------------|-------------|
-| Mailboxes | Owner; shared mailboxes by the peers on their ACL; public mailboxes by anyone | Per mailbox type and ACL; see [doc/MAILBOX_LIFECYCLE_AND_ACLS.md](doc/MAILBOX_LIFECYCLE_AND_ACLS.md) |
-| Documents (`GET`, `HEAD`, `LIST`, `HISTORY`) | Any peer, including every stored version | Owner only (`PUT`, `PATCH`, `DELETE`, `BATCH_PUT`) |
-| Feeds (`GET`, `LIST`, `BATCH_GET`) | Any peer | Owner only, except that any peer may `APPEND` to a feed its owner created as collaborative |
-| Collections (`GET`, `LIST`, `QUERY`) | Any peer | Owner only (`CREATE`, `PUT`, `DELETE`) |
-| Directory | Any peer can browse and search every listing | Each peer joins, updates and leaves only its own listing |
+| Store | Default | Readable by | Writable by |
+|-------|---------|-------------|-------------|
+| Mailboxes | private | Owner; shared mailboxes by the peers on their ACL; public mailboxes by anyone | Per mailbox type and ACL; see [doc/MAILBOX_LIFECYCLE_AND_ACLS.md](doc/MAILBOX_LIFECYCLE_AND_ACLS.md) |
+| Documents (`GET`, `HEAD`, `LIST`, `HISTORY`) | private | Per document, every stored version with it | Owner only (`PUT`, `PATCH`, `DELETE`, `BATCH_PUT`, `ACCESS`) |
+| Feeds (`GET`, `LIST`, `BATCH_GET`) | public | Per feed, every entry with it | Owner only (`CREATE`, `DELETE`, `ACCESS`), except that any peer may `APPEND` to a feed its owner created as collaborative |
+| Collections (`GET`, `LIST`, `QUERY`) | private | Per collection, every item and query with it | Owner only (`CREATE`, `PUT`, `DELETE`, `ACCESS`) |
+| Directory | public | Any peer can browse and search every listing | Each peer joins, updates and leaves only its own listing |
+
+Visibility is set when the resource is made (`visibility` on a document
+`PUT` or `BATCH_PUT`, on a feed or collection `CREATE`) and changed with the
+`ACCESS` operation, whose `accessAction` is `get`, `set` (with
+`visibility`), `grant` or `revoke` (with `readerPeerId`); every action
+answers with the visibility and reader list. A grant is kept while the
+resource is private and applies once it is shared, as a mailbox ACL does.
+Visibility belongs to the resource as a whole: making a document public
+publishes its retained history, and making a feed private hides entries a
+peer has already read. A `LIST` shows a caller only what it may read, and a
+`BATCH_GET` reports a feed it may not read as that feed's error. A refused
+read is a 403, like a refused write, so a peer that guesses a path learns
+that it exists and nothing more. A feed's collaborative flag is about
+appending only; a private collaborative feed takes entries from anyone and
+shows them to its readers.
 
 The server stores document, feed and collection bytes exactly as sent and
-never encrypts them. A client that needs a document kept from other peers
-must encrypt it before storing it, the way the messaging layer does with
-NaCl box, and must accept that the document's path, size, content type and
-version history stay visible. There is no private document, feed or
-collection: putting something in these stores publishes it to the network.
+never encrypts them: visibility is enforced by the server, not by a key. A
+stolen database volume exposes everything, so encrypt the volume or use
+PostgreSQL TDE in deployments that need it, and a client that must keep a
+document from the server itself has to encrypt it before storing it, the
+way the messaging layer does with NaCl box, accepting that the path, size,
+content type and version count stay visible.
 
 ### End-to-End Encryption
 
@@ -697,13 +724,16 @@ The PostgreSQL schema (`schema.sql`) includes:
 | `stored_messages` | Messages with BYTEA payload, priority, flags, expiry |
 | `mailbox_acls` | Per-peer access control entries |
 | `reader_cursors` | Per-reader position tracking (public mailboxes) |
-| `documents` | Document storage with ETag versioning |
+| `documents` | Document storage with ETag versioning and a visibility |
 | `document_versions` | Document version history |
+| `document_acls` | Reader list of a shared document |
 | `directory_listings` | Peer directory entries for search |
-| `feeds` | Append-only feeds |
+| `feeds` | Append-only feeds, with a visibility |
 | `feed_entries` | Feed entries with sequence numbers |
-| `collections` | Keyed collections |
+| `feed_acls` | Reader list of a shared feed |
+| `collections` | Keyed collections, with a visibility |
 | `collection_items` | Collection items with JSONB content and versions |
+| `collection_acls` | Reader list of a shared collection |
 | `block_store` | Reserved for content-addressed body offload (see the scale roadmap); unused today |
 
 ## License

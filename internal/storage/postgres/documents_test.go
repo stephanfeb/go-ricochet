@@ -95,7 +95,7 @@ func TestListDocumentsPaging(t *testing.T) {
 	for i := 0; i < total; i++ {
 		path := fmt.Sprintf("vault/doc-%03d", i)
 		content := []byte(fmt.Sprintf(`{"i":%d}`, i))
-		if _, err := store.PutDocument(ctx, owner, path, content, "application/json", owner, nil); err != nil {
+		if _, err := store.PutDocument(ctx, owner, path, content, "application/json", owner, nil, nil); err != nil {
 			t.Fatalf("put %s: %v", path, err)
 		}
 	}
@@ -106,7 +106,7 @@ func TestListDocumentsPaging(t *testing.T) {
 		pages  int
 	)
 	for {
-		page, hasMore, err := store.ListDocuments(ctx, owner, cursor, pageSize)
+		page, hasMore, err := store.ListDocuments(ctx, owner, owner, cursor, pageSize)
 		if err != nil {
 			t.Fatalf("list page %d: %v", pages, err)
 		}
@@ -152,12 +152,12 @@ func TestListDocumentsReportsSizeWithoutBody(t *testing.T) {
 		"c-larger": 9000,
 	}
 	for path, size := range sizes {
-		if _, err := store.PutDocument(ctx, owner, path, make([]byte, size), "application/octet-stream", owner, nil); err != nil {
+		if _, err := store.PutDocument(ctx, owner, path, make([]byte, size), "application/octet-stream", owner, nil, nil); err != nil {
 			t.Fatalf("put %s: %v", path, err)
 		}
 	}
 
-	page, _, err := store.ListDocuments(ctx, owner, "", 0)
+	page, _, err := store.ListDocuments(ctx, owner, owner, "", 0)
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
@@ -181,7 +181,7 @@ func TestPutDocumentConditionalIsAtomic(t *testing.T) {
 	owner := newTestPeer(t)
 	const path = "vault/contended"
 
-	base, err := store.PutDocument(ctx, owner, path, []byte("original"), "text/plain", owner, nil)
+	base, err := store.PutDocument(ctx, owner, path, []byte("original"), "text/plain", owner, nil, nil)
 	if err != nil {
 		t.Fatalf("seed put: %v", err)
 	}
@@ -204,7 +204,7 @@ func TestPutDocumentConditionalIsAtomic(t *testing.T) {
 
 			body := []byte(fmt.Sprintf("writer-%d", i))
 			ifMatch := etag
-			_, err := store.PutDocument(ctx, owner, path, body, "text/plain", owner, &ifMatch)
+			_, err := store.PutDocument(ctx, owner, path, body, "text/plain", owner, &ifMatch, nil)
 
 			mu.Lock()
 			defer mu.Unlock()
@@ -252,7 +252,7 @@ func TestPutDocumentArchivesPreviousVersion(t *testing.T) {
 	owner := newTestPeer(t)
 	const path = "vault/versioned"
 
-	if _, err := store.PutDocument(ctx, owner, path, []byte("v1-body"), "text/plain", owner, nil); err != nil {
+	if _, err := store.PutDocument(ctx, owner, path, []byte("v1-body"), "text/plain", owner, nil, nil); err != nil {
 		t.Fatalf("first put: %v", err)
 	}
 	// History is a column with no setter on the storage interface, so enable it
@@ -263,7 +263,7 @@ func TestPutDocumentArchivesPreviousVersion(t *testing.T) {
 		t.Fatalf("enable history: %v", err)
 	}
 
-	if _, err := store.PutDocument(ctx, owner, path, []byte("v2-body"), "text/plain", owner, nil); err != nil {
+	if _, err := store.PutDocument(ctx, owner, path, []byte("v2-body"), "text/plain", owner, nil, nil); err != nil {
 		t.Fatalf("second put: %v", err)
 	}
 

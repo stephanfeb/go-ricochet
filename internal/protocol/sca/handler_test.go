@@ -39,7 +39,7 @@ func put(t *testing.T, call func(peer.ID, sca.CollectionRequest) *sca.Collection
 func TestCollectionLifecycle(t *testing.T) {
 	call, owner := setup(t)
 
-	if resp := call(owner, sca.CollectionRequest{Operation: sca.OpCREATE, Path: "products", Name: "Products"}); resp.Status != sca.StatusCreated {
+	if resp := call(owner, sca.CollectionRequest{Operation: sca.OpCREATE, Path: "products", Name: "Products", Visibility: "public"}); resp.Status != sca.StatusCreated {
 		t.Fatalf("create: %+v", resp)
 	}
 	if resp := call(owner, sca.CollectionRequest{Operation: sca.OpCREATE, Path: "products", Name: "Again"}); resp.Status == sca.StatusCreated {
@@ -64,7 +64,7 @@ func TestCollectionLifecycle(t *testing.T) {
 
 	resp = call(protocoltest.PeerID(t), sca.CollectionRequest{Operation: sca.OpGET, Path: "products", Key: "sku-1"})
 	if resp.Status != sca.StatusOK || string(protocoltest.FromBase64(t, resp.Body)) != `{"name":"Drill","price":25}` || resp.Headers["X-Version"] != float64(2) {
-		t.Errorf("get item by anyone: %+v", resp)
+		t.Errorf("get item of a public collection by anyone: %+v", resp)
 	}
 	resp = call(owner, sca.CollectionRequest{Operation: sca.OpGET, Path: "products"})
 	if resp.Status != sca.StatusOK || resp.Headers["X-Record-Count"] != float64(1) {
@@ -87,7 +87,7 @@ func TestCollectionLifecycle(t *testing.T) {
 
 func TestListKeysAndQuery(t *testing.T) {
 	call, owner := setup(t)
-	call(owner, sca.CollectionRequest{Operation: sca.OpCREATE, Path: "products", Name: "Products"})
+	call(owner, sca.CollectionRequest{Operation: sca.OpCREATE, Path: "products", Name: "Products", Visibility: "public"})
 	put(t, call, owner, "c", `{"name":"Saw","price":40,"tag":"tool"}`)
 	put(t, call, owner, "a", `{"name":"Drill","price":30,"tag":"tool"}`)
 	put(t, call, owner, "b", `{"name":"Glue","price":5,"tag":"supply"}`)
@@ -167,3 +167,95 @@ func TestCollectionRequestValidation(t *testing.T) {
 }
 
 func boolp(b bool) *bool { return &b }
+
+// A collection is private by default: its metadata, items, keys and queries
+// are the owner's until the owner shares it with a reader list or makes it
+// public. The check is one per operation, before any item is fetched.
+func TestCollectionVisibility(t *testing.T) {
+	call, owner := setup(t)
+	stranger := protocoltest.PeerID(t)
+	friend := protocoltest.PeerID(t)
+
+	if resp := call(owner, sca.CollectionRequest{Operation: sca.OpCREATE, Path: "products", Name: "Products"}); resp.Status != sca.StatusCreated {
+		t.Fatalf("create: %+v", resp)
+	}
+	put(t, call, owner, "jan", `{"total":10}`)
+	call(owner, sca.CollectionRequest{Operation: sca.OpCREATE, Path: "menu", Name: "Menu", Visibility: "public"})
+	if resp := call(owner, sca.CollectionRequest{Operation: sca.OpCREATE, Path: "odd", Name: "Odd", Visibility: "secret"}); resp.Status != sca.StatusBadRequest {
+		t.Errorf("create with an unknown visibility: %+v, want 400", resp)
+	}
+
+	reads := map[string]sca.CollectionRequest{
+		"GET":   {Operation: sca.OpGET, Path: "products"},
+		"item":  {Operation: sca.OpGET, Path: "products", Key: "jan"},
+		"keys":  {Operation: sca.OpLIST, Path: "products"},
+		"QUERY": {Operation: sca.OpQUERY, Path: "products", Filter: map[string]any{"total": 10}},
+	}
+	for name, req := range reads {
+		if resp := call(stranger, req); resp.Status != sca.StatusForbidden || resp.Body != "" {
+			t.Errorf("stranger %s of a private collection: %+v, want 403 and no body", name, resp)
+		}
+		if resp := call(owner, req); resp.Status != sca.StatusOK {
+			t.Errorf("owner %s of a private collection: %+v, want 200", name, resp)
+		}
+	}
+
+	listPaths := func(from peer.ID) []string {
+		resp := call(from, sca.CollectionRequest{Operation: sca.OpLIST})
+		if resp.Status != sca.StatusOK {
+			t.Fatalf("list: %+v", resp)
+		}
+		var entries []struct {
+			Path       string `json:"path"`
+			Visibility string `json:"visibility"`
+		}
+		if err := json.Unmarshal(protocoltest.FromBase64(t, resp.Body), &entries); err != nil {
+			t.Fatal(err)
+		}
+		paths := make([]string, 0, len(entries))
+		for _, e := range entries {
+			paths = append(paths, e.Path+":"+e.Visibility)
+		}
+		return paths
+	}
+	if got := listPaths(stranger); len(got) != 1 || got[0] != "menu:public" {
+		t.Errorf("stranger list = %v, want only the public collection", got)
+	}
+	if got := listPaths(owner); len(got) != 2 {
+		t.Errorf("owner list = %v, want both", got)
+	}
+
+	if resp := call(stranger, sca.CollectionRequest{Operation: sca.OpACCESS, Path: "products", AccessAction: "set", Visibility: "public"}); resp.Status != sca.StatusForbidden {
+		t.Errorf("stranger ACCESS set: %+v, want 403", resp)
+	}
+	call(owner, sca.CollectionRequest{Operation: sca.OpACCESS, Path: "products", AccessAction: "grant", ReaderPeerID: friend.String()})
+	resp := call(owner, sca.CollectionRequest{Operation: sca.OpACCESS, Path: "products", AccessAction: "set", Visibility: "shared"})
+	if resp.Status != sca.StatusOK || resp.Headers["Visibility"] != "shared" {
+		t.Fatalf("set shared: %+v", resp)
+	}
+	for name, req := range reads {
+		if resp := call(friend, req); resp.Status != sca.StatusOK {
+			t.Errorf("friend %s of a shared collection: %+v, want 200", name, resp)
+		}
+		if resp := call(stranger, req); resp.Status != sca.StatusForbidden {
+			t.Errorf("stranger %s of a shared collection: %+v, want 403", name, resp)
+		}
+	}
+	if got := listPaths(friend); len(got) != 2 || got[1] != "products:shared" {
+		t.Errorf("friend list = %v, want the shared collection too", got)
+	}
+	call(owner, sca.CollectionRequest{Operation: sca.OpACCESS, Path: "products", AccessAction: "revoke", ReaderPeerID: friend.String()})
+	if resp := call(friend, sca.CollectionRequest{Operation: sca.OpGET, Path: "products", Key: "jan"}); resp.Status != sca.StatusForbidden {
+		t.Errorf("revoked reader: %+v, want 403", resp)
+	}
+	call(owner, sca.CollectionRequest{Operation: sca.OpACCESS, Path: "products", AccessAction: "set", Visibility: "public"})
+	for name, req := range reads {
+		if resp := call(stranger, req); resp.Status != sca.StatusOK {
+			t.Errorf("stranger %s of a public collection: %+v, want 200", name, resp)
+		}
+	}
+	// Reads never became writes.
+	if resp := call(stranger, sca.CollectionRequest{Operation: sca.OpPUT, Path: "products", Key: "feb", Body: protocoltest.Base64([]byte(`{}`))}); resp.Status != sca.StatusForbidden {
+		t.Errorf("stranger put into a public collection: %+v, want 403", resp)
+	}
+}

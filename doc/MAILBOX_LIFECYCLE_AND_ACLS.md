@@ -203,19 +203,26 @@ client-side reconciliation straightforward.
 
 ---
 
-## Gotcha 6 — ACLs are a mailbox thing. Documents, feeds, collections and the directory have none.
+## Gotcha 6 — Documents, feeds and collections have the mailbox model too, with different defaults
 
-**Symptom to expect:** a client stores a settings document under its own peer
-ID, assumes it is as private as its inbox, and it is not. Any peer that knows
-the peer ID can `GET`, `LIST` and read the `HISTORY` of every document, read
-every feed and collection, and browse every directory listing. Writes are
-owner-only (a collaborative feed also takes `APPEND` from anyone), but reads
-are open by design.
+**Symptom to expect:** a client publishes a profile document under its own
+peer ID and nobody else can read it; or it stores a settings document and
+then wonders whether it is as private as its inbox. Both are the same
+rule: a document or collection is **private** to its owner until the owner
+says otherwise, a feed is **public** (it is a publication), and any of
+them can be made `private`, `shared` (owner plus a reader list) or
+`public`. Reads are checked on every operation, `HISTORY`, `LIST`, `QUERY`
+and `BATCH_GET` included; writes stay owner-only (a collaborative feed also
+takes `APPEND` from anyone, whatever its visibility). The directory is the
+one store with nothing to set: every listing is public.
 
-**What to do:** treat these stores as publishing. Anything a peer must not
-read goes through a mailbox with the right type and ACL, or is encrypted by
-the client before it is stored. The README's security section has the full
-table under "What Any Peer Can Read".
+**What to do:** say what you mean at creation (`visibility` on a document
+`PUT`, on a feed or collection `CREATE`) and manage it afterwards with the
+`ACCESS` operation (`accessAction` `get`, `set`, `grant`, `revoke`). A
+grant works like a mailbox ACL entry: it is kept while the resource is
+private and applies once it is shared. Visibility covers the whole
+resource, so making a document public publishes its history. The README's
+security section has the full table under "Who Can Read What".
 
 ---
 

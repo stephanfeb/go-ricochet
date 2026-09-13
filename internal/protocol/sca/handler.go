@@ -16,6 +16,7 @@ import (
 
 	"github.com/twostack/go-ricochet/internal/admission"
 	"github.com/twostack/go-ricochet/internal/capacity"
+	"github.com/twostack/go-ricochet/internal/core"
 	"github.com/twostack/go-ricochet/internal/metrics"
 	"github.com/twostack/go-ricochet/internal/protocol/wire"
 	"github.com/twostack/go-ricochet/internal/ratelimit"
@@ -33,6 +34,9 @@ const (
 	OpDELETE = "DELETE"
 	OpLIST   = "LIST"
 	OpQUERY  = "QUERY"
+	// OpACCESS reads or changes who may read a collection: its visibility
+	// and reader list. Owner only; accessAction is get, set, grant or revoke.
+	OpACCESS = "ACCESS"
 )
 
 // Path validation constants.
@@ -65,6 +69,14 @@ type CollectionRequest struct {
 
 	// CREATE parameters
 	Name string `json:"name,omitempty"`
+	// Visibility ("private", "shared" or "public") on CREATE sets who may
+	// read the collection; absent, a collection is private. On ACCESS with
+	// accessAction "set" it is the new visibility.
+	Visibility string `json:"visibility,omitempty"`
+
+	// ACCESS parameters: the action and, for grant and revoke, the peer.
+	AccessAction string `json:"accessAction,omitempty"`
+	ReaderPeerID string `json:"readerPeerId,omitempty"`
 
 	// QUERY parameters
 	Filter    map[string]any `json:"filter,omitempty"`
@@ -115,16 +127,19 @@ func NewPipeline(logger *slog.Logger, pool *codec.BufferPool, reg *forge.Registr
 			OpDELETE: handleDelete,
 			OpLIST:   handleList,
 			OpQUERY:  handleQuery,
+			OpACCESS: handleAccess,
 		}),
 	).WithRegistry(reg), reg)
 }
 
 // isWriteClassifier inspects the raw JSON bytes to determine if a request is
-// a write operation (CREATE, PUT, DELETE) for dual rate limiting.
+// a write operation (CREATE, PUT, DELETE, and ACCESS other than a get) for
+// dual rate limiting.
 func isWriteClassifier(raw []byte) bool {
 	// Quick scan for the "operation" field value.
 	type opOnly struct {
-		Operation string `json:"operation"`
+		Operation    string `json:"operation"`
+		AccessAction string `json:"accessAction"`
 	}
 	var op opOnly
 	if err := json.Unmarshal(raw, &op); err != nil {
@@ -133,6 +148,8 @@ func isWriteClassifier(raw []byte) bool {
 	switch op.Operation {
 	case OpCREATE, OpPUT, OpDELETE:
 		return true
+	case OpACCESS:
+		return op.AccessAction != wire.AccessGet
 	default:
 		return false
 	}
@@ -218,8 +235,11 @@ func commonValidation() forge.Middleware {
 			return
 		}
 
-		// Enforce owner-only access for write operations
-		isWrite := req.Operation == OpCREATE || req.Operation == OpPUT || req.Operation == OpDELETE
+		// Enforce owner-only access for write operations. Reads are checked
+		// by each operation once it has the collection's visibility in
+		// hand; ACCESS is the owner's in every action.
+		isWrite := req.Operation == OpCREATE || req.Operation == OpPUT ||
+			req.Operation == OpDELETE || req.Operation == OpACCESS
 		if isWrite {
 			if err := wire.RequireOwner(sc, ownerID, "write operations"); err != nil {
 				sc.Err = err
@@ -245,6 +265,29 @@ func ownerIDFrom(sc *forge.StreamContext) peer.ID {
 	return v.(peer.ID)
 }
 
+// readableCollection looks a collection up for a read and checks the caller
+// may read it. It answers the request itself when it cannot: 404 when the
+// collection is absent, 403 when the caller may not read it, 500 on a
+// storage error. Nil means the reply is set and the caller returns.
+func readableCollection(sc *forge.StreamContext, store storage.Storage, ownerID peer.ID, path string) *storage.CollectionRecord {
+	coll, err := store.GetCollection(sc.Ctx, ownerID, path)
+	if err != nil {
+		sc.Logger.Error("failed to get collection", "error", err)
+		sc.Response = &CollectionResponse{Status: StatusInternalError}
+		return nil
+	}
+	if coll == nil {
+		sc.Response = &CollectionResponse{Status: StatusNotFound,
+			Headers: map[string]any{"Error": "collection not found"}}
+		return nil
+	}
+	if err := wire.RequireReader(sc.Ctx, sc, store, storage.StoreCollection, coll.ID, coll.OwnerPeerID, coll.Visibility); err != nil {
+		sc.Err = err
+		return nil
+	}
+	return coll
+}
+
 // handleCreate creates a new collection.
 func handleCreate(sc *forge.StreamContext, next func()) {
 	store, _ := forge.ServiceFrom[storage.Storage](sc, "storage")
@@ -257,8 +300,20 @@ func handleCreate(sc *forge.StreamContext, next func()) {
 		return
 	}
 
+	// Private unless the owner says otherwise.
+	visibility := core.VisibilityPrivate
+	if req.Visibility != "" {
+		v, err := core.VisibilityFromString(req.Visibility)
+		if err != nil {
+			sc.Response = &CollectionResponse{Status: StatusBadRequest,
+				Headers: map[string]any{"Error": err.Error()}}
+			return
+		}
+		visibility = v
+	}
+
 	ctx := sc.Ctx
-	coll, err := store.CreateCollection(ctx, ownerID, req.Path, req.Name)
+	coll, err := store.CreateCollection(ctx, ownerID, req.Path, req.Name, visibility)
 	if err != nil {
 		sc.Logger.Error("failed to create collection", "error", err)
 		sc.Response = &CollectionResponse{Status: StatusInternalError}
@@ -270,6 +325,7 @@ func handleCreate(sc *forge.StreamContext, next func()) {
 		"path":        coll.Path,
 		"name":        coll.Name,
 		"recordCount": coll.RecordCount,
+		"visibility":  coll.Visibility.String(),
 	})
 	if err != nil {
 		sc.Response = &CollectionResponse{Status: StatusInternalError}
@@ -308,15 +364,8 @@ func handleGetMetadata(sc *forge.StreamContext, next func()) {
 		return
 	}
 
-	ctx := sc.Ctx
-	coll, err := store.GetCollection(ctx, ownerID, req.Path)
-	if err != nil {
-		sc.Logger.Error("failed to get collection", "error", err)
-		sc.Response = &CollectionResponse{Status: StatusInternalError}
-		return
-	}
+	coll := readableCollection(sc, store, ownerID, req.Path)
 	if coll == nil {
-		sc.Response = &CollectionResponse{Status: StatusNotFound}
 		return
 	}
 
@@ -326,6 +375,7 @@ func handleGetMetadata(sc *forge.StreamContext, next func()) {
 		"recordCount":    coll.RecordCount,
 		"lastModifiedAt": coll.LastModifiedAt.UnixMilli(),
 		"createdAt":      coll.CreatedAt.UnixMilli(),
+		"visibility":     coll.Visibility.String(),
 	})
 	if err != nil {
 		sc.Response = &CollectionResponse{Status: StatusInternalError}
@@ -349,15 +399,8 @@ func handleGetItem(sc *forge.StreamContext, next func()) {
 	ownerID := ownerIDFrom(sc)
 
 	ctx := sc.Ctx
-	coll, err := store.GetCollection(ctx, ownerID, req.Path)
-	if err != nil {
-		sc.Logger.Error("failed to get collection", "error", err)
-		sc.Response = &CollectionResponse{Status: StatusInternalError}
-		return
-	}
+	coll := readableCollection(sc, store, ownerID, req.Path)
 	if coll == nil {
-		sc.Response = &CollectionResponse{Status: StatusNotFound,
-			Headers: map[string]any{"Error": "collection not found"}}
 		return
 	}
 
@@ -544,13 +587,13 @@ func handleList(sc *forge.StreamContext, next func()) {
 	}
 }
 
-// handleListCollections returns all collections for an owner.
+// handleListCollections returns the owner's collections the caller may read.
 func handleListCollections(sc *forge.StreamContext, next func()) {
 	store, _ := forge.ServiceFrom[storage.Storage](sc, "storage")
 	ownerID := ownerIDFrom(sc)
 
 	ctx := sc.Ctx
-	collections, err := store.ListCollections(ctx, ownerID)
+	collections, err := store.ListCollections(ctx, ownerID, sc.PeerID)
 	if err != nil {
 		sc.Logger.Error("failed to list collections", "error", err)
 		sc.Response = &CollectionResponse{Status: StatusInternalError}
@@ -563,6 +606,7 @@ func handleListCollections(sc *forge.StreamContext, next func()) {
 		RecordCount    int    `json:"recordCount"`
 		LastModifiedAt int64  `json:"lastModifiedAt"`
 		CreatedAt      int64  `json:"createdAt"`
+		Visibility     string `json:"visibility"`
 	}
 
 	entries := make([]collEntry, 0, len(collections))
@@ -573,6 +617,7 @@ func handleListCollections(sc *forge.StreamContext, next func()) {
 			RecordCount:    c.RecordCount,
 			LastModifiedAt: c.LastModifiedAt.UnixMilli(),
 			CreatedAt:      c.CreatedAt.UnixMilli(),
+			Visibility:     c.Visibility.String(),
 		})
 	}
 
@@ -598,15 +643,8 @@ func handleListKeys(sc *forge.StreamContext, next func()) {
 	ownerID := ownerIDFrom(sc)
 
 	ctx := sc.Ctx
-	coll, err := store.GetCollection(ctx, ownerID, req.Path)
-	if err != nil {
-		sc.Logger.Error("failed to get collection", "error", err)
-		sc.Response = &CollectionResponse{Status: StatusInternalError}
-		return
-	}
+	coll := readableCollection(sc, store, ownerID, req.Path)
 	if coll == nil {
-		sc.Response = &CollectionResponse{Status: StatusNotFound,
-			Headers: map[string]any{"Error": "collection not found"}}
 		return
 	}
 
@@ -656,15 +694,8 @@ func handleQuery(sc *forge.StreamContext, next func()) {
 	}
 
 	ctx := sc.Ctx
-	coll, err := store.GetCollection(ctx, ownerID, req.Path)
-	if err != nil {
-		sc.Logger.Error("failed to get collection", "error", err)
-		sc.Response = &CollectionResponse{Status: StatusInternalError}
-		return
-	}
+	coll := readableCollection(sc, store, ownerID, req.Path)
 	if coll == nil {
-		sc.Response = &CollectionResponse{Status: StatusNotFound,
-			Headers: map[string]any{"Error": "collection not found"}}
 		return
 	}
 
@@ -720,6 +751,55 @@ func handleQuery(sc *forge.StreamContext, next func()) {
 	sc.Response = &CollectionResponse{
 		Status:  StatusOK,
 		Headers: pageHeaders(result.TotalCount, result.NextCursor),
+		Body:    base64.StdEncoding.EncodeToString(bodyBytes),
+	}
+}
+
+// handleAccess reads or changes a collection's visibility and reader list.
+// commonValidation has already required the owner.
+func handleAccess(sc *forge.StreamContext, next func()) {
+	store, _ := forge.ServiceFrom[storage.Storage](sc, "storage")
+	req := sc.Request.(*CollectionRequest)
+	ownerID := sc.PeerID // the owner, by commonValidation
+
+	if req.Path == "" {
+		sc.Response = &CollectionResponse{Status: StatusBadRequest,
+			Headers: map[string]any{"Error": "path is required"}}
+		return
+	}
+
+	ctx := sc.Ctx
+	coll, err := store.GetCollection(ctx, ownerID, req.Path)
+	if err != nil {
+		sc.Logger.Error("failed to get collection", "error", err)
+		sc.Response = &CollectionResponse{Status: StatusInternalError}
+		return
+	}
+	if coll == nil {
+		sc.Response = &CollectionResponse{Status: StatusNotFound,
+			Headers: map[string]any{"Error": "collection not found"}}
+		return
+	}
+
+	res := wire.StoreAccess(ctx, store, wire.AccessRequest{
+		Kind: storage.StoreCollection, OwnerID: ownerID, Path: req.Path, ID: coll.ID, Current: coll.Visibility,
+		Action: req.AccessAction, Visibility: req.Visibility, ReaderID: req.ReaderPeerID,
+	})
+	if res.Error != "" {
+		if res.Status == StatusInternalError {
+			sc.Logger.Error("collection access update failed", "action", req.AccessAction, "error", res.Error)
+		}
+		sc.Response = &CollectionResponse{Status: res.Status, Headers: map[string]any{"Error": res.Error}}
+		return
+	}
+	bodyBytes, err := json.Marshal(res.Body)
+	if err != nil {
+		sc.Response = &CollectionResponse{Status: StatusInternalError}
+		return
+	}
+	sc.Response = &CollectionResponse{
+		Status:  res.Status,
+		Headers: map[string]any{"Content-Type": "application/json", "Visibility": res.Body.Visibility},
 		Body:    base64.StdEncoding.EncodeToString(bodyBytes),
 	}
 }

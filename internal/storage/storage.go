@@ -79,21 +79,26 @@ type Storage interface {
 	// HeadDocument is GetDocument without the body: every field but Content,
 	// with ContentLength measured in the database. Nil when absent.
 	HeadDocument(ctx context.Context, ownerID peer.ID, path string) (*DocumentRecord, error)
-	PutDocument(ctx context.Context, ownerID peer.ID, path string, content []byte, contentType string, updatedBy peer.ID, ifMatch *string) (*DocumentPutResult, error)
+	// PutDocument writes a document. A nil visibility keeps the existing
+	// document's, or makes a new one private.
+	PutDocument(ctx context.Context, ownerID peer.ID, path string, content []byte, contentType string, updatedBy peer.ID, ifMatch *string, visibility *core.Visibility) (*DocumentPutResult, error)
 	PatchDocument(ctx context.Context, ownerID peer.ID, path string, patch map[string]any, updatedBy peer.ID, ifMatch *string) (*DocumentPutResult, error)
 	DeleteDocument(ctx context.Context, ownerID peer.ID, path string) (bool, error)
 	// ListDocuments returns one page of document metadata for an owner, ordered
-	// by path. afterPath is a keyset cursor ("" for the first page); the bool
-	// reports whether more rows follow the returned page.
-	ListDocuments(ctx context.Context, ownerID peer.ID, afterPath string, limit int) ([]*DocumentSummary, bool, error)
+	// by path, holding only what readerID may read: everything for the owner,
+	// otherwise the public documents and the shared ones readerID is granted.
+	// afterPath is a keyset cursor ("" for the first page); the bool reports
+	// whether more rows follow the returned page.
+	ListDocuments(ctx context.Context, ownerID, readerID peer.ID, afterPath string, limit int) ([]*DocumentSummary, bool, error)
 	GetDocumentHistory(ctx context.Context, ownerID peer.ID, path string, maxVersions *int) ([]*DocumentVersionRecord, error)
 	GetDocumentAtVersion(ctx context.Context, ownerID peer.ID, path string, versionNumber int) (*DocumentVersionRecord, error)
 
 	// Feed operations
-	CreateFeed(ctx context.Context, ownerID peer.ID, path, title, description string, collaborative bool) (*FeedRecord, error)
+	CreateFeed(ctx context.Context, ownerID peer.ID, path, title, description string, collaborative bool, visibility core.Visibility) (*FeedRecord, error)
 	GetFeed(ctx context.Context, ownerID peer.ID, path string) (*FeedRecord, error)
 	DeleteFeed(ctx context.Context, ownerID peer.ID, path string) (bool, error)
-	ListFeeds(ctx context.Context, ownerID peer.ID) ([]*FeedRecord, error)
+	// ListFeeds returns the owner's feeds that readerID may read, by path.
+	ListFeeds(ctx context.Context, ownerID, readerID peer.ID) ([]*FeedRecord, error)
 	AppendFeedEntry(ctx context.Context, feedID int64, content []byte, createdBy peer.ID, entryType string) (*FeedEntryRecord, error)
 	GetFeedEntry(ctx context.Context, feedID int64, sequenceNumber int) (*FeedEntryRecord, error)
 	GetFeedEntries(ctx context.Context, feedID int64, fromSeq, toSeq *int, entryType string, limit int) ([]*FeedEntryRecord, bool, error)
@@ -106,10 +111,12 @@ type Storage interface {
 	GetMultiFeedEntries(ctx context.Context, queries []MultiFeedQuery) (map[string]*MultiFeedResult, error)
 
 	// Collection operations
-	CreateCollection(ctx context.Context, ownerID peer.ID, path, name string) (*CollectionRecord, error)
+	CreateCollection(ctx context.Context, ownerID peer.ID, path, name string, visibility core.Visibility) (*CollectionRecord, error)
 	GetCollection(ctx context.Context, ownerID peer.ID, path string) (*CollectionRecord, error)
 	DeleteCollection(ctx context.Context, ownerID peer.ID, path string) (bool, error)
-	ListCollections(ctx context.Context, ownerID peer.ID) ([]*CollectionRecord, error)
+	// ListCollections returns the owner's collections that readerID may
+	// read, by path.
+	ListCollections(ctx context.Context, ownerID, readerID peer.ID) ([]*CollectionRecord, error)
 	GetCollectionItem(ctx context.Context, collectionID int64, key string) (*CollectionItemRecord, error)
 	PutCollectionItem(ctx context.Context, collectionID int64, key string, content []byte, updatedBy peer.ID, ifMatch *string) (*CollectionItemRecord, bool, error)
 	DeleteCollectionItem(ctx context.Context, collectionID int64, key string) (bool, error)
@@ -120,6 +127,17 @@ type Storage interface {
 	// QueryCollection pages matching items. Same paging contract as
 	// ListCollectionKeys: cursor over offset, total on a first page only.
 	QueryCollection(ctx context.Context, collectionID int64, filter map[string]any, sortField string, sortAsc bool, limit, offset int, cursor string) (*CollectionQueryResult, error)
+
+	// Read authorization for documents, feeds and collections. The owner
+	// always reads; a public resource anyone; a shared one the peers on its
+	// reader list. Kind selects the store; id is the resource's row id.
+	//
+	// SetStoreVisibility reports false when no such resource exists.
+	SetStoreVisibility(ctx context.Context, kind StoreKind, ownerID peer.ID, path string, visibility core.Visibility) (bool, error)
+	GrantStoreReader(ctx context.Context, kind StoreKind, id int64, reader peer.ID) error
+	RevokeStoreReader(ctx context.Context, kind StoreKind, id int64, reader peer.ID) error
+	ListStoreReaders(ctx context.Context, kind StoreKind, id int64) ([]*StoreReader, error)
+	IsStoreReader(ctx context.Context, kind StoreKind, id int64, reader peer.ID) (bool, error)
 
 	// Directory operations
 	UpsertDirectoryEntry(ctx context.Context, entry *DirectoryEntry) error

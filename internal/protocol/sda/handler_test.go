@@ -38,7 +38,7 @@ func TestPutGetHeadDelete(t *testing.T) {
 	body := []byte(`{"name":"first"}`)
 
 	resp := call(owner, sda.DocRequest{Operation: sda.OpPUT, Path: "notes/a", Body: protocoltest.Base64(body),
-		Headers: map[string]string{"Content-Type": "application/json"}})
+		Headers: map[string]string{"Content-Type": "application/json"}, Visibility: "public"})
 	if resp.Status != sda.StatusCreated || header(resp, "ETag") == "" {
 		t.Fatalf("first put: %+v, want 201 with an ETag", resp)
 	}
@@ -53,7 +53,10 @@ func TestPutGetHeadDelete(t *testing.T) {
 
 	resp = call(protocoltest.PeerID(t), sda.DocRequest{Operation: sda.OpGET, Path: "notes/a"})
 	if resp.Status != sda.StatusOK || string(protocoltest.FromBase64(t, resp.Body)) != `{"name":"second"}` {
-		t.Errorf("get by anyone: %+v", resp)
+		t.Errorf("get of a public document by anyone: %+v", resp)
+	}
+	if header(resp, "Visibility") != "public" {
+		t.Errorf("get Visibility header = %q, want public (a put without one keeps it)", header(resp, "Visibility"))
 	}
 	if header(resp, "ETag") != etag || header(resp, "Content-Type") != "application/json" || resp.Headers["Version"] != float64(2) {
 		t.Errorf("get headers = %+v, want ETag %s, content type, version 2", resp.Headers, etag)
@@ -121,7 +124,7 @@ func TestListAndHistory(t *testing.T) {
 	call(owner, sda.DocRequest{Operation: sda.OpPUT, Path: "a", Body: protocoltest.Base64([]byte("a2"))})
 
 	two := 2
-	resp := call(protocoltest.PeerID(t), sda.DocRequest{Operation: sda.OpLIST, ListLimit: &two})
+	resp := call(owner, sda.DocRequest{Operation: sda.OpLIST, ListLimit: &two})
 	if resp.Status != sda.StatusOK {
 		t.Fatalf("list: %+v", resp)
 	}
@@ -220,3 +223,153 @@ func TestRequestValidation(t *testing.T) {
 }
 
 func intp(n int) *int { return &n }
+
+// A document is the owner's alone until the owner says otherwise: private by
+// default, readable by the peers on its reader list once shared, by anyone
+// once public. Every read goes through the same check, history included, so
+// a stranger learns nothing about a private document but that the path
+// exists (the refusal is a 403, like a refused write).
+func TestDocumentVisibility(t *testing.T) {
+	_, call, owner := setup(t)
+	stranger := protocoltest.PeerID(t)
+	friend := protocoltest.PeerID(t)
+	body := protocoltest.Base64([]byte(`{"v":1}`))
+
+	call(owner, sda.DocRequest{Operation: sda.OpPUT, Path: "diary", Body: body})
+	call(owner, sda.DocRequest{Operation: sda.OpPUT, Path: "diary", Body: protocoltest.Base64([]byte(`{"v":2}`))})
+	call(owner, sda.DocRequest{Operation: sda.OpPUT, Path: "blog", Body: body, Visibility: "public"})
+
+	one := 1
+	reads := map[string]sda.DocRequest{
+		"GET":     {Operation: sda.OpGET, Path: "diary"},
+		"HEAD":    {Operation: sda.OpHEAD, Path: "diary"},
+		"HISTORY": {Operation: sda.OpHISTORY, Path: "diary"},
+		"version": {Operation: sda.OpHISTORY, Path: "diary", VersionNumber: &one},
+	}
+	for name, req := range reads {
+		if resp := call(stranger, req); resp.Status != sda.StatusForbidden || resp.Body != "" {
+			t.Errorf("stranger %s of a private document: %+v, want 403 and no body", name, resp)
+		}
+		if resp := call(owner, req); resp.Status != sda.StatusOK {
+			t.Errorf("owner %s of a private document: %+v, want 200", name, resp)
+		}
+	}
+	if resp := call(stranger, sda.DocRequest{Operation: sda.OpGET, Path: "nowhere"}); resp.Status != sda.StatusNotFound {
+		t.Errorf("stranger GET of an absent document: %+v, want 404", resp)
+	}
+
+	listPaths := func(from peer.ID) []string {
+		resp := call(from, sda.DocRequest{Operation: sda.OpLIST})
+		if resp.Status != sda.StatusOK {
+			t.Fatalf("list: %+v", resp)
+		}
+		var entries []struct {
+			Path       string `json:"path"`
+			Visibility string `json:"visibility"`
+		}
+		if err := json.Unmarshal(protocoltest.FromBase64(t, resp.Body), &entries); err != nil {
+			t.Fatal(err)
+		}
+		paths := make([]string, 0, len(entries))
+		for _, e := range entries {
+			paths = append(paths, e.Path+":"+e.Visibility)
+		}
+		return paths
+	}
+	if got := listPaths(stranger); len(got) != 1 || got[0] != "blog:public" {
+		t.Errorf("stranger list = %v, want only the public document", got)
+	}
+	if got := listPaths(owner); len(got) != 2 || got[0] != "blog:public" || got[1] != "diary:private" {
+		t.Errorf("owner list = %v, want both", got)
+	}
+
+	// ACCESS is the owner's in every action, reading the list included.
+	if resp := call(stranger, sda.DocRequest{Operation: sda.OpACCESS, Path: "diary", AccessAction: "get"}); resp.Status != sda.StatusForbidden {
+		t.Errorf("stranger ACCESS get: %+v, want 403", resp)
+	}
+	if resp := call(stranger, sda.DocRequest{Operation: sda.OpACCESS, Path: "diary", AccessAction: "grant", ReaderPeerID: stranger.String()}); resp.Status != sda.StatusForbidden {
+		t.Errorf("stranger granting themself: %+v, want 403", resp)
+	}
+
+	// Sharing with a reader list: the friend reads, the stranger still not.
+	resp := call(owner, sda.DocRequest{Operation: sda.OpACCESS, Path: "diary", AccessAction: "grant", ReaderPeerID: friend.String()})
+	if resp.Status != sda.StatusOK {
+		t.Fatalf("grant: %+v", resp)
+	}
+	if resp := call(friend, sda.DocRequest{Operation: sda.OpGET, Path: "diary"}); resp.Status != sda.StatusForbidden {
+		t.Errorf("granted reader of a document still private: %+v, want 403 (the list applies once shared)", resp)
+	}
+	resp = call(owner, sda.DocRequest{Operation: sda.OpACCESS, Path: "diary", AccessAction: "set", Visibility: "shared"})
+	if resp.Status != sda.StatusOK || header(resp, "Visibility") != "shared" {
+		t.Fatalf("set shared: %+v", resp)
+	}
+	var access struct {
+		Visibility string `json:"visibility"`
+		Readers    []struct {
+			PeerID string `json:"peerId"`
+		} `json:"readers"`
+	}
+	if err := json.Unmarshal(protocoltest.FromBase64(t, resp.Body), &access); err != nil {
+		t.Fatal(err)
+	}
+	if access.Visibility != "shared" || len(access.Readers) != 1 || access.Readers[0].PeerID != friend.String() {
+		t.Errorf("access after set = %+v, want shared with the friend listed", access)
+	}
+	for name, req := range reads {
+		if resp := call(friend, req); resp.Status != sda.StatusOK {
+			t.Errorf("friend %s of a shared document: %+v, want 200", name, resp)
+		}
+		if resp := call(stranger, req); resp.Status != sda.StatusForbidden {
+			t.Errorf("stranger %s of a shared document: %+v, want 403", name, resp)
+		}
+	}
+	if got := listPaths(friend); len(got) != 2 || got[1] != "diary:shared" {
+		t.Errorf("friend list = %v, want the shared document too", got)
+	}
+
+	if resp := call(owner, sda.DocRequest{Operation: sda.OpACCESS, Path: "diary", AccessAction: "revoke", ReaderPeerID: friend.String()}); resp.Status != sda.StatusOK {
+		t.Fatalf("revoke: %+v", resp)
+	}
+	if resp := call(friend, sda.DocRequest{Operation: sda.OpGET, Path: "diary"}); resp.Status != sda.StatusForbidden {
+		t.Errorf("revoked reader: %+v, want 403", resp)
+	}
+
+	// Public: anyone reads, the whole version stream included.
+	call(owner, sda.DocRequest{Operation: sda.OpACCESS, Path: "diary", AccessAction: "set", Visibility: "public"})
+	for name, req := range reads {
+		if resp := call(stranger, req); resp.Status != sda.StatusOK {
+			t.Errorf("stranger %s of a public document: %+v, want 200", name, resp)
+		}
+	}
+
+	// A PUT without a visibility keeps the current one; one with it changes it.
+	call(owner, sda.DocRequest{Operation: sda.OpPUT, Path: "diary", Body: body})
+	if resp := call(stranger, sda.DocRequest{Operation: sda.OpGET, Path: "diary"}); resp.Status != sda.StatusOK {
+		t.Errorf("after a plain put of a public document: %+v, want still readable", resp)
+	}
+	call(owner, sda.DocRequest{Operation: sda.OpPUT, Path: "diary", Body: body, Visibility: "private"})
+	if resp := call(stranger, sda.DocRequest{Operation: sda.OpGET, Path: "diary"}); resp.Status != sda.StatusForbidden {
+		t.Errorf("after a put making it private: %+v, want 403", resp)
+	}
+
+	// Batch puts carry it per document; a bad value refuses that document only.
+	resp = call(owner, sda.DocRequest{Operation: sda.OpBATCH_PUT, BatchDocuments: []sda.BatchDocument{
+		{Path: "open", Body: body, Visibility: "public"},
+		{Path: "odd", Body: body, Visibility: "secret"},
+	}})
+	if resp.Status != sda.StatusOK || resp.Headers["Applied"] != float64(1) {
+		t.Fatalf("batch: %+v, want 1 of 2 applied", resp)
+	}
+	if resp := call(stranger, sda.DocRequest{Operation: sda.OpGET, Path: "open"}); resp.Status != sda.StatusOK {
+		t.Errorf("batch-put public document: %+v, want readable by anyone", resp)
+	}
+	if resp := call(owner, sda.DocRequest{Operation: sda.OpPUT, Path: "odd", Body: body, Visibility: "secret"}); resp.Status != sda.StatusBadRequest {
+		t.Errorf("put with an unknown visibility: %+v, want 400", resp)
+	}
+	if resp := call(owner, sda.DocRequest{Operation: sda.OpACCESS, Path: "diary", AccessAction: "open"}); resp.Status != sda.StatusBadRequest {
+		t.Errorf("unknown access action: %+v, want 400", resp)
+	}
+	if resp := call(owner, sda.DocRequest{Operation: sda.OpACCESS, Path: "nowhere", AccessAction: "get"}); resp.Status != sda.StatusNotFound {
+		t.Errorf("access of an absent document: %+v, want 404", resp)
+	}
+}

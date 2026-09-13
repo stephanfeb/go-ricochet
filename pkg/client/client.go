@@ -1172,6 +1172,11 @@ func (c *Client) doDoc(ctx context.Context, req *sda.DocRequest, opts []DocOptio
 		req.Headers["Content-Type"] = cfg.ContentType
 	}
 
+	// Visibility rides on a PUT; the server ignores it elsewhere.
+	if cfg.Visibility != nil && req.Visibility == "" {
+		req.Visibility = cfg.Visibility.String()
+	}
+
 	reqData, err := json.Marshal(req)
 	if err != nil {
 		return nil, fmt.Errorf("marshal doc request: %w", err)
@@ -1225,6 +1230,9 @@ func (c *Client) GetDocument(ctx context.Context, ownerPeerID peer.ID, path stri
 	}
 	if lm, ok := resp.Headers["Last-Modified"]; ok {
 		result.LastModified = headerToInt64(lm)
+	}
+	if v, ok := resp.Headers["Visibility"]; ok {
+		result.Visibility, _ = v.(string)
 	}
 
 	if resp.Body != "" {
@@ -1343,6 +1351,9 @@ func (c *Client) HeadDocument(ctx context.Context, ownerPeerID peer.ID, path str
 	if cl, ok := resp.Headers["Content-Length"]; ok {
 		result.ContentLength = int(headerToInt64(cl))
 	}
+	if v, ok := resp.Headers["Visibility"]; ok {
+		result.Visibility, _ = v.(string)
+	}
 
 	return result, nil
 }
@@ -1371,6 +1382,8 @@ type BatchDocumentPut struct {
 	Content     []byte
 	ContentType string
 	IfMatch     string
+	// Visibility, when set, is who may read this document; see WithVisibility.
+	Visibility *wire.Visibility
 }
 
 // BatchDocumentResult is the outcome of one document in a PutDocuments call.
@@ -1440,12 +1453,16 @@ func (c *Client) PutDocuments(ctx context.Context, ownerPeerID peer.ID, docs []B
 	total := 0
 	for _, d := range docs {
 		total += len(d.Content)
-		batch = append(batch, sda.BatchDocument{
+		bd := sda.BatchDocument{
 			Path:        d.Path,
 			Body:        base64.StdEncoding.EncodeToString(d.Content),
 			ContentType: d.ContentType,
 			IfMatch:     d.IfMatch,
-		})
+		}
+		if d.Visibility != nil {
+			bd.Visibility = d.Visibility.String()
+		}
+		batch = append(batch, bd)
 	}
 	if total > MaxBatchContentBytes {
 		return nil, fmt.Errorf("batch content is %d bytes, maximum is %d", total, MaxBatchContentBytes)
@@ -1580,6 +1597,7 @@ func (c *Client) listDocumentPage(ctx context.Context, ownerPeerID peer.ID, curs
 		Size          int    `json:"size"`
 		UpdatedAt     string `json:"updatedAt"`
 		VersionNumber int    `json:"versionNumber"`
+		Visibility    string `json:"visibility"`
 	}
 
 	var entries []docEntry
@@ -1598,6 +1616,7 @@ func (c *Client) listDocumentPage(ctx context.Context, ownerPeerID peer.ID, curs
 			ContentType:  e.ContentType,
 			Size:         e.Size,
 			ETag:         e.ContentHash,
+			Visibility:   e.Visibility,
 			LastModified: lastMod,
 		})
 	}

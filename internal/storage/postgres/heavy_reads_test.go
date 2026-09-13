@@ -9,6 +9,7 @@ import (
 
 	"github.com/libp2p/go-libp2p/core/peer"
 
+	"github.com/twostack/go-ricochet/internal/core"
 	"github.com/twostack/go-ricochet/internal/storage"
 )
 
@@ -19,7 +20,7 @@ func TestHeadDocumentReportsSizeWithoutBody(t *testing.T) {
 	ctx := context.Background()
 
 	body := make([]byte, 50_000)
-	if _, err := store.PutDocument(ctx, owner, "big/doc", body, "application/octet-stream", owner, nil); err != nil {
+	if _, err := store.PutDocument(ctx, owner, "big/doc", body, "application/octet-stream", owner, nil, nil); err != nil {
 		t.Fatalf("put: %v", err)
 	}
 	head, err := store.HeadDocument(ctx, owner, "big/doc")
@@ -142,7 +143,7 @@ func TestUsageFiguresComeFromCounters(t *testing.T) {
 func newTestCollection(t *testing.T, store *PostgresStorage, owner peer.ID, items map[string]string) int64 {
 	t.Helper()
 	ctx := context.Background()
-	coll, err := store.CreateCollection(ctx, owner, "paged", "Paged")
+	coll, err := store.CreateCollection(ctx, owner, "paged", "Paged", core.VisibilityPrivate)
 	if err != nil {
 		t.Fatalf("create collection: %v", err)
 	}

@@ -153,6 +153,7 @@ type docConfig struct {
 	IfMatch      string
 	ContentType  string
 	ServerPeerID *peer.ID
+	Visibility   *wire.Visibility
 }
 
 // WithIfNoneMatch sets the If-None-Match header for conditional GET/HEAD.
@@ -173,6 +174,15 @@ func WithIfMatch(etag string) DocOption {
 func WithContentType(ct string) DocOption {
 	return func(c *docConfig) {
 		c.ContentType = ct
+	}
+}
+
+// WithVisibility sets who may read the document a PUT writes: private (the
+// default for a new document), shared or public. Without it a PUT keeps an
+// existing document's visibility.
+func WithVisibility(v wire.Visibility) DocOption {
+	return func(c *docConfig) {
+		c.Visibility = &v
 	}
 }
 
@@ -249,6 +259,7 @@ type FeedOption func(*feedConfig)
 type feedConfig struct {
 	ServerPeerID  *peer.ID
 	Collaborative bool
+	Visibility    *wire.Visibility
 }
 
 // WithFeedServer sets a specific server peer ID for the feed operation.
@@ -262,6 +273,14 @@ func WithFeedServer(id peer.ID) FeedOption {
 func WithCollaborative() FeedOption {
 	return func(c *feedConfig) {
 		c.Collaborative = true
+	}
+}
+
+// WithFeedVisibility sets who may read the feed CreateFeed makes: public
+// (the default), shared or private.
+func WithFeedVisibility(v wire.Visibility) FeedOption {
+	return func(c *feedConfig) {
+		c.Visibility = &v
 	}
 }
 
@@ -317,12 +336,21 @@ type CollectionOption func(*collectionConfig)
 type collectionConfig struct {
 	ServerPeerID *peer.ID
 	IfMatch      string
+	Visibility   *wire.Visibility
 }
 
 // WithCollectionServer sets a specific server peer ID for the collection operation.
 func WithCollectionServer(id peer.ID) CollectionOption {
 	return func(c *collectionConfig) {
 		c.ServerPeerID = &id
+	}
+}
+
+// WithCollectionVisibility sets who may read the collection CreateCollection
+// makes: private (the default), shared or public.
+func WithCollectionVisibility(v wire.Visibility) CollectionOption {
+	return func(c *collectionConfig) {
+		c.Visibility = &v
 	}
 }
 

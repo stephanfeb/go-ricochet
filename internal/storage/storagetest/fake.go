@@ -52,6 +52,8 @@ type Fake struct {
 	items       map[int64]map[string]*storage.CollectionItemRecord
 
 	directory map[string]*storage.DirectoryEntry
+
+	readers map[storage.StoreKind]map[int64]map[string]time.Time // reader lists by store and row id
 }
 
 // New returns an empty fake.
@@ -69,6 +71,7 @@ func New() *Fake {
 		collections: map[string]*storage.CollectionRecord{},
 		items:       map[int64]map[string]*storage.CollectionItemRecord{},
 		directory:   map[string]*storage.DirectoryEntry{},
+		readers:     map[storage.StoreKind]map[int64]map[string]time.Time{},
 	}
 }
 
@@ -491,7 +494,7 @@ func (f *Fake) HeadDocument(_ context.Context, owner peer.ID, path string) (*sto
 	return &cp, nil
 }
 
-func (f *Fake) putDocument(owner peer.ID, path string, content []byte, contentType string, updatedBy peer.ID, ifMatch *string) (*storage.DocumentPutResult, error) {
+func (f *Fake) putDocument(owner peer.ID, path string, content []byte, contentType string, updatedBy peer.ID, ifMatch *string, visibility *core.Visibility) (*storage.DocumentPutResult, error) {
 	if len(content) > storage.MaxDocumentSize {
 		return nil, &storage.DocumentSizeExceededError{ActualSize: len(content), MaxSize: storage.MaxDocumentSize}
 	}
@@ -502,12 +505,19 @@ func (f *Fake) putDocument(owner peer.ID, path string, content []byte, contentTy
 		return nil, &storage.DocumentConflictError{ExpectedHash: *ifMatch, ActualHash: existing.ContentHash}
 	}
 	if !found {
+		vis := core.VisibilityPrivate
+		if visibility != nil {
+			vis = *visibility
+		}
 		f.documents[k] = &storage.DocumentRecord{
 			ID: f.id(), OwnerPeerID: owner.String(), Path: path, Content: content, ContentHash: hash(content),
 			ContentLength: len(content), ContentType: contentType, CreatedAt: now, UpdatedAt: now,
-			UpdatedByPeerID: updatedBy.String(), VersionNumber: 1, HistoryEnabled: true,
+			UpdatedByPeerID: updatedBy.String(), VersionNumber: 1, HistoryEnabled: true, Visibility: vis,
 		}
 		return &storage.DocumentPutResult{ContentHash: hash(content), Created: true, UpdatedAt: now}, nil
+	}
+	if visibility != nil {
+		existing.Visibility = *visibility
 	}
 	f.versions[k] = append(f.versions[k], &storage.DocumentVersionRecord{
 		ID: f.id(), DocumentID: existing.ID, VersionNumber: existing.VersionNumber, Content: existing.Content,
@@ -526,10 +536,10 @@ func (f *Fake) putDocument(owner peer.ID, path string, content []byte, contentTy
 	return &storage.DocumentPutResult{ContentHash: existing.ContentHash, Created: false, UpdatedAt: now}, nil
 }
 
-func (f *Fake) PutDocument(_ context.Context, owner peer.ID, path string, content []byte, contentType string, updatedBy peer.ID, ifMatch *string) (*storage.DocumentPutResult, error) {
+func (f *Fake) PutDocument(_ context.Context, owner peer.ID, path string, content []byte, contentType string, updatedBy peer.ID, ifMatch *string, visibility *core.Visibility) (*storage.DocumentPutResult, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return f.putDocument(owner, path, content, contentType, updatedBy, ifMatch)
+	return f.putDocument(owner, path, content, contentType, updatedBy, ifMatch, visibility)
 }
 
 func (f *Fake) PatchDocument(_ context.Context, owner peer.ID, path string, patch map[string]any, updatedBy peer.ID, ifMatch *string) (*storage.DocumentPutResult, error) {
@@ -551,7 +561,7 @@ func (f *Fake) PatchDocument(_ context.Context, owner peer.ID, path string, patc
 	if err != nil {
 		return nil, err
 	}
-	return f.putDocument(owner, path, content, existing.ContentType, updatedBy, nil)
+	return f.putDocument(owner, path, content, existing.ContentType, updatedBy, nil, nil)
 }
 
 // mergePatch applies an RFC 7386 merge patch.
@@ -582,15 +592,17 @@ func (f *Fake) DeleteDocument(_ context.Context, owner peer.ID, path string) (bo
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	k := key(owner, path)
-	if _, ok := f.documents[k]; !ok {
+	doc, ok := f.documents[k]
+	if !ok {
 		return false, nil
 	}
 	delete(f.documents, k)
 	delete(f.versions, k)
+	delete(f.readers[storage.StoreDocument], doc.ID)
 	return true, nil
 }
 
-func (f *Fake) ListDocuments(_ context.Context, owner peer.ID, afterPath string, limit int) ([]*storage.DocumentSummary, bool, error) {
+func (f *Fake) ListDocuments(_ context.Context, owner, reader peer.ID, afterPath string, limit int) ([]*storage.DocumentSummary, bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if limit <= 0 || limit > storage.MaxDocumentListLimit {
@@ -601,9 +613,12 @@ func (f *Fake) ListDocuments(_ context.Context, owner peer.ID, afterPath string,
 		if d.OwnerPeerID != owner.String() || d.Path <= afterPath {
 			continue
 		}
+		if !f.readable(storage.StoreDocument, d.ID, d.OwnerPeerID, d.Visibility, reader) {
+			continue
+		}
 		out = append(out, &storage.DocumentSummary{
 			Path: d.Path, ContentType: d.ContentType, ContentHash: d.ContentHash, Size: d.ContentLength,
-			UpdatedAt: d.UpdatedAt, VersionNumber: d.VersionNumber,
+			UpdatedAt: d.UpdatedAt, VersionNumber: d.VersionNumber, Visibility: d.Visibility,
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
@@ -650,17 +665,25 @@ func (f *Fake) GetDocumentAtVersion(_ context.Context, owner peer.ID, path strin
 // Feeds
 // ---------------------------------------------------------------------------
 
-func (f *Fake) CreateFeed(_ context.Context, owner peer.ID, path, title, description string, collaborative bool) (*storage.FeedRecord, error) {
+func (f *Fake) CreateFeed(_ context.Context, owner peer.ID, path, title, description string, collaborative bool, visibility core.Visibility) (*storage.FeedRecord, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	k := key(owner, path)
 	if feed, ok := f.feeds[k]; ok {
-		feed.Title, feed.Description, feed.CollaborativeMode = title, description, collaborative
+		// As in SQL: a re-create refreshes the text and leaves the access
+		// model (collaborative, visibility) alone.
+		if title != "" {
+			feed.Title = title
+		}
+		if description != "" {
+			feed.Description = description
+		}
 		return feed, nil
 	}
 	feed := &storage.FeedRecord{
 		ID: f.id(), OwnerPeerID: owner.String(), Path: path, Title: title, Description: description,
 		EntryContentType: "application/json", CreatedAt: time.Now(), CollaborativeMode: collaborative,
+		Visibility: visibility,
 	}
 	f.feeds[k] = feed
 	return feed, nil
@@ -686,15 +709,17 @@ func (f *Fake) DeleteFeed(_ context.Context, owner peer.ID, path string) (bool, 
 	}
 	delete(f.feeds, k)
 	delete(f.entries, feed.ID)
+	delete(f.readers[storage.StoreFeed], feed.ID)
 	return true, nil
 }
 
-func (f *Fake) ListFeeds(_ context.Context, owner peer.ID) ([]*storage.FeedRecord, error) {
+func (f *Fake) ListFeeds(_ context.Context, owner, reader peer.ID) ([]*storage.FeedRecord, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	var out []*storage.FeedRecord
 	for _, feed := range f.feeds {
-		if feed.OwnerPeerID == owner.String() {
+		if feed.OwnerPeerID == owner.String() &&
+			f.readable(storage.StoreFeed, feed.ID, feed.OwnerPeerID, feed.Visibility, reader) {
 			out = append(out, feed)
 		}
 	}
@@ -797,15 +822,41 @@ func (f *Fake) CountFeedEntries(_ context.Context, feedID int64) (int, error) {
 	return len(f.entries[feedID]), nil
 }
 
-func (f *Fake) GetMultiFeedEntries(context.Context, []storage.MultiFeedQuery) (map[string]*storage.MultiFeedResult, error) {
-	return nil, ErrNotFaked
+// GetMultiFeedEntries resolves each query as the SQL implementation does: a
+// bad owner or a missing feed is that feed's error, not the batch's.
+func (f *Fake) GetMultiFeedEntries(ctx context.Context, queries []storage.MultiFeedQuery) (map[string]*storage.MultiFeedResult, error) {
+	results := make(map[string]*storage.MultiFeedResult, len(queries))
+	for _, q := range queries {
+		k := q.OwnerPeerID + "/" + q.Path
+		owner, err := peer.Decode(q.OwnerPeerID)
+		if err != nil {
+			results[k] = &storage.MultiFeedResult{Error: "invalid ownerPeerId"}
+			continue
+		}
+		feed, _ := f.GetFeed(ctx, owner, q.Path)
+		if feed == nil {
+			results[k] = &storage.MultiFeedResult{Error: "feed not found"}
+			continue
+		}
+		limit := q.Limit
+		if limit <= 0 {
+			limit = 50
+		}
+		entries, hasMore, err := f.GetFeedEntries(ctx, feed.ID, q.FromSequence, nil, "", limit)
+		if err != nil {
+			results[k] = &storage.MultiFeedResult{Error: err.Error()}
+			continue
+		}
+		results[k] = &storage.MultiFeedResult{Entries: entries, HasMore: hasMore}
+	}
+	return results, nil
 }
 
 // ---------------------------------------------------------------------------
 // Collections
 // ---------------------------------------------------------------------------
 
-func (f *Fake) CreateCollection(_ context.Context, owner peer.ID, path, name string) (*storage.CollectionRecord, error) {
+func (f *Fake) CreateCollection(_ context.Context, owner peer.ID, path, name string, visibility core.Visibility) (*storage.CollectionRecord, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	k := key(owner, path)
@@ -813,7 +864,7 @@ func (f *Fake) CreateCollection(_ context.Context, owner peer.ID, path, name str
 		return nil, fmt.Errorf("create collection: duplicate key value violates unique constraint")
 	}
 	now := time.Now()
-	coll := &storage.CollectionRecord{ID: f.id(), OwnerPeerID: owner.String(), Path: path, Name: name, CreatedAt: now, LastModifiedAt: now}
+	coll := &storage.CollectionRecord{ID: f.id(), OwnerPeerID: owner.String(), Path: path, Name: name, CreatedAt: now, LastModifiedAt: now, Visibility: visibility}
 	f.collections[k] = coll
 	f.items[coll.ID] = map[string]*storage.CollectionItemRecord{}
 	return coll, nil
@@ -839,15 +890,17 @@ func (f *Fake) DeleteCollection(_ context.Context, owner peer.ID, path string) (
 	}
 	delete(f.collections, k)
 	delete(f.items, coll.ID)
+	delete(f.readers[storage.StoreCollection], coll.ID)
 	return true, nil
 }
 
-func (f *Fake) ListCollections(_ context.Context, owner peer.ID) ([]*storage.CollectionRecord, error) {
+func (f *Fake) ListCollections(_ context.Context, owner, reader peer.ID) ([]*storage.CollectionRecord, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	var out []*storage.CollectionRecord
 	for _, c := range f.collections {
-		if c.OwnerPeerID == owner.String() {
+		if c.OwnerPeerID == owner.String() &&
+			f.readable(storage.StoreCollection, c.ID, c.OwnerPeerID, c.Visibility, reader) {
 			out = append(out, c)
 		}
 	}
@@ -1237,4 +1290,101 @@ func (f *Fake) ListMailboxUsage(context.Context, storage.MailboxUsageQuery) ([]*
 
 func (f *Fake) ListOwnerUsage(context.Context, int, int) ([]*storage.OwnerUsage, error) {
 	return nil, ErrNotFaked
+}
+
+// ---------------------------------------------------------------------------
+// Read authorization for documents, feeds and collections
+// ---------------------------------------------------------------------------
+
+// readable is the fake's copy of the SQL predicate: owner, or public, or
+// shared with the reader on the list. Called with the lock held.
+func (f *Fake) readable(kind storage.StoreKind, id int64, owner string, vis core.Visibility, reader peer.ID) bool {
+	if reader.String() == owner || vis == core.VisibilityPublic {
+		return true
+	}
+	if vis != core.VisibilityShared {
+		return false
+	}
+	_, ok := f.readers[kind][id][reader.String()]
+	return ok
+}
+
+// storeByPath finds a resource's row id and visibility field. Called with
+// the lock held.
+func (f *Fake) storeByPath(kind storage.StoreKind, owner peer.ID, path string) (id int64, vis *core.Visibility) {
+	k := key(owner, path)
+	switch kind {
+	case storage.StoreDocument:
+		if d, ok := f.documents[k]; ok {
+			return d.ID, &d.Visibility
+		}
+	case storage.StoreFeed:
+		if fd, ok := f.feeds[k]; ok {
+			return fd.ID, &fd.Visibility
+		}
+	case storage.StoreCollection:
+		if c, ok := f.collections[k]; ok {
+			return c.ID, &c.Visibility
+		}
+	}
+	return 0, nil
+}
+
+func (f *Fake) SetStoreVisibility(_ context.Context, kind storage.StoreKind, owner peer.ID, path string, visibility core.Visibility) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if !visibility.Valid() {
+		return false, fmt.Errorf("invalid visibility %d", visibility)
+	}
+	_, vis := f.storeByPath(kind, owner, path)
+	if vis == nil {
+		return false, nil
+	}
+	*vis = visibility
+	return true, nil
+}
+
+func (f *Fake) GrantStoreReader(_ context.Context, kind storage.StoreKind, id int64, reader peer.ID) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.readers[kind] == nil {
+		f.readers[kind] = map[int64]map[string]time.Time{}
+	}
+	if f.readers[kind][id] == nil {
+		f.readers[kind][id] = map[string]time.Time{}
+	}
+	if _, ok := f.readers[kind][id][reader.String()]; !ok {
+		f.readers[kind][id][reader.String()] = time.Now()
+	}
+	return nil
+}
+
+func (f *Fake) RevokeStoreReader(_ context.Context, kind storage.StoreKind, id int64, reader peer.ID) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	delete(f.readers[kind][id], reader.String())
+	return nil
+}
+
+func (f *Fake) ListStoreReaders(_ context.Context, kind storage.StoreKind, id int64) ([]*storage.StoreReader, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := []*storage.StoreReader{}
+	for p, at := range f.readers[kind][id] {
+		out = append(out, &storage.StoreReader{PeerID: p, GrantedAt: at})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if !out[i].GrantedAt.Equal(out[j].GrantedAt) {
+			return out[i].GrantedAt.Before(out[j].GrantedAt)
+		}
+		return out[i].PeerID < out[j].PeerID
+	})
+	return out, nil
+}
+
+func (f *Fake) IsStoreReader(_ context.Context, kind storage.StoreKind, id int64, reader peer.ID) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	_, ok := f.readers[kind][id][reader.String()]
+	return ok, nil
 }

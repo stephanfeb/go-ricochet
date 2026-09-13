@@ -105,6 +105,9 @@ type DocumentRecord struct {
 	HistoryEnabled     bool      `json:"historyEnabled"`
 	MaxHistoryVersions *int      `json:"maxHistoryVersions,omitempty"`
 	VersionVector      *string   `json:"versionVector,omitempty"`
+	// Visibility says who may read the document; see core.Visibility. It
+	// covers every stored version.
+	Visibility core.Visibility `json:"visibility"`
 }
 
 // DocumentSummary is document metadata without the body. Listing returns these
@@ -118,6 +121,7 @@ type DocumentSummary struct {
 	Size          int       `json:"size"`
 	UpdatedAt     time.Time `json:"updatedAt"`
 	VersionNumber int       `json:"versionNumber"`
+	Visibility    core.Visibility `json:"visibility"`
 }
 
 // FullPath returns "ownerPeerId/doc/path".
@@ -180,6 +184,7 @@ type FeedRecord struct {
 	MaxEntries        *int      `json:"maxEntries,omitempty"`
 	MaxAgeDays        *int      `json:"maxAgeDays,omitempty"`
 	CollaborativeMode bool      `json:"collaborativeMode"`
+	Visibility        core.Visibility `json:"visibility"`
 }
 
 // FullPath returns "ownerPeerId/feed/path".
@@ -197,6 +202,24 @@ type FeedEntryRecord struct {
 	CreatedAt       time.Time `json:"createdAt"`
 	CreatedByPeerID string    `json:"createdByPeerId"`
 	EntryType       string    `json:"entryType,omitempty"`
+}
+
+// StoreKind names one of the three stores with a visibility and a reader
+// list. It selects the ACL table.
+type StoreKind string
+
+const (
+	StoreDocument   StoreKind = "document"
+	StoreFeed       StoreKind = "feed"
+	StoreCollection StoreKind = "collection"
+)
+
+// StoreReader is one peer on a document's, feed's or collection's reader
+// list. The list only matters while the resource is shared: private ignores
+// it and public needs no list.
+type StoreReader struct {
+	PeerID    string    `json:"peerId"`
+	GrantedAt time.Time `json:"grantedAt"`
 }
 
 // MultiFeedQuery describes a single feed to retrieve in a batch request.
@@ -223,6 +246,7 @@ type CollectionRecord struct {
 	CreatedAt      time.Time `json:"createdAt"`
 	LastModifiedAt time.Time `json:"lastModifiedAt"`
 	RecordCount    int       `json:"recordCount"`
+	Visibility     core.Visibility `json:"visibility"`
 }
 
 // FullPath returns "ownerPeerId/collection/path".

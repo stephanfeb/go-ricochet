@@ -36,6 +36,9 @@ const (
 	OpDELETE    = "DELETE"
 	OpLIST      = "LIST"
 	OpBATCH_GET = "BATCH_GET"
+	// OpACCESS reads or changes who may read a feed: its visibility and
+	// reader list. Owner only; accessAction is get, set, grant or revoke.
+	OpACCESS = "ACCESS"
 )
 
 // Path validation constants.
@@ -69,6 +72,14 @@ type FeedRequest struct {
 	Title         string `json:"title,omitempty"`
 	Description   string `json:"description,omitempty"`
 	Collaborative bool   `json:"collaborative,omitempty"`
+	// Visibility ("private", "shared" or "public") on CREATE sets who may
+	// read the feed; absent, a feed is public. On ACCESS with accessAction
+	// "set" it is the new visibility.
+	Visibility string `json:"visibility,omitempty"`
+
+	// ACCESS parameters: the action and, for grant and revoke, the peer.
+	AccessAction string `json:"accessAction,omitempty"`
+	ReaderPeerID string `json:"readerPeerId,omitempty"`
 
 	// APPEND parameters
 	EntryType string `json:"entryType,omitempty"`
@@ -130,17 +141,19 @@ func NewPipeline(logger *slog.Logger, pool *codec.BufferPool, reg *forge.Registr
 			OpDELETE:    deleteHandler,
 			OpLIST:      listHandler,
 			OpBATCH_GET: batchGetHandler,
+			OpACCESS:    accessHandler,
 		}),
 	).WithRegistry(reg), reg)
 }
 
-// isWriteClassifier inspects raw JSON bytes to classify CREATE, APPEND, and DELETE
-// as write operations for dual-bucket rate limiting.
+// isWriteClassifier inspects raw JSON bytes to classify CREATE, APPEND,
+// DELETE and ACCESS as write operations for dual-bucket rate limiting.
 func isWriteClassifier(raw []byte) bool {
 	s := string(raw)
 	return strings.Contains(s, `"CREATE"`) ||
 		strings.Contains(s, `"APPEND"`) ||
-		strings.Contains(s, `"DELETE"`)
+		strings.Contains(s, `"DELETE"`) ||
+		strings.Contains(s, `"ACCESS"`)
 }
 
 // feedResponseWriter writes a FeedResponse as a JSON frame after the downstream
@@ -240,8 +253,11 @@ func commonValidation() forge.Middleware {
 		// their behalf, as collaborative, which let anyone plant feeds under
 		// any identity that then showed in that identity's public listing
 		// and that the owner could not make private again.
+		// Reads are checked by each operation once it has the feed's
+		// visibility in hand; ACCESS is the owner's in every action.
 		callerID := sc.PeerID
-		isWrite := req.Operation == OpCREATE || req.Operation == OpAPPEND || req.Operation == OpDELETE
+		isWrite := req.Operation == OpCREATE || req.Operation == OpAPPEND ||
+			req.Operation == OpDELETE || req.Operation == OpACCESS
 		if isWrite && callerID != ownerID {
 			if req.Operation != OpAPPEND {
 				sc.Err = wire.RequireOwner(sc, ownerID, "write operations")
@@ -284,8 +300,20 @@ func createHandler(sc *forge.StreamContext, next func()) {
 	req := sc.Request.(*FeedRequest)
 	ownerID, _ := sc.Get("ownerID")
 
+	// A feed is a publication: public unless the owner says otherwise.
+	visibility := core.VisibilityPublic
+	if req.Visibility != "" {
+		v, err := core.VisibilityFromString(req.Visibility)
+		if err != nil {
+			sc.Response = &FeedResponse{Status: StatusBadRequest,
+				Headers: map[string]any{"Error": err.Error()}}
+			return
+		}
+		visibility = v
+	}
+
 	ctx := sc.Ctx
-	feed, err := store.CreateFeed(ctx, ownerID.(peer.ID), req.Path, req.Title, req.Description, req.Collaborative)
+	feed, err := store.CreateFeed(ctx, ownerID.(peer.ID), req.Path, req.Title, req.Description, req.Collaborative, visibility)
 	if err != nil {
 		sc.Logger.Error("failed to create feed", "error", err)
 		sc.Response = &FeedResponse{Status: StatusInternalError}
@@ -299,6 +327,7 @@ func createHandler(sc *forge.StreamContext, next func()) {
 		"description":       feed.Description,
 		"currentSequence":   feed.CurrentSequence,
 		"collaborativeMode": feed.CollaborativeMode,
+		"visibility":        feed.Visibility.String(),
 	})
 	if err != nil {
 		sc.Response = &FeedResponse{Status: StatusInternalError}
@@ -333,6 +362,10 @@ func getHandler(sc *forge.StreamContext, next func()) {
 		sc.Response = &FeedResponse{Status: StatusNotFound}
 		return
 	}
+	if err := wire.RequireReader(ctx, sc, store, storage.StoreFeed, feed.ID, feed.OwnerPeerID, feed.Visibility); err != nil {
+		sc.Err = err
+		return
+	}
 
 	// Dispatch based on request parameters
 	if req.SequenceNumber != nil {
@@ -350,11 +383,13 @@ func getHandler(sc *forge.StreamContext, next func()) {
 // handleGetMetadata returns feed metadata.
 func handleGetMetadata(sc *forge.StreamContext, feed *storage.FeedRecord) {
 	bodyBytes, err := json.Marshal(map[string]any{
-		"title":           feed.Title,
-		"description":     feed.Description,
-		"currentSequence": feed.CurrentSequence,
-		"lastEntryAt":     feed.LastEntryAt.UnixMilli(),
-		"createdAt":       feed.CreatedAt.UnixMilli(),
+		"title":             feed.Title,
+		"description":       feed.Description,
+		"currentSequence":   feed.CurrentSequence,
+		"lastEntryAt":       feed.LastEntryAt.UnixMilli(),
+		"createdAt":         feed.CreatedAt.UnixMilli(),
+		"collaborativeMode": feed.CollaborativeMode,
+		"visibility":        feed.Visibility.String(),
 	})
 	if err != nil {
 		sc.Response = &FeedResponse{Status: StatusInternalError}
@@ -543,13 +578,14 @@ func deleteHandler(sc *forge.StreamContext, next func()) {
 	sc.Response = &FeedResponse{Status: StatusNoContent}
 }
 
-// listHandler handles the LIST operation: returns all feeds for an owner.
+// listHandler handles the LIST operation: returns the owner's feeds the
+// caller may read.
 func listHandler(sc *forge.StreamContext, next func()) {
 	store, _ := forge.ServiceFrom[storage.Storage](sc, "storage")
 	ownerID, _ := sc.Get("ownerID")
 
 	ctx := sc.Ctx
-	feeds, err := store.ListFeeds(ctx, ownerID.(peer.ID))
+	feeds, err := store.ListFeeds(ctx, ownerID.(peer.ID), sc.PeerID)
 	if err != nil {
 		sc.Logger.Error("failed to list feeds", "error", err)
 		sc.Response = &FeedResponse{Status: StatusInternalError}
@@ -563,6 +599,7 @@ func listHandler(sc *forge.StreamContext, next func()) {
 		CurrentSequence int    `json:"currentSequence"`
 		LastEntryAt     int64  `json:"lastEntryAt"`
 		CreatedAt       int64  `json:"createdAt"`
+		Visibility      string `json:"visibility"`
 	}
 
 	entries := make([]feedEntry, 0, len(feeds))
@@ -574,6 +611,7 @@ func listHandler(sc *forge.StreamContext, next func()) {
 			CurrentSequence: f.CurrentSequence,
 			LastEntryAt:     f.LastEntryAt.UnixMilli(),
 			CreatedAt:       f.CreatedAt.UnixMilli(),
+			Visibility:      f.Visibility.String(),
 		})
 	}
 
@@ -608,14 +646,34 @@ func batchGetHandler(sc *forge.StreamContext, next func()) {
 		return
 	}
 
-	// Validate all paths and build storage queries.
+	ctx := sc.Ctx
+
+	// Validate all paths and build storage queries. Each feed is checked
+	// against the caller before its entries are fetched; a feed the caller
+	// may not read is that feed's error in the reply, not the batch's.
 	queries := make([]storage.MultiFeedQuery, 0, len(req.BatchQueries))
+	refused := map[string]*storage.MultiFeedResult{}
 	for _, bq := range req.BatchQueries {
 		if bq.OwnerPeerID == "" || bq.Path == "" {
 			continue
 		}
 		if err := validatePath(bq.Path); err != nil {
 			continue
+		}
+		key := bq.OwnerPeerID + "/" + bq.Path
+		if owner, err := peer.Decode(bq.OwnerPeerID); err == nil {
+			feed, err := store.GetFeed(ctx, owner, bq.Path)
+			if err != nil {
+				sc.Logger.Error("failed to get feed", "error", err)
+				sc.Response = &FeedResponse{Status: StatusInternalError}
+				return
+			}
+			if feed != nil {
+				if err := wire.RequireReader(ctx, sc, store, storage.StoreFeed, feed.ID, feed.OwnerPeerID, feed.Visibility); err != nil {
+					refused[key] = &storage.MultiFeedResult{Error: wire.ClientMessage(err)}
+					continue
+				}
+			}
 		}
 		limit := 50
 		if bq.Limit != nil && *bq.Limit > 0 {
@@ -629,12 +687,14 @@ func batchGetHandler(sc *forge.StreamContext, next func()) {
 		})
 	}
 
-	ctx := sc.Ctx
 	results, err := store.GetMultiFeedEntries(ctx, queries)
 	if err != nil {
 		sc.Logger.Error("failed to batch get feed entries", "error", err)
 		sc.Response = &FeedResponse{Status: StatusInternalError}
 		return
+	}
+	for key, r := range refused {
+		results[key] = r
 	}
 
 	// Build response: {"feeds": {"owner/path": {"entries": [...], "hasMore": bool}}}
@@ -685,6 +745,48 @@ func batchGetHandler(sc *forge.StreamContext, next func()) {
 			"Content-Type": "application/json",
 		},
 		Body: base64.StdEncoding.EncodeToString(bodyBytes),
+	}
+}
+
+// accessHandler reads or changes a feed's visibility and reader list.
+// commonValidation has already required the owner.
+func accessHandler(sc *forge.StreamContext, next func()) {
+	store, _ := forge.ServiceFrom[storage.Storage](sc, "storage")
+	req := sc.Request.(*FeedRequest)
+	ownerID := sc.PeerID // the owner, by commonValidation
+
+	ctx := sc.Ctx
+	feed, err := store.GetFeed(ctx, ownerID, req.Path)
+	if err != nil {
+		sc.Logger.Error("failed to get feed", "error", err)
+		sc.Response = &FeedResponse{Status: StatusInternalError}
+		return
+	}
+	if feed == nil {
+		sc.Response = &FeedResponse{Status: StatusNotFound}
+		return
+	}
+
+	res := wire.StoreAccess(ctx, store, wire.AccessRequest{
+		Kind: storage.StoreFeed, OwnerID: ownerID, Path: req.Path, ID: feed.ID, Current: feed.Visibility,
+		Action: req.AccessAction, Visibility: req.Visibility, ReaderID: req.ReaderPeerID,
+	})
+	if res.Error != "" {
+		if res.Status == StatusInternalError {
+			sc.Logger.Error("feed access update failed", "action", req.AccessAction, "error", res.Error)
+		}
+		sc.Response = &FeedResponse{Status: res.Status, Headers: map[string]any{"Error": res.Error}}
+		return
+	}
+	bodyBytes, err := json.Marshal(res.Body)
+	if err != nil {
+		sc.Response = &FeedResponse{Status: StatusInternalError}
+		return
+	}
+	sc.Response = &FeedResponse{
+		Status:  res.Status,
+		Headers: map[string]any{"Content-Type": "application/json", "Visibility": res.Body.Visibility},
+		Body:    base64.StdEncoding.EncodeToString(bodyBytes),
 	}
 }
 

@@ -168,3 +168,140 @@ func TestFeedRequestValidation(t *testing.T) {
 		t.Errorf("get absent feed: %+v, want 404", resp)
 	}
 }
+
+// A feed is a publication and so public by default; the owner can make it
+// shared with a reader list or private. The check covers metadata, entries
+// and pages, the listing, and each feed of a BATCH_GET on its own.
+func TestFeedVisibility(t *testing.T) {
+	call, owner := setup(t)
+	stranger := protocoltest.PeerID(t)
+	friend := protocoltest.PeerID(t)
+	entry := protocoltest.Base64([]byte(`{"n":1}`))
+
+	call(owner, sfa.FeedRequest{Operation: sfa.OpCREATE, Path: "news", Title: "News"})
+	call(owner, sfa.FeedRequest{Operation: sfa.OpCREATE, Path: "drafts", Title: "Drafts", Visibility: "private"})
+	call(owner, sfa.FeedRequest{Operation: sfa.OpAPPEND, Path: "news", Body: entry})
+	call(owner, sfa.FeedRequest{Operation: sfa.OpAPPEND, Path: "drafts", Body: entry})
+	if resp := call(owner, sfa.FeedRequest{Operation: sfa.OpCREATE, Path: "odd", Title: "Odd", Visibility: "secret"}); resp.Status != sfa.StatusBadRequest {
+		t.Errorf("create with an unknown visibility: %+v, want 400", resp)
+	}
+
+	reads := map[string]sfa.FeedRequest{
+		"metadata": {Operation: sfa.OpGET, Path: "drafts"},
+		"entry":    {Operation: sfa.OpGET, Path: "drafts", SequenceNumber: intp(1)},
+		"page":     {Operation: sfa.OpGET, Path: "drafts", FromSequence: intp(1)},
+	}
+	for name, req := range reads {
+		if resp := call(stranger, req); resp.Status != sfa.StatusForbidden || resp.Body != "" {
+			t.Errorf("stranger %s of a private feed: %+v, want 403 and no body", name, resp)
+		}
+		if resp := call(owner, req); resp.Status != sfa.StatusOK {
+			t.Errorf("owner %s of a private feed: %+v, want 200", name, resp)
+		}
+	}
+	resp := call(stranger, sfa.FeedRequest{Operation: sfa.OpGET, Path: "news"})
+	if resp.Status != sfa.StatusOK {
+		t.Fatalf("stranger GET of a public feed: %+v, want 200", resp)
+	}
+	var meta map[string]any
+	if err := json.Unmarshal(protocoltest.FromBase64(t, resp.Body), &meta); err != nil {
+		t.Fatal(err)
+	}
+	if meta["visibility"] != "public" {
+		t.Errorf("feed metadata = %v, want visibility public", meta)
+	}
+
+	listPaths := func(from peer.ID) []string {
+		resp := call(from, sfa.FeedRequest{Operation: sfa.OpLIST})
+		if resp.Status != sfa.StatusOK {
+			t.Fatalf("list: %+v", resp)
+		}
+		var feeds []map[string]any
+		if err := json.Unmarshal(protocoltest.FromBase64(t, resp.Body), &feeds); err != nil {
+			t.Fatal(err)
+		}
+		paths := make([]string, 0, len(feeds))
+		for _, f := range feeds {
+			paths = append(paths, f["path"].(string)+":"+f["visibility"].(string))
+		}
+		return paths
+	}
+	if got := listPaths(stranger); len(got) != 1 || got[0] != "news:public" {
+		t.Errorf("stranger list = %v, want only the public feed", got)
+	}
+
+	batch := func(from peer.ID) map[string]struct {
+		Entries []any  `json:"entries"`
+		Error   string `json:"error"`
+	} {
+		resp := call(from, sfa.FeedRequest{Operation: sfa.OpBATCH_GET, BatchQueries: []sfa.BatchQuery{
+			{OwnerPeerID: owner.String(), Path: "news"},
+			{OwnerPeerID: owner.String(), Path: "drafts"},
+			{OwnerPeerID: owner.String(), Path: "nowhere"},
+		}})
+		if resp.Status != sfa.StatusOK {
+			t.Fatalf("batch get: %+v", resp)
+		}
+		var body struct {
+			Feeds map[string]struct {
+				Entries []any  `json:"entries"`
+				Error   string `json:"error"`
+			} `json:"feeds"`
+		}
+		if err := json.Unmarshal(protocoltest.FromBase64(t, resp.Body), &body); err != nil {
+			t.Fatal(err)
+		}
+		return body.Feeds
+	}
+	got := batch(stranger)
+	if r := got[owner.String()+"/news"]; len(r.Entries) != 1 || r.Error != "" {
+		t.Errorf("stranger batch, public feed = %+v, want its entry", r)
+	}
+	if r := got[owner.String()+"/drafts"]; len(r.Entries) != 0 || r.Error == "" {
+		t.Errorf("stranger batch, private feed = %+v, want no entries and an error", r)
+	}
+	if r := got[owner.String()+"/nowhere"]; r.Error != "feed not found" {
+		t.Errorf("stranger batch, absent feed = %+v, want feed not found", r)
+	}
+	if r := batch(owner)[owner.String()+"/drafts"]; len(r.Entries) != 1 {
+		t.Errorf("owner batch, private feed = %+v, want its entry", r)
+	}
+
+	if resp := call(stranger, sfa.FeedRequest{Operation: sfa.OpACCESS, Path: "drafts", AccessAction: "get"}); resp.Status != sfa.StatusForbidden {
+		t.Errorf("stranger ACCESS get: %+v, want 403", resp)
+	}
+	call(owner, sfa.FeedRequest{Operation: sfa.OpACCESS, Path: "drafts", AccessAction: "grant", ReaderPeerID: friend.String()})
+	resp = call(owner, sfa.FeedRequest{Operation: sfa.OpACCESS, Path: "drafts", AccessAction: "set", Visibility: "shared"})
+	if resp.Status != sfa.StatusOK || resp.Headers["Visibility"] != "shared" {
+		t.Fatalf("set shared: %+v", resp)
+	}
+	for name, req := range reads {
+		if resp := call(friend, req); resp.Status != sfa.StatusOK {
+			t.Errorf("friend %s of a shared feed: %+v, want 200", name, resp)
+		}
+		if resp := call(stranger, req); resp.Status != sfa.StatusForbidden {
+			t.Errorf("stranger %s of a shared feed: %+v, want 403", name, resp)
+		}
+	}
+	if r := batch(friend)[owner.String()+"/drafts"]; len(r.Entries) != 1 {
+		t.Errorf("friend batch, shared feed = %+v, want its entry", r)
+	}
+	call(owner, sfa.FeedRequest{Operation: sfa.OpACCESS, Path: "drafts", AccessAction: "revoke", ReaderPeerID: friend.String()})
+	if resp := call(friend, sfa.FeedRequest{Operation: sfa.OpGET, Path: "drafts"}); resp.Status != sfa.StatusForbidden {
+		t.Errorf("revoked reader: %+v, want 403", resp)
+	}
+
+	// Making a public feed private hides it, entries the stranger has already
+	// seen included; a collaborative feed can still be private to read.
+	call(owner, sfa.FeedRequest{Operation: sfa.OpCREATE, Path: "inbox", Title: "Inbox", Collaborative: true, Visibility: "private"})
+	if resp := call(stranger, sfa.FeedRequest{Operation: sfa.OpAPPEND, Path: "inbox", Body: entry}); resp.Status != sfa.StatusCreated {
+		t.Errorf("stranger append to a private collaborative feed: %+v, want 201", resp)
+	}
+	if resp := call(stranger, sfa.FeedRequest{Operation: sfa.OpGET, Path: "inbox", SequenceNumber: intp(1)}); resp.Status != sfa.StatusForbidden {
+		t.Errorf("stranger reading back the private collaborative feed: %+v, want 403", resp)
+	}
+	call(owner, sfa.FeedRequest{Operation: sfa.OpACCESS, Path: "news", AccessAction: "set", Visibility: "private"})
+	if resp := call(stranger, sfa.FeedRequest{Operation: sfa.OpGET, Path: "news", SequenceNumber: intp(1)}); resp.Status != sfa.StatusForbidden {
+		t.Errorf("stranger after the feed went private: %+v, want 403", resp)
+	}
+}

@@ -19,6 +19,7 @@ type CollectionInfo struct {
 	RecordCount    int    `json:"recordCount"`
 	LastModifiedAt int64  `json:"lastModifiedAt"`
 	CreatedAt      int64  `json:"createdAt"`
+	Visibility     string `json:"visibility"` // private, shared or public
 }
 
 // CollectionItem represents a single item in a collection.
@@ -130,11 +131,19 @@ func (c *Client) doCollectionQuery(ctx context.Context, req *sca.CollectionReque
 
 // CreateCollection creates a new collection on the server.
 func (c *Client) CreateCollection(ctx context.Context, path, name string, opts ...CollectionOption) error {
+	cfg := collectionConfig{}
+	for _, o := range opts {
+		o(&cfg)
+	}
+
 	req := &sca.CollectionRequest{
 		Operation:   sca.OpCREATE,
 		OwnerPeerID: c.host.ID().String(),
 		Path:        path,
 		Name:        name,
+	}
+	if cfg.Visibility != nil {
+		req.Visibility = cfg.Visibility.String()
 	}
 
 	resp, err := c.doCollection(ctx, req, opts)
@@ -184,6 +193,7 @@ func (c *Client) GetCollection(ctx context.Context, ownerPeerID peer.ID, path st
 		RecordCount    int    `json:"recordCount"`
 		LastModifiedAt int64  `json:"lastModifiedAt"`
 		CreatedAt      int64  `json:"createdAt"`
+		Visibility     string `json:"visibility"`
 	}
 	if err := json.Unmarshal(bodyBytes, &raw); err != nil {
 		return nil, fmt.Errorf("unmarshal collection info: %w", err)
@@ -192,6 +202,7 @@ func (c *Client) GetCollection(ctx context.Context, ownerPeerID peer.ID, path st
 	info.RecordCount = raw.RecordCount
 	info.LastModifiedAt = raw.LastModifiedAt
 	info.CreatedAt = raw.CreatedAt
+	info.Visibility = raw.Visibility
 
 	return &info, nil
 }

@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/libp2p/go-libp2p/core/peer"
 
+	"github.com/twostack/go-ricochet/internal/core"
 	"github.com/twostack/go-ricochet/internal/storage"
 )
 
@@ -21,14 +22,14 @@ import (
 // Collection Operations
 // =============================================================================
 
-func (s *PostgresStorage) CreateCollection(ctx context.Context, ownerID peer.ID, path, name string) (*storage.CollectionRecord, error) {
+func (s *PostgresStorage) CreateCollection(ctx context.Context, ownerID peer.ID, path, name string, visibility core.Visibility) (*storage.CollectionRecord, error) {
 	var r storage.CollectionRecord
 	err := s.pool.QueryRow(ctx, `
-		INSERT INTO collections (owner_peer_id, path, name)
-		VALUES ($1, $2, $3)
-		RETURNING id, owner_peer_id, path, name, created_at, last_modified_at, record_count`,
-		ownerID.String(), path, name,
-	).Scan(&r.ID, &r.OwnerPeerID, &r.Path, &r.Name, &r.CreatedAt, &r.LastModifiedAt, &r.RecordCount)
+		INSERT INTO collections (owner_peer_id, path, name, visibility)
+		VALUES ($1, $2, $3, $4)
+		RETURNING id, owner_peer_id, path, name, created_at, last_modified_at, record_count, visibility`,
+		ownerID.String(), path, name, int(visibility),
+	).Scan(&r.ID, &r.OwnerPeerID, &r.Path, &r.Name, &r.CreatedAt, &r.LastModifiedAt, &r.RecordCount, &r.Visibility)
 	if err != nil {
 		return nil, fmt.Errorf("create collection: %w", err)
 	}
@@ -40,11 +41,11 @@ func (s *PostgresStorage) CreateCollection(ctx context.Context, ownerID peer.ID,
 func (s *PostgresStorage) GetCollection(ctx context.Context, ownerID peer.ID, path string) (*storage.CollectionRecord, error) {
 	var r storage.CollectionRecord
 	err := s.pool.QueryRow(ctx, `
-		SELECT id, owner_peer_id, path, name, created_at, last_modified_at, record_count
+		SELECT id, owner_peer_id, path, name, created_at, last_modified_at, record_count, visibility
 		FROM collections
 		WHERE owner_peer_id = $1 AND path = $2`,
 		ownerID.String(), path,
-	).Scan(&r.ID, &r.OwnerPeerID, &r.Path, &r.Name, &r.CreatedAt, &r.LastModifiedAt, &r.RecordCount)
+	).Scan(&r.ID, &r.OwnerPeerID, &r.Path, &r.Name, &r.CreatedAt, &r.LastModifiedAt, &r.RecordCount, &r.Visibility)
 
 	if err == pgx.ErrNoRows {
 		return nil, nil
@@ -66,12 +67,13 @@ func (s *PostgresStorage) DeleteCollection(ctx context.Context, ownerID peer.ID,
 	return tag.RowsAffected() > 0, nil
 }
 
-func (s *PostgresStorage) ListCollections(ctx context.Context, ownerID peer.ID) ([]*storage.CollectionRecord, error) {
+func (s *PostgresStorage) ListCollections(ctx context.Context, ownerID, readerID peer.ID) ([]*storage.CollectionRecord, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT id, owner_peer_id, path, name, created_at, last_modified_at, record_count
-		FROM collections WHERE owner_peer_id = $1
+		SELECT id, owner_peer_id, path, name, created_at, last_modified_at, record_count, visibility
+		FROM collections c WHERE owner_peer_id = $1
+		  AND `+readableBy("c.id", "collection_acls", "collection_id", "$2")+`
 		ORDER BY path`,
-		ownerID.String(),
+		ownerID.String(), readerID.String(),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("list collections: %w", err)
@@ -441,7 +443,7 @@ func (s *PostgresStorage) QueryCollection(ctx context.Context, collectionID int6
 func scanCollectionRecord(rows pgx.Rows) (*storage.CollectionRecord, error) {
 	var r storage.CollectionRecord
 	err := rows.Scan(&r.ID, &r.OwnerPeerID, &r.Path, &r.Name,
-		&r.CreatedAt, &r.LastModifiedAt, &r.RecordCount)
+		&r.CreatedAt, &r.LastModifiedAt, &r.RecordCount, &r.Visibility)
 	if err != nil {
 		return nil, fmt.Errorf("scan collection record: %w", err)
 	}

@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/libp2p/go-libp2p/core/peer"
 
+	"github.com/twostack/go-ricochet/internal/core"
 	"github.com/twostack/go-ricochet/internal/storage"
 )
 
@@ -26,21 +27,23 @@ import (
 // passes "" for both and must not wipe an existing feed's metadata.
 // collaborative_mode is deliberately left alone on conflict — a re-create must
 // not silently flip an existing feed's access model.
-func (s *PostgresStorage) CreateFeed(ctx context.Context, ownerID peer.ID, path, title, description string, collaborative bool) (*storage.FeedRecord, error) {
+// Visibility is set on creation only, like collaborative_mode; the ACCESS
+// operation changes it afterwards.
+func (s *PostgresStorage) CreateFeed(ctx context.Context, ownerID peer.ID, path, title, description string, collaborative bool, visibility core.Visibility) (*storage.FeedRecord, error) {
 	var r storage.FeedRecord
 	err := s.pool.QueryRow(ctx, `
-		INSERT INTO feeds (owner_peer_id, path, title, description, collaborative_mode)
-		VALUES ($1, $2, $3, $4, $5)
+		INSERT INTO feeds (owner_peer_id, path, title, description, collaborative_mode, visibility)
+		VALUES ($1, $2, $3, $4, $5, $6)
 		ON CONFLICT ON CONSTRAINT uq_feed_owner_path DO UPDATE SET
 			title = COALESCE(NULLIF(EXCLUDED.title, ''), feeds.title),
 			description = COALESCE(NULLIF(EXCLUDED.description, ''), feeds.description)
 		RETURNING id, owner_peer_id, path, title, description, entry_content_type,
 				  created_at, last_entry_at, current_sequence, max_entries, max_age_days,
-				  collaborative_mode`,
-		ownerID.String(), path, title, description, collaborative,
+				  collaborative_mode, visibility`,
+		ownerID.String(), path, title, description, collaborative, int(visibility),
 	).Scan(&r.ID, &r.OwnerPeerID, &r.Path, &r.Title, &r.Description,
 		&r.EntryContentType, &r.CreatedAt, &r.LastEntryAt, &r.CurrentSequence,
-		&r.MaxEntries, &r.MaxAgeDays, &r.CollaborativeMode)
+		&r.MaxEntries, &r.MaxAgeDays, &r.CollaborativeMode, &r.Visibility)
 	if err != nil {
 		return nil, fmt.Errorf("create feed: %w", err)
 	}
@@ -54,13 +57,13 @@ func (s *PostgresStorage) GetFeed(ctx context.Context, ownerID peer.ID, path str
 	err := s.pool.QueryRow(ctx, `
 		SELECT id, owner_peer_id, path, title, description, entry_content_type,
 			   created_at, last_entry_at, current_sequence, max_entries, max_age_days,
-			   collaborative_mode
+			   collaborative_mode, visibility
 		FROM feeds
 		WHERE owner_peer_id = $1 AND path = $2`,
 		ownerID.String(), path,
 	).Scan(&r.ID, &r.OwnerPeerID, &r.Path, &r.Title, &r.Description,
 		&r.EntryContentType, &r.CreatedAt, &r.LastEntryAt, &r.CurrentSequence,
-		&r.MaxEntries, &r.MaxAgeDays, &r.CollaborativeMode)
+		&r.MaxEntries, &r.MaxAgeDays, &r.CollaborativeMode, &r.Visibility)
 
 	if err == pgx.ErrNoRows {
 		return nil, nil
@@ -82,14 +85,15 @@ func (s *PostgresStorage) DeleteFeed(ctx context.Context, ownerID peer.ID, path 
 	return tag.RowsAffected() > 0, nil
 }
 
-func (s *PostgresStorage) ListFeeds(ctx context.Context, ownerID peer.ID) ([]*storage.FeedRecord, error) {
+func (s *PostgresStorage) ListFeeds(ctx context.Context, ownerID, readerID peer.ID) ([]*storage.FeedRecord, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT id, owner_peer_id, path, title, description, entry_content_type,
 			   created_at, last_entry_at, current_sequence, max_entries, max_age_days,
-			   collaborative_mode
-		FROM feeds WHERE owner_peer_id = $1
+			   collaborative_mode, visibility
+		FROM feeds f WHERE owner_peer_id = $1
+		  AND `+readableBy("f.id", "feed_acls", "feed_id", "$2")+`
 		ORDER BY path`,
-		ownerID.String(),
+		ownerID.String(), readerID.String(),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("list feeds: %w", err)
@@ -432,7 +436,7 @@ func scanFeedRecord(rows pgx.Rows) (*storage.FeedRecord, error) {
 	var r storage.FeedRecord
 	err := rows.Scan(&r.ID, &r.OwnerPeerID, &r.Path, &r.Title, &r.Description,
 		&r.EntryContentType, &r.CreatedAt, &r.LastEntryAt, &r.CurrentSequence,
-		&r.MaxEntries, &r.MaxAgeDays, &r.CollaborativeMode)
+		&r.MaxEntries, &r.MaxAgeDays, &r.CollaborativeMode, &r.Visibility)
 	if err != nil {
 		return nil, fmt.Errorf("scan feed record: %w", err)
 	}

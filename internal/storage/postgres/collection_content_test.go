@@ -5,6 +5,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/twostack/go-ricochet/internal/core"
 	"github.com/twostack/go-ricochet/internal/storage"
 )
 
@@ -18,7 +19,7 @@ func TestCollectionContentTheDatabaseCannotHoldIsInvalidContent(t *testing.T) {
 	ctx := context.Background()
 	owner := newTestPeer(t)
 
-	coll, err := store.CreateCollection(ctx, owner, "content/nul", "NUL probe")
+	coll, err := store.CreateCollection(ctx, owner, "content/nul", "NUL probe", core.VisibilityPrivate)
 	if err != nil {
 		t.Fatalf("create collection: %v", err)
 	}

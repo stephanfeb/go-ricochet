@@ -41,6 +41,9 @@ type (
 
 	MailboxType = wire.MailboxType
 	AccessMode  = wire.AccessMode
+	Visibility  = wire.Visibility
+	StoreReader = wire.StoreReader
+	StoreAccess = wire.StoreAccess
 )
 
 const (
@@ -88,6 +91,10 @@ const (
 	AccessReadOnly  = wire.AccessReadOnly
 	AccessWriteOnly = wire.AccessWriteOnly
 	AccessReadWrite = wire.AccessReadWrite
+
+	VisibilityPrivate = wire.VisibilityPrivate
+	VisibilityShared  = wire.VisibilityShared
+	VisibilityPublic  = wire.VisibilityPublic
 )
 
 // NewMessage creates a message with a fresh ID and no expiry. See wire.NewMessage.
@@ -117,3 +124,6 @@ func MailboxTypeFromString(s string) (MailboxType, error) { return wire.MailboxT
 
 // AccessModeFromString parses an access mode name. See wire.AccessModeFromString.
 func AccessModeFromString(s string) (AccessMode, error) { return wire.AccessModeFromString(s) }
+
+// VisibilityFromString parses a visibility name. See wire.VisibilityFromString.
+func VisibilityFromString(s string) (Visibility, error) { return wire.VisibilityFromString(s) }

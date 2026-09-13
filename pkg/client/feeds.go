@@ -20,6 +20,7 @@ type FeedInfo struct {
 	CurrentSequence int    `json:"currentSequence"`
 	LastEntryAt     int64  `json:"lastEntryAt"`
 	CreatedAt       int64  `json:"createdAt"`
+	Visibility      string `json:"visibility"` // private, shared or public
 }
 
 // FeedEntry represents a single entry in a feed.
@@ -85,6 +86,9 @@ func (c *Client) CreateFeed(ctx context.Context, path, title, description string
 		Title:         title,
 		Description:   description,
 		Collaborative: cfg.Collaborative,
+	}
+	if cfg.Visibility != nil {
+		req.Visibility = cfg.Visibility.String()
 	}
 
 	resp, err := c.doFeed(ctx, req, opts)
@@ -183,6 +187,7 @@ func (c *Client) GetFeed(ctx context.Context, ownerPeerID peer.ID, path string, 
 		CurrentSequence int    `json:"currentSequence"`
 		LastEntryAt     int64  `json:"lastEntryAt"`
 		CreatedAt       int64  `json:"createdAt"`
+		Visibility      string `json:"visibility"`
 	}
 	if err := json.Unmarshal(bodyBytes, &raw); err != nil {
 		return nil, fmt.Errorf("unmarshal feed info: %w", err)
@@ -192,6 +197,7 @@ func (c *Client) GetFeed(ctx context.Context, ownerPeerID peer.ID, path string, 
 	info.CurrentSequence = raw.CurrentSequence
 	info.LastEntryAt = raw.LastEntryAt
 	info.CreatedAt = raw.CreatedAt
+	info.Visibility = raw.Visibility
 
 	return &info, nil
 }

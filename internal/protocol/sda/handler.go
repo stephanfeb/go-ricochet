@@ -19,6 +19,7 @@ import (
 
 	"github.com/twostack/go-ricochet/internal/admission"
 	"github.com/twostack/go-ricochet/internal/capacity"
+	"github.com/twostack/go-ricochet/internal/core"
 	"github.com/twostack/go-ricochet/internal/metrics"
 	"github.com/twostack/go-ricochet/internal/protocol/wire"
 	"github.com/twostack/go-ricochet/internal/ratelimit"
@@ -39,6 +40,9 @@ const (
 	OpHISTORY   = "HISTORY"
 	OpDIRECTORY = "DIRECTORY"
 	OpBATCH_PUT = "BATCH_PUT"
+	// OpACCESS reads or changes who may read a document: its visibility and
+	// reader list. Owner only; accessAction is get, set, grant or revoke.
+	OpACCESS = "ACCESS"
 )
 
 // Batch write limits.
@@ -104,6 +108,16 @@ type DocRequest struct {
 	DirectoryQuery  string `json:"directoryQuery,omitempty"`
 	DirectoryCursor string `json:"directoryCursor,omitempty"`
 	DirectoryLimit  *int   `json:"directoryLimit,omitempty"`
+
+	// Visibility ("private", "shared" or "public") on a PUT sets who may
+	// read the document; absent, a new document is private and an existing
+	// one keeps its setting. On ACCESS with accessAction "set" it is the
+	// new visibility.
+	Visibility string `json:"visibility,omitempty"`
+
+	// ACCESS-specific: the action and, for grant and revoke, the peer.
+	AccessAction string `json:"accessAction,omitempty"`
+	ReaderPeerID string `json:"readerPeerId,omitempty"`
 }
 
 // BatchDocument is a single document within a BATCH_PUT request.
@@ -112,6 +126,7 @@ type BatchDocument struct {
 	Body        string `json:"body"` // base64
 	ContentType string `json:"contentType,omitempty"`
 	IfMatch     string `json:"ifMatch,omitempty"`
+	Visibility  string `json:"visibility,omitempty"` // as on a single PUT
 }
 
 // BatchDocumentResult reports the outcome of one document in a BATCH_PUT. The
@@ -156,6 +171,7 @@ func NewPipeline(logger *slog.Logger, pool *codec.BufferPool, reg *forge.Registr
 		OpBATCH_PUT: middleware.Chain(forge.JSONDeserialize[DocRequest](), handleBatchPut),
 		OpHISTORY:   middleware.Chain(forge.JSONDeserialize[DocRequest](), handleHistory),
 		OpDIRECTORY: middleware.Chain(forge.JSONDeserialize[DocRequest](), handleDirectory),
+		OpACCESS:    middleware.Chain(forge.JSONDeserialize[DocRequest](), handleAccess),
 	}
 
 	return wire.Bounded(forge.NewPipeline(logger,
@@ -179,6 +195,7 @@ func isWriteClassifier(raw []byte) bool {
 	var envelope struct {
 		Operation       string `json:"operation"`
 		DirectoryAction string `json:"directoryAction"`
+		AccessAction    string `json:"accessAction"`
 	}
 	if err := json.Unmarshal(raw, &envelope); err != nil {
 		return false
@@ -188,6 +205,8 @@ func isWriteClassifier(raw []byte) bool {
 		return true
 	case OpDIRECTORY:
 		return envelope.DirectoryAction == "join" || envelope.DirectoryAction == "leave"
+	case OpACCESS:
+		return envelope.AccessAction != wire.AccessGet
 	}
 	return false
 }
@@ -279,9 +298,12 @@ func commonValidation() forge.Middleware {
 			}
 		}
 
-		// Enforce owner-only access for write operations.
+		// Enforce owner-only access for write operations. Reads are checked
+		// by each operation once it has the document's visibility in hand.
+		// ACCESS is the owner's in every action, reading the list included.
 		isWrite := envelope.Operation == OpPUT || envelope.Operation == OpPATCH ||
-			envelope.Operation == OpDELETE || envelope.Operation == OpBATCH_PUT
+			envelope.Operation == OpDELETE || envelope.Operation == OpBATCH_PUT ||
+			envelope.Operation == OpACCESS
 		if envelope.Operation == OpDIRECTORY {
 			isWrite = envelope.DirectoryAction == "join" || envelope.DirectoryAction == "leave"
 		}
@@ -319,6 +341,10 @@ func handleGet(sc *forge.StreamContext, next func()) {
 		sc.Response = &DocResponse{Status: StatusNotFound}
 		return
 	}
+	if err := wire.RequireReader(ctx, sc, store, storage.StoreDocument, doc.ID, doc.OwnerPeerID, doc.Visibility); err != nil {
+		sc.Err = err
+		return
+	}
 
 	// Conditional GET: If-None-Match
 	if ifNoneMatch, ok := req.Headers["If-None-Match"]; ok {
@@ -340,6 +366,7 @@ func handleGet(sc *forge.StreamContext, next func()) {
 			"Content-Type":  doc.ContentType,
 			"Last-Modified": doc.UpdatedAt.UnixMilli(),
 			"Version":       doc.VersionNumber,
+			"Visibility":    doc.Visibility.String(),
 		},
 		Body: base64.StdEncoding.EncodeToString(doc.Content),
 	}
@@ -375,10 +402,17 @@ func handlePut(sc *forge.StreamContext, next func()) {
 		ifMatch = &im
 	}
 
+	visibility, err := parseVisibility(req.Visibility)
+	if err != nil {
+		sc.Response = &DocResponse{Status: StatusBadRequest,
+			Headers: map[string]any{"Error": err.Error()}}
+		return
+	}
+
 	ctx, cancel := context.WithTimeout(sc.Ctx, 30*time.Second)
 	defer cancel()
 
-	result, err := store.PutDocument(ctx, ownerID.(peer.ID), req.Path, content, contentType, sc.PeerID, ifMatch)
+	result, err := store.PutDocument(ctx, ownerID.(peer.ID), req.Path, content, contentType, sc.PeerID, ifMatch, visibility)
 	if err != nil {
 		sc.Response = writeErrorResponse(sc.Logger, err)
 		return
@@ -473,6 +507,10 @@ func handleHead(sc *forge.StreamContext, next func()) {
 		sc.Response = &DocResponse{Status: StatusNotFound}
 		return
 	}
+	if err := wire.RequireReader(ctx, sc, store, storage.StoreDocument, doc.ID, doc.OwnerPeerID, doc.Visibility); err != nil {
+		sc.Err = err
+		return
+	}
 
 	// Conditional: If-None-Match
 	if ifNoneMatch, ok := req.Headers["If-None-Match"]; ok {
@@ -495,6 +533,7 @@ func handleHead(sc *forge.StreamContext, next func()) {
 			"Content-Length": doc.ContentLength,
 			"Last-Modified":  doc.UpdatedAt.Format(time.RFC3339),
 			"Version":        fmt.Sprintf("%d", doc.VersionNumber),
+			"Visibility":     doc.Visibility.String(),
 		},
 	}
 }
@@ -562,6 +601,7 @@ func handleBatchPut(sc *forge.StreamContext, next func()) {
 		content     []byte
 		contentType string
 		ifMatch     *string
+		visibility  *core.Visibility
 	}
 	decoded := make([]pending, 0, len(req.BatchDocuments))
 	results := make([]BatchDocumentResult, len(req.BatchDocuments))
@@ -608,12 +648,20 @@ func handleBatchPut(sc *forge.StreamContext, next func()) {
 			im := bd.IfMatch
 			ifMatch = &im
 		}
+		visibility, err := parseVisibility(bd.Visibility)
+		if err != nil {
+			results[i].Status = StatusBadRequest
+			results[i].Error = err.Error()
+			decoded = append(decoded, pending{})
+			continue
+		}
 
 		decoded = append(decoded, pending{
 			path:        bd.Path,
 			content:     content,
 			contentType: contentType,
 			ifMatch:     ifMatch,
+			visibility:  visibility,
 		})
 	}
 
@@ -627,7 +675,7 @@ func handleBatchPut(sc *forge.StreamContext, next func()) {
 		}
 
 		result, err := store.PutDocument(ctx, ownerID.(peer.ID), p.path,
-			p.content, p.contentType, sc.PeerID, p.ifMatch)
+			p.content, p.contentType, sc.PeerID, p.ifMatch, p.visibility)
 		if err != nil {
 			// Reuse the single-document error mapping so batch and non-batch
 			// writes cannot report the same failure differently.
@@ -679,7 +727,8 @@ func handleBatchPut(sc *forge.StreamContext, next func()) {
 	}
 }
 
-// handleList returns one page of document metadata for an owner.
+// handleList returns one page of document metadata for an owner, holding
+// only the documents the caller may read.
 //
 // The body stays a bare JSON array so existing clients keep parsing it
 // unchanged; paging is advertised through the response headers, which clients
@@ -697,7 +746,7 @@ func handleList(sc *forge.StreamContext, next func()) {
 		limit = *req.ListLimit
 	}
 
-	docs, hasMore, err := store.ListDocuments(ctx, ownerID.(peer.ID), req.ListCursor, limit)
+	docs, hasMore, err := store.ListDocuments(ctx, ownerID.(peer.ID), sc.PeerID, req.ListCursor, limit)
 	if err != nil {
 		sc.Logger.Error("failed to list documents", "error", err)
 		sc.Response = &DocResponse{Status: StatusInternalError}
@@ -712,6 +761,7 @@ func handleList(sc *forge.StreamContext, next func()) {
 		Size        int    `json:"size"`
 		UpdatedAt   string `json:"updatedAt"`
 		Version     int    `json:"versionNumber"`
+		Visibility  string `json:"visibility"`
 	}
 
 	entries := make([]docEntry, 0, len(docs))
@@ -723,6 +773,7 @@ func handleList(sc *forge.StreamContext, next func()) {
 			Size:        d.Size,
 			UpdatedAt:   d.UpdatedAt.Format(time.RFC3339),
 			Version:     d.VersionNumber,
+			Visibility:  d.Visibility.String(),
 		})
 	}
 
@@ -747,7 +798,9 @@ func handleList(sc *forge.StreamContext, next func()) {
 	}
 }
 
-// handleHistory returns version history for a document.
+// handleHistory returns version history for a document. History is read
+// under the document's own visibility: every version is as readable as the
+// current one, no more and no less.
 func handleHistory(sc *forge.StreamContext, next func()) {
 	req := sc.Request.(*DocRequest)
 	store, _ := forge.ServiceFrom[storage.Storage](sc, "storage")
@@ -755,6 +808,25 @@ func handleHistory(sc *forge.StreamContext, next func()) {
 
 	ctx, cancel := context.WithTimeout(sc.Ctx, 30*time.Second)
 	defer cancel()
+
+	// The owner's own reads skip the lookup; anyone else is checked against
+	// the document before a version leaves the store.
+	if sc.PeerID != ownerID.(peer.ID) {
+		doc, err := store.HeadDocument(ctx, ownerID.(peer.ID), req.Path)
+		if err != nil {
+			sc.Logger.Error("failed to get document", "error", err)
+			sc.Response = &DocResponse{Status: StatusInternalError}
+			return
+		}
+		if doc == nil {
+			sc.Response = &DocResponse{Status: StatusNotFound}
+			return
+		}
+		if err := wire.RequireReader(ctx, sc, store, storage.StoreDocument, doc.ID, doc.OwnerPeerID, doc.Visibility); err != nil {
+			sc.Err = err
+			return
+		}
+	}
 
 	// If a specific version is requested, return that single version
 	if req.VersionNumber != nil {
@@ -826,6 +898,63 @@ func handleHistory(sc *forge.StreamContext, next func()) {
 		},
 		Body: base64.StdEncoding.EncodeToString(bodyBytes),
 	}
+}
+
+// handleAccess reads or changes a document's visibility and reader list.
+// commonValidation has already required the owner.
+func handleAccess(sc *forge.StreamContext, next func()) {
+	req := sc.Request.(*DocRequest)
+	store, _ := forge.ServiceFrom[storage.Storage](sc, "storage")
+	ownerID := sc.PeerID // the owner, by commonValidation
+
+	ctx, cancel := context.WithTimeout(sc.Ctx, 30*time.Second)
+	defer cancel()
+
+	doc, err := store.HeadDocument(ctx, ownerID, req.Path)
+	if err != nil {
+		sc.Logger.Error("failed to get document", "error", err)
+		sc.Response = &DocResponse{Status: StatusInternalError}
+		return
+	}
+	if doc == nil {
+		sc.Response = &DocResponse{Status: StatusNotFound}
+		return
+	}
+
+	res := wire.StoreAccess(ctx, store, wire.AccessRequest{
+		Kind: storage.StoreDocument, OwnerID: ownerID, Path: req.Path, ID: doc.ID, Current: doc.Visibility,
+		Action: req.AccessAction, Visibility: req.Visibility, ReaderID: req.ReaderPeerID,
+	})
+	if res.Error != "" {
+		if res.Status == StatusInternalError {
+			sc.Logger.Error("document access update failed", "action", req.AccessAction, "error", res.Error)
+		}
+		sc.Response = &DocResponse{Status: res.Status, Headers: map[string]any{"Error": res.Error}}
+		return
+	}
+	bodyBytes, err := json.Marshal(res.Body)
+	if err != nil {
+		sc.Response = &DocResponse{Status: StatusInternalError}
+		return
+	}
+	sc.Response = &DocResponse{
+		Status:  res.Status,
+		Headers: map[string]any{"Content-Type": "application/json", "Visibility": res.Body.Visibility},
+		Body:    base64.StdEncoding.EncodeToString(bodyBytes),
+	}
+}
+
+// parseVisibility turns a request's visibility field into the storage
+// argument: nil when the field is absent.
+func parseVisibility(s string) (*core.Visibility, error) {
+	if s == "" {
+		return nil, nil
+	}
+	v, err := core.VisibilityFromString(s)
+	if err != nil {
+		return nil, err
+	}
+	return &v, nil
 }
 
 // handleDirectory handles DIRECTORY operations (join, leave, browse, get).

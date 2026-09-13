@@ -602,18 +602,17 @@ func (s *PostgresStorage) UpdateCursor(ctx context.Context, mailboxID int64, rea
 
 func (s *PostgresStorage) GetDocument(ctx context.Context, ownerID peer.ID, path string) (*storage.DocumentRecord, error) {
 	var r storage.DocumentRecord
-	var typ int
-	_ = typ // mailbox_type not in documents table
 	err := s.pool.QueryRow(ctx, `
 		SELECT id, owner_peer_id, path, content, content_type, content_hash,
 			   created_at, updated_at, updated_by_peer_id, version_number,
-			   history_enabled, max_history_versions, version_vector
+			   history_enabled, max_history_versions, version_vector, visibility
 		FROM documents
 		WHERE owner_peer_id = $1 AND path = $2`,
 		ownerID.String(), path,
 	).Scan(&r.ID, &r.OwnerPeerID, &r.Path, &r.Content, &r.ContentType,
 		&r.ContentHash, &r.CreatedAt, &r.UpdatedAt, &r.UpdatedByPeerID,
-		&r.VersionNumber, &r.HistoryEnabled, &r.MaxHistoryVersions, &r.VersionVector)
+		&r.VersionNumber, &r.HistoryEnabled, &r.MaxHistoryVersions, &r.VersionVector,
+		&r.Visibility)
 
 	if err == pgx.ErrNoRows {
 		return nil, nil
@@ -633,13 +632,14 @@ func (s *PostgresStorage) HeadDocument(ctx context.Context, ownerID peer.ID, pat
 	err := s.pool.QueryRow(ctx, `
 		SELECT id, owner_peer_id, path, octet_length(content), content_type, content_hash,
 			   created_at, updated_at, updated_by_peer_id, version_number,
-			   history_enabled, max_history_versions, version_vector
+			   history_enabled, max_history_versions, version_vector, visibility
 		FROM documents
 		WHERE owner_peer_id = $1 AND path = $2`,
 		ownerID.String(), path,
 	).Scan(&r.ID, &r.OwnerPeerID, &r.Path, &r.ContentLength, &r.ContentType,
 		&r.ContentHash, &r.CreatedAt, &r.UpdatedAt, &r.UpdatedByPeerID,
-		&r.VersionNumber, &r.HistoryEnabled, &r.MaxHistoryVersions, &r.VersionVector)
+		&r.VersionNumber, &r.HistoryEnabled, &r.MaxHistoryVersions, &r.VersionVector,
+		&r.Visibility)
 	if err == pgx.ErrNoRows {
 		return nil, nil
 	}
@@ -658,7 +658,7 @@ func (s *PostgresStorage) HeadDocument(ctx context.Context, ownerID peer.ID, pat
 // The lock query deliberately does not select `content`. The body is never
 // needed here: the caller supplies the new one, and archiving the old one is a
 // server-side copy that never round-trips through this process.
-func (s *PostgresStorage) PutDocument(ctx context.Context, ownerID peer.ID, path string, content []byte, contentType string, updatedBy peer.ID, ifMatch *string) (*storage.DocumentPutResult, error) {
+func (s *PostgresStorage) PutDocument(ctx context.Context, ownerID peer.ID, path string, content []byte, contentType string, updatedBy peer.ID, ifMatch *string, visibility *core.Visibility) (*storage.DocumentPutResult, error) {
 	if len(content) > storage.MaxDocumentSize {
 		return nil, &storage.DocumentSizeExceededError{ActualSize: len(content), MaxSize: storage.MaxDocumentSize}
 	}
@@ -669,7 +669,7 @@ func (s *PostgresStorage) PutDocument(ctx context.Context, ownerID peer.ID, path
 	}
 	defer tx.Rollback(ctx)
 
-	result, err := putDocumentLocked(ctx, tx, ownerID, path, content, contentType, updatedBy, ifMatch)
+	result, err := putDocumentLocked(ctx, tx, ownerID, path, content, contentType, updatedBy, ifMatch, visibility)
 	if err != nil {
 		return nil, err
 	}
@@ -683,7 +683,10 @@ func (s *PostgresStorage) PutDocument(ctx context.Context, ownerID peer.ID, path
 // itself, so a caller that already holds it (PatchDocument) simply
 // re-acquires it in the same transaction. The If-Match check, the history
 // archive and the upsert all happen under that lock.
-func putDocumentLocked(ctx context.Context, tx pgx.Tx, ownerID peer.ID, path string, content []byte, contentType string, updatedBy peer.ID, ifMatch *string) (*storage.DocumentPutResult, error) {
+//
+// A nil visibility leaves an existing document's alone and makes a new one
+// private; the column default is not relied on so the two cases read the same.
+func putDocumentLocked(ctx context.Context, tx pgx.Tx, ownerID peer.ID, path string, content []byte, contentType string, updatedBy peer.ID, ifMatch *string, visibility *core.Visibility) (*storage.DocumentPutResult, error) {
 	contentHash := computeContentHash(content)
 	now := time.Now()
 
@@ -733,19 +736,25 @@ func putDocumentLocked(ctx context.Context, tx pgx.Tx, ownerID peer.ID, path str
 		}
 	}
 
+	// $9 is the visibility to write, $10 whether to write it on update.
+	vis := int(core.VisibilityPrivate)
+	if visibility != nil {
+		vis = int(*visibility)
+	}
 	var created bool
 	err = tx.QueryRow(ctx, `
 		INSERT INTO documents (
 			owner_peer_id, path, content, content_type, content_hash,
-			created_at, updated_at, updated_by_peer_id, version_number
-		) VALUES ($1, $2, $3, $4, $5, $6, $6, $7, $8)
+			created_at, updated_at, updated_by_peer_id, version_number, visibility
+		) VALUES ($1, $2, $3, $4, $5, $6, $6, $7, $8, $9)
 		ON CONFLICT (owner_peer_id, path)
 		DO UPDATE SET
 			content = $3, content_type = $4, content_hash = $5,
-			updated_at = $6, updated_by_peer_id = $7, version_number = $8
+			updated_at = $6, updated_by_peer_id = $7, version_number = $8,
+			visibility = CASE WHEN $10 THEN $9 ELSE documents.visibility END
 		RETURNING (xmax = 0)`,
 		ownerID.String(), path, content, contentType, contentHash,
-		now, updatedBy.String(), newVersion,
+		now, updatedBy.String(), newVersion, vis, visibility != nil,
 	).Scan(&created)
 	if err != nil {
 		return nil, fmt.Errorf("put document: %w", err)
@@ -805,7 +814,7 @@ func (s *PostgresStorage) PatchDocument(ctx context.Context, ownerID peer.ID, pa
 		return nil, fmt.Errorf("marshal merged document: %w", err)
 	}
 
-	result, err := putDocumentLocked(ctx, tx, ownerID, path, newContent, "application/json", updatedBy, nil)
+	result, err := putDocumentLocked(ctx, tx, ownerID, path, newContent, "application/json", updatedBy, nil, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -833,7 +842,7 @@ func (s *PostgresStorage) DeleteDocument(ctx context.Context, ownerID peer.ID, p
 // row so the handler could call len() on it, which made a single LIST transfer
 // the caller's entire document set out of Postgres and into this process only
 // to discard it.
-func (s *PostgresStorage) ListDocuments(ctx context.Context, ownerID peer.ID, afterPath string, limit int) ([]*storage.DocumentSummary, bool, error) {
+func (s *PostgresStorage) ListDocuments(ctx context.Context, ownerID, readerID peer.ID, afterPath string, limit int) ([]*storage.DocumentSummary, bool, error) {
 	if limit <= 0 {
 		limit = storage.DefaultDocumentListLimit
 	}
@@ -843,14 +852,17 @@ func (s *PostgresStorage) ListDocuments(ctx context.Context, ownerID peer.ID, af
 
 	// Fetch one extra row to detect whether a further page exists without a
 	// second count query.
+	// The reader's view is decided in the statement, so a page and its
+	// cursor only ever cover rows the reader may see.
 	rows, err := s.pool.Query(ctx, `
 		SELECT path, content_type, content_hash, octet_length(content),
-			   updated_at, version_number
-		FROM documents
+			   updated_at, version_number, visibility
+		FROM documents d
 		WHERE owner_peer_id = $1 AND ($2 = '' OR path > $2)
+		  AND `+readableBy("d.id", "document_acls", "document_id", "$4")+`
 		ORDER BY path
 		LIMIT $3`,
-		ownerID.String(), afterPath, limit+1,
+		ownerID.String(), afterPath, limit+1, readerID.String(),
 	)
 	if err != nil {
 		return nil, false, err
@@ -861,7 +873,7 @@ func (s *PostgresStorage) ListDocuments(ctx context.Context, ownerID peer.ID, af
 	for rows.Next() {
 		var r storage.DocumentSummary
 		if err := rows.Scan(&r.Path, &r.ContentType, &r.ContentHash, &r.Size,
-			&r.UpdatedAt, &r.VersionNumber); err != nil {
+			&r.UpdatedAt, &r.VersionNumber, &r.Visibility); err != nil {
 			return nil, false, err
 		}
 		records = append(records, &r)

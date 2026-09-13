@@ -147,12 +147,24 @@ CREATE TABLE IF NOT EXISTS documents (
     history_enabled BOOLEAN NOT NULL DEFAULT FALSE,
     max_history_versions INT,
     version_vector TEXT,
+    -- Who may read: 0 private (owner), 1 shared (owner + document_acls),
+    -- 2 public. Covers every version. Writes are the owner's regardless.
+    visibility SMALLINT NOT NULL DEFAULT 0,
     
     CONSTRAINT uq_document_owner_path UNIQUE(owner_peer_id, path)
 );
 
 -- Content deduplication lookup
 CREATE INDEX IF NOT EXISTS idx_documents_hash ON documents(content_hash);
+
+-- Reader list of a shared document. Rows go with the document.
+CREATE TABLE IF NOT EXISTS document_acls (
+    document_id BIGINT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+    peer_id TEXT NOT NULL,
+    granted_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+    PRIMARY KEY (document_id, peer_id)
+);
 
 -- =============================================================================
 -- DOCUMENT VERSIONS (Version History)
@@ -214,11 +226,24 @@ CREATE TABLE IF NOT EXISTS feeds (
     max_entries INT,
     max_age_days INT,
     collaborative_mode BOOLEAN NOT NULL DEFAULT FALSE,
+    -- Who may read: 0 private, 1 shared (owner + feed_acls), 2 public. A feed
+    -- is a publication, so the default is public; the other stores default to
+    -- private.
+    visibility SMALLINT NOT NULL DEFAULT 2,
 
     CONSTRAINT uq_feed_owner_path UNIQUE(owner_peer_id, path)
 );
 
 CREATE INDEX IF NOT EXISTS idx_feeds_owner ON feeds(owner_peer_id);
+
+-- Reader list of a shared feed. Rows go with the feed.
+CREATE TABLE IF NOT EXISTS feed_acls (
+    feed_id BIGINT NOT NULL REFERENCES feeds(id) ON DELETE CASCADE,
+    peer_id TEXT NOT NULL,
+    granted_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+    PRIMARY KEY (feed_id, peer_id)
+);
 
 -- =============================================================================
 -- FEED ENTRIES
@@ -260,11 +285,23 @@ CREATE TABLE IF NOT EXISTS collections (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     last_modified_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     record_count INT NOT NULL DEFAULT 0,
+    -- Who may read: 0 private (owner), 1 shared (owner + collection_acls),
+    -- 2 public. Covers every item and every query.
+    visibility SMALLINT NOT NULL DEFAULT 0,
 
     CONSTRAINT uq_collection_owner_path UNIQUE(owner_peer_id, path)
 );
 
 CREATE INDEX IF NOT EXISTS idx_collections_owner ON collections(owner_peer_id);
+
+-- Reader list of a shared collection. Rows go with the collection.
+CREATE TABLE IF NOT EXISTS collection_acls (
+    collection_id BIGINT NOT NULL REFERENCES collections(id) ON DELETE CASCADE,
+    peer_id TEXT NOT NULL,
+    granted_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+    PRIMARY KEY (collection_id, peer_id)
+);
 
 -- =============================================================================
 -- COLLECTION ITEMS
@@ -429,6 +466,20 @@ ALTER TABLE stored_messages
 -- API (readiness, metrics, and the stored-data views under /ops).
 DROP VIEW IF EXISTS mailbox_stats;
 DROP VIEW IF EXISTS message_priority_stats;
+
+-- documents.visibility, feeds.visibility, collections.visibility (added
+-- 2026-09): until this column existed any peer could read every document,
+-- feed and collection. Rows predating it take the same defaults as new ones:
+-- documents and collections become owner-only, feeds stay public. An owner
+-- who meant a document to be read by others sets its visibility with the
+-- ACCESS operation. The reader-list tables are created above; being new,
+-- IF NOT EXISTS covers them.
+ALTER TABLE documents
+    ADD COLUMN IF NOT EXISTS visibility SMALLINT NOT NULL DEFAULT 0;
+ALTER TABLE feeds
+    ADD COLUMN IF NOT EXISTS visibility SMALLINT NOT NULL DEFAULT 2;
+ALTER TABLE collections
+    ADD COLUMN IF NOT EXISTS visibility SMALLINT NOT NULL DEFAULT 0;
 
 -- =============================================================================
 -- PERMISSIONS

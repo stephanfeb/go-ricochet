@@ -19,7 +19,7 @@ func TestConcurrentPatchesWithSameIfMatchAdmitOne(t *testing.T) {
 	owner := newTestPeer(t)
 	const path = "/race/if-match.json"
 
-	put, err := store.PutDocument(ctx, owner, path, []byte(`{"n":0}`), "application/json", owner, nil)
+	put, err := store.PutDocument(ctx, owner, path, []byte(`{"n":0}`), "application/json", owner, nil, nil)
 	if err != nil {
 		t.Fatalf("seed document: %v", err)
 	}
@@ -73,7 +73,7 @@ func TestConcurrentPatchesWithoutIfMatchAllApply(t *testing.T) {
 	owner := newTestPeer(t)
 	const path = "/race/merge.json"
 
-	if _, err := store.PutDocument(ctx, owner, path, []byte(`{}`), "application/json", owner, nil); err != nil {
+	if _, err := store.PutDocument(ctx, owner, path, []byte(`{}`), "application/json", owner, nil, nil); err != nil {
 		t.Fatalf("seed document: %v", err)
 	}
 
