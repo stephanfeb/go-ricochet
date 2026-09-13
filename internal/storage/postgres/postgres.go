@@ -605,14 +605,29 @@ func (s *PostgresStorage) PutDocument(ctx context.Context, ownerID peer.ID, path
 		return nil, &storage.DocumentSizeExceededError{ActualSize: len(content), MaxSize: storage.MaxDocumentSize}
 	}
 
-	contentHash := computeContentHash(content)
-	now := time.Now()
-
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("begin put document: %w", err)
 	}
 	defer tx.Rollback(ctx)
+
+	result, err := putDocumentLocked(ctx, tx, ownerID, path, content, contentType, updatedBy, ifMatch)
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("commit put document: %w", err)
+	}
+	return result, nil
+}
+
+// putDocumentLocked writes a document inside tx. It takes the row lock
+// itself, so a caller that already holds it (PatchDocument) simply
+// re-acquires it in the same transaction. The If-Match check, the history
+// archive and the upsert all happen under that lock.
+func putDocumentLocked(ctx context.Context, tx pgx.Tx, ownerID peer.ID, path string, content []byte, contentType string, updatedBy peer.ID, ifMatch *string) (*storage.DocumentPutResult, error) {
+	contentHash := computeContentHash(content)
+	now := time.Now()
 
 	var (
 		existingID         int64
@@ -622,7 +637,7 @@ func (s *PostgresStorage) PutDocument(ctx context.Context, ownerID peer.ID, path
 		maxHistoryVersions *int
 		found              bool
 	)
-	err = tx.QueryRow(ctx, `
+	err := tx.QueryRow(ctx, `
 		SELECT id, content_hash, version_number, history_enabled, max_history_versions
 		FROM documents
 		WHERE owner_peer_id = $1 AND path = $2
@@ -678,10 +693,6 @@ func (s *PostgresStorage) PutDocument(ctx context.Context, ownerID peer.ID, path
 		return nil, fmt.Errorf("put document: %w", err)
 	}
 
-	if err := tx.Commit(ctx); err != nil {
-		return nil, fmt.Errorf("commit put document: %w", err)
-	}
-
 	return &storage.DocumentPutResult{
 		ContentHash: contentHash,
 		Created:     created,
@@ -690,21 +701,41 @@ func (s *PostgresStorage) PutDocument(ctx context.Context, ownerID peer.ID, path
 }
 
 func (s *PostgresStorage) PatchDocument(ctx context.Context, ownerID peer.ID, path string, patch map[string]any, updatedBy peer.ID, ifMatch *string) (*storage.DocumentPutResult, error) {
-	doc, err := s.GetDocument(ctx, ownerID, path)
+	// Read, merge and write under one row lock. Reading outside it let two
+	// concurrent patches both pass the If-Match check and the second
+	// overwrite the first; without If-Match, one patch's keys were lost.
+	tx, err := s.pool.Begin(ctx)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("begin patch document: %w", err)
 	}
-	if doc == nil {
+	defer tx.Rollback(ctx)
+
+	var (
+		content     []byte
+		contentHash string
+	)
+	err = tx.QueryRow(ctx, `
+		SELECT content, content_hash
+		FROM documents
+		WHERE owner_peer_id = $1 AND path = $2
+		FOR UPDATE`,
+		ownerID.String(), path,
+	).Scan(&content, &contentHash)
+	switch {
+	case err == nil:
+	case errors.Is(err, pgx.ErrNoRows):
 		return nil, storage.ErrDocumentNotFound
+	default:
+		return nil, fmt.Errorf("lock document: %w", err)
 	}
 
-	if ifMatch != nil && doc.ContentHash != *ifMatch {
-		return nil, &storage.DocumentConflictError{ExpectedHash: *ifMatch, ActualHash: doc.ContentHash}
+	if ifMatch != nil && contentHash != *ifMatch {
+		return nil, &storage.DocumentConflictError{ExpectedHash: *ifMatch, ActualHash: contentHash}
 	}
 
 	// Parse existing content
 	var existing map[string]any
-	if err := json.Unmarshal(doc.Content, &existing); err != nil {
+	if err := json.Unmarshal(content, &existing); err != nil {
 		return nil, fmt.Errorf("parse existing document: %w", err)
 	}
 
@@ -716,7 +747,14 @@ func (s *PostgresStorage) PatchDocument(ctx context.Context, ownerID peer.ID, pa
 		return nil, fmt.Errorf("marshal merged document: %w", err)
 	}
 
-	return s.PutDocument(ctx, ownerID, path, newContent, "application/json", updatedBy, nil)
+	result, err := putDocumentLocked(ctx, tx, ownerID, path, newContent, "application/json", updatedBy, nil)
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("commit patch document: %w", err)
+	}
+	return result, nil
 }
 
 func (s *PostgresStorage) DeleteDocument(ctx context.Context, ownerID peer.ID, path string) (bool, error) {
