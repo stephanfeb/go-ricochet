@@ -304,6 +304,27 @@ func (s *MailboxServer) Retrieve(ctx context.Context, addr *core.MailboxAddress,
 	return messages, nil
 }
 
+// MarkDelivered sets \Seen on the caller's own messages and reports how many
+// were touched. IDs that are not in a mailbox the caller owns are ignored, not
+// refused: a message ID is sender-chosen and travels in every acknowledgement,
+// so it must not be a capability.
+func (s *MailboxServer) MarkDelivered(ctx context.Context, callerID peer.ID, messageIDs []string) (int, error) {
+	return s.Storage.MarkMessagesDelivered(ctx, callerID, messageIDs)
+}
+
+// UpdateFlags applies IMAP-style flag changes to one of the caller's own
+// messages and returns the resulting flags, or nil when the caller owns no
+// message with that ID.
+func (s *MailboxServer) UpdateFlags(ctx context.Context, callerID peer.ID, messageID string, addFlags, removeFlags uint32) (*uint32, error) {
+	return s.Storage.UpdateMessageFlags(ctx, callerID, messageID, addFlags, removeFlags)
+}
+
+// DeleteMessages removes the caller's own messages by ID and reports how many
+// existed. See MarkDelivered for why foreign IDs are silently unmatched.
+func (s *MailboxServer) DeleteMessages(ctx context.Context, callerID peer.ID, messageIDs []string) (int, error) {
+	return s.Storage.DeleteOwnedMessages(ctx, callerID, messageIDs)
+}
+
 // CreateMailbox creates a new mailbox with the given options.
 func (s *MailboxServer) CreateMailbox(ctx context.Context, addr *core.MailboxAddress, maxMessages, retentionDays int, retentionCount *int) error {
 	_, err := s.Storage.GetOrCreateMailbox(ctx, addr, maxMessages, retentionDays, retentionCount)

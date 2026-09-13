@@ -118,12 +118,8 @@ func (m *mockStorage) DeleteMessages(_ context.Context, _ []string) error {
 
 // --- Flag operations ---
 
-func (m *mockStorage) UpdateMessageFlags(_ context.Context, _ string, _, _ uint32) (bool, error) {
-	panic("not implemented")
-}
-
-func (m *mockStorage) GetMessageFlags(_ context.Context, _ string) (*uint32, error) {
-	panic("not implemented")
+func (m *mockStorage) UpdateMessageFlags(_ context.Context, _ peer.ID, _ string, _, _ uint32) (*uint32, error) {
+	return nil, nil
 }
 
 func (m *mockStorage) ExpungeMailbox(_ context.Context, _ int64) (int, error) {
@@ -134,7 +130,11 @@ func (m *mockStorage) ExpungeAllMailboxes(_ context.Context, _ peer.ID) (int, er
 	panic("not implemented")
 }
 
-func (m *mockStorage) MarkMessagesDelivered(_ context.Context, _ []string) (int, error) {
+func (m *mockStorage) DeleteOwnedMessages(_ context.Context, _ peer.ID, _ []string) (int, error) {
+	return 0, nil
+}
+
+func (m *mockStorage) MarkMessagesDelivered(_ context.Context, _ peer.ID, _ []string) (int, error) {
 	panic("not implemented")
 }
 

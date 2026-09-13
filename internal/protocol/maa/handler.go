@@ -263,7 +263,7 @@ func handleMarkDelivered(sc *forge.StreamContext, next func()) {
 	mailbox, _ := forge.ServiceFrom[*mda.MailboxServer](sc, "mda")
 
 	ctx := context.Background()
-	updatedCount, err := mailbox.Storage.MarkMessagesDelivered(ctx, req.MessageIDs)
+	updatedCount, err := mailbox.MarkDelivered(ctx, sc.PeerID, req.MessageIDs)
 	if err != nil {
 		sc.Logger.Error("failed to mark messages delivered", "error", err)
 	}
@@ -282,21 +282,20 @@ func handleUpdateFlags(sc *forge.StreamContext, next func()) {
 	mailbox, _ := forge.ServiceFrom[*mda.MailboxServer](sc, "mda")
 
 	ctx := context.Background()
-	success, err := mailbox.Storage.UpdateMessageFlags(ctx, req.MessageID, req.AddFlags, req.RemoveFlags)
+	newFlags, err := mailbox.UpdateFlags(ctx, sc.PeerID, req.MessageID, req.AddFlags, req.RemoveFlags)
 	if err != nil {
 		sc.Logger.Error("failed to update flags", "error", err)
 	}
 
-	var newFlags *uint32
-	if success {
-		newFlags, _ = mailbox.Storage.GetMessageFlags(ctx, req.MessageID)
-	}
-
 	ack := &core.UpdateFlagsAck{
-		Success:  success,
+		Success:  err == nil && newFlags != nil,
 		NewFlags: newFlags,
 	}
-	if !success {
+	if err != nil {
+		ack.ErrorMessage = "failed to update flags"
+	} else if newFlags == nil {
+		// Also the answer for a message the caller does not own: a refusal
+		// that said "exists but not yours" would confirm a guessed ID.
 		ack.ErrorMessage = "message not found"
 	}
 
@@ -340,12 +339,22 @@ func handleDeleteMessages(sc *forge.StreamContext, next func()) {
 	mailbox, _ := forge.ServiceFrom[*mda.MailboxServer](sc, "mda")
 
 	ctx := context.Background()
-	err := mailbox.Storage.DeleteMessages(ctx, req.MessageIDs)
-
-	sc.Response = &core.DeleteMessagesAck{
-		Success:      err == nil,
-		DeletedCount: len(req.MessageIDs),
+	deleted, err := mailbox.DeleteMessages(ctx, sc.PeerID, req.MessageIDs)
+	if err != nil {
+		sc.Logger.Error("failed to delete messages", "error", err)
 	}
 
-	sc.Logger.Info("deleted messages", "count", len(req.MessageIDs))
+	// DeletedCount is what was removed, not what was asked. It used to echo
+	// the request length, so a caller deleting IDs it did not own — or that
+	// never existed — was told they were all gone.
+	ack := &core.DeleteMessagesAck{
+		Success:      err == nil,
+		DeletedCount: deleted,
+	}
+	if err != nil {
+		ack.ErrorMessage = "failed to delete messages"
+	}
+	sc.Response = ack
+
+	sc.Logger.Info("deleted messages", "requested", len(req.MessageIDs), "deleted", deleted)
 }

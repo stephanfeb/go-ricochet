@@ -312,6 +312,22 @@ func (s *PostgresStorage) DeleteMessages(ctx context.Context, messageIDs []strin
 	return err
 }
 
+func (s *PostgresStorage) DeleteOwnedMessages(ctx context.Context, ownerID peer.ID, messageIDs []string) (int, error) {
+	if len(messageIDs) == 0 {
+		return 0, nil
+	}
+	tag, err := s.pool.Exec(ctx, `
+		DELETE FROM stored_messages
+		WHERE message_id = ANY($1)
+		  AND mailbox_id IN (SELECT id FROM mailboxes WHERE owner_peer_id = $2)`,
+		messageIDs, ownerID.String(),
+	)
+	if err != nil {
+		return 0, err
+	}
+	return int(tag.RowsAffected()), nil
+}
+
 func (s *PostgresStorage) GetMessageCount(ctx context.Context, mailboxID int64) (int, error) {
 	var count int
 	err := s.pool.QueryRow(ctx, `SELECT COUNT(*) FROM stored_messages WHERE mailbox_id = $1`, mailboxID).Scan(&count)
@@ -322,22 +338,16 @@ func (s *PostgresStorage) GetMessageCount(ctx context.Context, mailboxID int64) 
 // Flag Operations
 // =============================================================================
 
-func (s *PostgresStorage) UpdateMessageFlags(ctx context.Context, messageID string, addFlags, removeFlags uint32) (bool, error) {
-	tag, err := s.pool.Exec(ctx, `
+func (s *PostgresStorage) UpdateMessageFlags(ctx context.Context, ownerID peer.ID, messageID string, addFlags, removeFlags uint32) (*uint32, error) {
+	var flags uint32
+	err := s.pool.QueryRow(ctx, `
 		UPDATE stored_messages
 		SET flags_bitmap = (flags_bitmap | $1) & ~$2::integer
-		WHERE message_id = $3`,
-		addFlags, removeFlags, messageID,
-	)
-	if err != nil {
-		return false, err
-	}
-	return tag.RowsAffected() > 0, nil
-}
-
-func (s *PostgresStorage) GetMessageFlags(ctx context.Context, messageID string) (*uint32, error) {
-	var flags uint32
-	err := s.pool.QueryRow(ctx, `SELECT flags_bitmap FROM stored_messages WHERE message_id = $1`, messageID).Scan(&flags)
+		WHERE message_id = $3
+		  AND mailbox_id IN (SELECT id FROM mailboxes WHERE owner_peer_id = $4)
+		RETURNING flags_bitmap`,
+		addFlags, removeFlags, messageID, ownerID.String(),
+	).Scan(&flags)
 	if err == pgx.ErrNoRows {
 		return nil, nil
 	}
@@ -373,15 +383,16 @@ func (s *PostgresStorage) ExpungeAllMailboxes(ctx context.Context, ownerID peer.
 	return int(tag.RowsAffected()), nil
 }
 
-func (s *PostgresStorage) MarkMessagesDelivered(ctx context.Context, messageIDs []string) (int, error) {
+func (s *PostgresStorage) MarkMessagesDelivered(ctx context.Context, ownerID peer.ID, messageIDs []string) (int, error) {
 	if len(messageIDs) == 0 {
 		return 0, nil
 	}
 	tag, err := s.pool.Exec(ctx, `
 		UPDATE stored_messages
 		SET flags_bitmap = flags_bitmap | $1
-		WHERE message_id = ANY($2)`,
-		uint32(core.MsgFlagSeen), messageIDs,
+		WHERE message_id = ANY($2)
+		  AND mailbox_id IN (SELECT id FROM mailboxes WHERE owner_peer_id = $3)`,
+		uint32(core.MsgFlagSeen), messageIDs, ownerID.String(),
 	)
 	if err != nil {
 		return 0, err

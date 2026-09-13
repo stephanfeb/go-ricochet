@@ -38,15 +38,26 @@ type Storage interface {
 	StoreMessage(ctx context.Context, mailbox *MailboxRecord, msg *core.Message) (int, error)
 	RetrieveMessages(ctx context.Context, mailbox *MailboxRecord, fromSequence *int, maxMessages *int, minPriority *core.MessagePriority) ([]*core.Message, error)
 	DeleteMessage(ctx context.Context, messageID string) error
+	// DeleteMessages removes messages by ID with no ownership check. It is
+	// for the mailbox types, which only ever pass IDs they just read from
+	// their own record; a caller-facing path must use DeleteOwnedMessages.
 	DeleteMessages(ctx context.Context, messageIDs []string) error
 	GetMessageCount(ctx context.Context, mailboxID int64) (int, error)
 
-	// Flag operations (IMAP-style)
-	UpdateMessageFlags(ctx context.Context, messageID string, addFlags, removeFlags uint32) (bool, error)
-	GetMessageFlags(ctx context.Context, messageID string) (*uint32, error)
+	// Caller-facing mutations. Each is scoped to mailboxes ownerID owns, in
+	// the statement itself, so a message ID that belongs to someone else is
+	// simply not matched: message IDs are chosen by the sender and echoed in
+	// every acknowledgement, so knowing one proves nothing about who may act
+	// on it. Each reports how many rows it touched so an acknowledgement can
+	// say what actually happened rather than what was asked.
+	DeleteOwnedMessages(ctx context.Context, ownerID peer.ID, messageIDs []string) (int, error)
+	MarkMessagesDelivered(ctx context.Context, ownerID peer.ID, messageIDs []string) (int, error)
+	// UpdateMessageFlags returns the resulting flags, or nil when no message
+	// with that ID exists in a mailbox ownerID owns.
+	UpdateMessageFlags(ctx context.Context, ownerID peer.ID, messageID string, addFlags, removeFlags uint32) (*uint32, error)
+
 	ExpungeMailbox(ctx context.Context, mailboxID int64) (int, error)
 	ExpungeAllMailboxes(ctx context.Context, ownerID peer.ID) (int, error)
-	MarkMessagesDelivered(ctx context.Context, messageIDs []string) (int, error)
 
 	// ACL operations
 	GrantAccess(ctx context.Context, mailboxID int64, peerID peer.ID, mode core.AccessMode) error
