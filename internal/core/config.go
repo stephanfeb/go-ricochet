@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"regexp"
 	"strconv"
 	"time"
 
@@ -537,6 +538,24 @@ func HighCapacityConfig() *ServerConfig {
 }
 
 // Validate checks the configuration for errors.
+// SetPort sets the P2P listen port.
+//
+// The port lives in two places: the Port field, and the port component of
+// every listen address. The host listens on the addresses, and it derives an
+// address from Port only when the list is empty, which it never is, since the
+// defaults carry one. So a port set through Port alone was ignored, and
+// --port and the file's server.port changed nothing for the life of the
+// codebase. Setting the port here rewrites both.
+func (c *ServerConfig) SetPort(port int) {
+	c.Port = port
+	for i, addr := range c.ListenAddresses {
+		c.ListenAddresses[i] = listenPortPattern.ReplaceAllString(addr, "/udp/"+strconv.Itoa(port)+"/")
+	}
+}
+
+// listenPortPattern matches the port component of a UDP multiaddr.
+var listenPortPattern = regexp.MustCompile(`/udp/\d+/`)
+
 func (c *ServerConfig) Validate() error {
 	if c.Port < 0 || c.Port > 65535 {
 		return fmt.Errorf("invalid port: %d", c.Port)
@@ -776,7 +795,7 @@ func LoadConfigFromFile(path string, base *ServerConfig) error {
 
 	// Server section
 	if yc.Server.Port > 0 {
-		base.Port = yc.Server.Port
+		base.SetPort(yc.Server.Port)
 	}
 	if yc.Server.Region != "" {
 		base.ServerRegion = yc.Server.Region

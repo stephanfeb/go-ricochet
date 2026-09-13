@@ -602,23 +602,21 @@ func benchSCA(payload []byte) benchFunc {
 	}
 }
 
+// benchMixed draws each request uniformly from the five per-operation
+// scenarios. The setup for "mixed" creates a collection per worker, and for
+// a long time this drew from four: the collections were created and never
+// touched, and a "mixed" run said nothing about the collection store.
 func benchMixed(workers []*workerState, payload []byte) benchFunc {
-	msaFn := benchMSA(workers, payload)
-	maaFn := benchMAA()
-	sdaFn := benchSDA(payload)
-	sfaFn := benchSFA(payload)
+	fns := []benchFunc{
+		benchMSA(workers, payload),
+		benchMAA(),
+		benchSDA(payload),
+		benchSFA(payload),
+		benchSCA(payload),
+	}
 
 	return func(ctx context.Context, c *client.Client, workerID, reqID int) error {
-		switch rand.IntN(4) {
-		case 0:
-			return msaFn(ctx, c, workerID, reqID)
-		case 1:
-			return maaFn(ctx, c, workerID, reqID)
-		case 2:
-			return sdaFn(ctx, c, workerID, reqID)
-		default:
-			return sfaFn(ctx, c, workerID, reqID)
-		}
+		return fns[rand.IntN(len(fns))](ctx, c, workerID, reqID)
 	}
 }
 

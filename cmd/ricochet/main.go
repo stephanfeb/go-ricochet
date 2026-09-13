@@ -93,7 +93,7 @@ func main() {
 
 	// Apply CLI overrides (take precedence over config file)
 	if *port > 0 {
-		cfg.Port = *port
+		cfg.SetPort(*port)
 	}
 	if *dataDir != "" {
 		cfg.DataDirectory = *dataDir

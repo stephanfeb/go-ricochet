@@ -1,8 +1,8 @@
 # go-ricochet
 
-A production-ready store-and-forward messaging server for P2P networks, built on [libp2p](https://libp2p.io/). Provides reliable message delivery when recipients are offline, following an email MX server architecture.
+A store-and-forward messaging server for P2P networks, built on [libp2p](https://libp2p.io/). Provides reliable message delivery when recipients are offline, following an email MX server architecture.
 
-go-ricochet is the Go implementation of the [Ricochet](https://github.com/user/ricochet) protocol, designed for decentralized messaging, document storage, and mailbox management over peer-to-peer networks.
+go-ricochet is the Go implementation of the Ricochet protocol (module `github.com/twostack/go-ricochet`), designed for decentralized messaging, document storage, and mailbox management over peer-to-peer networks.
 
 ## Features
 
@@ -12,10 +12,10 @@ go-ricochet is the Go implementation of the [Ricochet](https://github.com/user/r
 - **End-to-End Encryption** -- NaCl box encryption (X25519 + XSalsa20-Poly1305) derived from Ed25519 identity keys
 - **LZ4 Compression** -- Transparent payload compression with configurable threshold
 - **Push Notifications** -- Hybrid delivery: direct P2P streams for private mailboxes, GossipSub for shared/public
-- **Relay Support** -- Circuit Relay v2, AutoRelay with static relays, and DCUtR hole punching for NAT traversal
+- **Relay Support** -- Circuit Relay v2 service, on by default. AutoRelay through static relays and DCUtR hole punching are off by default and take their relay candidates from `bootstrap_peers`; see [NAT Traversal](#nat-traversal)
 - **IMAP-Style Flags** -- Seen, flagged, deleted, draft flags with expunge support
 - **Presence Detection** -- Real-time peer online/offline status with TTL-based caching
-- **Service Discovery** -- GossipSub-based server announcements and health monitoring
+- **Service Discovery** -- GossipSub-based server announcements; a server that stops announcing drops out of the list after two hours
 - **PostgreSQL Storage** -- Production-grade storage with BYTEA binary encoding and connection pooling
 
 ## Architecture
@@ -48,7 +48,11 @@ The system follows an email-inspired agent separation:
 | **MSA** (Mail Submission) | `/sf-network/submit/1.0.0` | Message submission (write path) |
 | **MAA** (Mail Access) | `/sf-network/access/1.0.0` | Message retrieval, flags, expunge |
 | **MMA** (Mailbox Management) | `/sf-network/admin/1.0.0` | Mailbox lifecycle, ACLs, capacity |
+| **MSA** batch | `/sf-network/submit/batch/1.0.0` | Many submissions in one request |
 | **SDA** (Store-Document) | `/ricochet/store/doc/1.0.0` | Document CRUD operations |
+| **SFA** (Store-Feed) | `/ricochet/store/feed/1.0.0` | Append-only feeds |
+| **SCA** (Store-Collection) | `/ricochet/store/collection/1.0.0` | Keyed collections with queries |
+| Notify | `/ricochet/mailbox-notify/1.0.0` | Push notifications, server to client |
 | **MTA** (Mail Transfer) | Internal | Message routing and validation |
 | **MDA** (Mail Delivery) | Internal | Local storage and push notifications |
 
@@ -56,7 +60,7 @@ The system follows an email-inspired agent separation:
 
 ### Prerequisites
 
-- Go 1.24.6+
+- Go 1.25+
 - PostgreSQL 14+
 
 ### Database Setup
@@ -102,10 +106,14 @@ to throwaway local runs.
 
 ```
 --port              Listen port (default: 55223)
---development       Development mode (1GB, relaxed limits, debug logging)
---production        Production mode (50GB, 10K connections, auth enabled)
+--development       Development preset (1 GB storage, 100 connections, TLS to PostgreSQL off)
+--production        Production preset (50 GB storage, 10,000 connections, pool of 50)
+--high-capacity     High-capacity preset (100 GB storage, 50,000 connections, forwarding on, 8 push workers)
+--config            YAML config file (default: /etc/ricochet/config.yaml when it exists)
 --data-dir          Data directory path
 --identity-file     Path to Ed25519 identity key file
+--external-addrs    Comma-separated external multiaddrs to advertise
+--debug-dht         Verbose DHT logging
 --pg-host           PostgreSQL host
 --pg-port           PostgreSQL port (default: 5432)
 --pg-database       PostgreSQL database name
@@ -348,7 +356,8 @@ Messages can be encrypted client-side using NaCl box:
   `[24-byte nonce][ciphertext + Poly1305 tag]`, for messages sealed before
   the binding existed.
 
-The server never sees plaintext when encryption is enabled. Keys are derived
+The server never sees the payload in plaintext when encryption is enabled; the
+envelope around it stays visible, as listed below. Keys are derived
 from the libp2p peer identity, so no additional key exchange is needed.
 
 What this protects, and what it does not:
@@ -415,7 +424,7 @@ All P2P connections use the [Noise protocol framework](https://noiseprotocol.org
 Server and client identities are Ed25519 keypairs. Identity can be provided via:
 1. `RICOCHET_SEED_HEX` environment variable (highest priority)
 2. `--identity-file` CLI flag
-3. Auto-generated and persisted to `{data-dir}/identity.key`
+3. Auto-generated and persisted to `{data-dir}/peer_identity.key`
 
 ### Dependency Advisories
 
@@ -441,63 +450,86 @@ Yamux (stream multiplexing)
     |
 Noise (transport encryption)
     |
-UDX (unreliable datagram transport)
+UDX (reliable UDP transport: ordered streams, congestion and flow control)
     |
 UDP
 ```
 
 ### NAT Traversal
 
-When relay support is enabled in the configuration:
+The relay service is on by default, so a public server relays for the peers
+behind NATs. A server that is itself behind a NAT reaches the network through
+other relays; that is off by default and configured in the YAML file, with the
+relay candidates taken from the bootstrap peers:
 
-```go
-cfg.EnableRelay = true          // Circuit Relay v2
-cfg.EnableAutoRelay = true      // Auto-discover relay peers
-cfg.EnableHolePunching = true   // DCUtR hole punching
-cfg.BootstrapPeers = []string{  // Static relay candidates
-    "/ip4/relay.example.com/udp/55223/udx/p2p/12D3KooW...",
-}
+```yaml
+features:
+  enable_relay: true           # Circuit Relay v2 (default)
+  enable_auto_relay: true      # reserve slots on the static relays below
+  enable_hole_punching: true   # DCUtR: upgrade relayed connections to direct
+server:
+  bootstrap_peers:
+    - /ip4/relay.example.com/udp/55223/udx/p2p/12D3KooW...
 ```
 
 ### Service Discovery
 
-Servers announce themselves via GossipSub on the `/sf-network/services/announce` topic. Announcements include capabilities, storage capacity, region, and uptime score.
+Servers announce themselves via GossipSub on the `/sf-network/services/announce` topic. Announcements include capabilities, storage capacity and region. They also carry an uptime score, which is a constant 1.0: nothing measures uptime yet, and clients that sort on it see every server as equal.
 
 ## Project Structure
 
 ```
 cmd/ricochet/           Server CLI entry point
-cmd/ricochet-bench/     Stress test / load testing tool
+cmd/ricochet-bench/     Load testing tool
 internal/
+  admission/            Admission control (bounded work in flight) and the shutdown drain
+  capacity/             Storage capacity sampling
   core/                 Message types, config, mailbox addressing
+  metrics/              Prometheus collectors
+  mda/                  Mail Delivery Agent + push notifier
+    mailboxes/          Mailbox types, ACL and retention rules
+  mta/                  Mail Transfer Agent (routing, forwarding)
+  opsapi/               Operator HTTP surface (health, readiness, metrics, pprof)
+  opsview/              Stored-data views under /ops
+  presence/             Peer presence detection + cache
   protocol/
     frame/              Length-prefix frame encoding
-    msa/                Mail Submission Agent (write path)
+    wire/               Shared pipeline middleware, status codes, authorization
+    msa/                Mail Submission Agent (write path, single and batch)
     maa/                Mail Access Agent (read path)
     mma/                Mailbox Management Agent (admin)
     sda/                Store-Document Agent (documents)
+    sfa/                Store-Feed Agent (feeds)
+    sca/                Store-Collection Agent (collections)
     notify/             Push notification protocol
+    protocoltest/       In-process pipeline harness for handler tests
+  ratelimit/            Optional per-protocol rate limiters
+  registry/             Service discovery via GossipSub
+  server/               Server orchestration and lifecycle
   storage/              Storage interface and models
     postgres/           PostgreSQL backend
-  mda/                  Mail Delivery Agent + push notifier
-  mta/                  Mail Transfer Agent (routing)
-  p2p/                  Host, node, identity management
-  presence/             Peer presence detection + cache
-  registry/             Service discovery via GossipSub
-  server/               Server orchestration
+    storagetest/        In-memory Storage for unit tests
+  trust/                Trusted-peer set and connection gate
 pkg/client/             Public client library
-  client.go             All client operations
+  client.go             Messages, mailboxes, documents
+  collections.go        Collection operations
+  feeds.go              Feed operations
   options.go            Functional options
+  errors.go             Typed errors
   compression.go        LZ4 compression
   encryption.go         NaCl box encryption
   notifications.go      Push notification handler
+pkg/wire/               Wire model shared by client and server
 test/integration/       Integration tests (requires PostgreSQL)
+deploy/                 Supervisord and Debian deployment files
+build/                  Package build output
+doc/                    Design notes, audits and the backlog
 schema.sql              PostgreSQL database schema
 ```
 
 ## Stress Testing
 
-`ricochet-bench` is an Apache Bench-style load testing tool for Ricochet servers. It measures throughput, latency percentiles, and error rates across all protocol handlers.
+`ricochet-bench` is an Apache Bench-style load testing tool for Ricochet servers. It measures throughput, latency percentiles, and error rates for the message, document, feed and collection protocols (MMA, the mailbox admin protocol, is not benchmarked).
 
 ### Build
 
@@ -521,6 +553,9 @@ ricochet-bench [flags] <server-multiaddr> <server-peer-id>
 | `-payload-size` | 1024 | Payload size in bytes |
 | `-duration` | — | Run for a duration instead of fixed count (e.g. `30s`, `1m`) |
 | `-warmup` | 10 | Warmup requests before measuring |
+| `-batch-size` | 100 | Documents or messages per request, for the batch scenarios |
+| `-docs` | 500 | Vault size for the sync scenarios |
+| `-v` | off | Verbose output (libp2p and UDX diagnostic logs) |
 
 **Protocols:**
 
@@ -531,7 +566,12 @@ ricochet-bench [flags] <server-multiaddr> <server-peer-id>
 | `sda` | `PutDocument` + `GetDocument` | Document store round-trip |
 | `sfa` | `AppendFeedEntry` + `GetFeedEntry` | Feed append and read cycle |
 | `sca` | `PutCollectionItem` + `QueryCollection` | Collection write and query cycle |
-| `mixed` | Random mix of all protocols | Combined workload |
+| `mixed` | Random mix of `msa`, `maa`, `sda`, `sfa`, `sca` | Combined workload |
+| `sda-batch` | `PutDocuments` | Batched document writes, `-batch-size` per request |
+| `msa-batch` | `SendMessages` | Batched message submission, `-batch-size` per request |
+| `sync-cold` | `PutDocument` × `-docs` | First upload of a vault, every document new |
+| `sync-warm` | `PutDocument` × `-docs` | Re-upload after edits, every document replaced |
+| `sync-noop` | `ListDocuments` + compare | Nothing changed: list and compare ETags, write nothing |
 
 ### Examples
 
@@ -551,39 +591,53 @@ ricochet-bench -duration 60s -c 50 -protocol mixed \
 
 ### Sample Output
 
-```
-Ricochet Bench - Protocol: MSA (Message Submission)
-Server: /ip4/127.0.0.1/udp/55223/udx/p2p/12D3KooW...
+A run against a development server on the same laptop, PostgreSQL local:
 
+```
+========================================
+  Ricochet Bench - MSA (Message Submission)
+========================================
+Server: /ip4/127.0.0.1/udp/55999/udx/p2p/12D3KooW...oY6B3C4R
+
+[1/4] Creating 10 workers... done
+[2/4] Connecting to server... connected
+[3/4] Warming up (10 requests)... done
+[4/4] Benchmarking 1000 requests with 10 workers...
+========================================
+  RESULTS
+========================================
 Concurrency Level:      10
 Total Requests:         1000
 Payload Size:           1024 bytes
 
-Results:
-  Completed:            985
-  Failed:               15
-  Total time:           12.345s
-  Requests/sec:         81.00
+  Completed:            1000
+  Failed:               0
+  Total time:           1.297s
+  Requests/sec:         770.86
 
 Latency Distribution:
-  min:    2.1ms
-  p50:    8.3ms
-  p75:    12.1ms
-  p90:    18.7ms
-  p95:    25.4ms
-  p99:    45.2ms
-  max:    120.5ms
+  min:    628.0us
+  p50:    2.0ms
+  p75:    6.8ms
+  p90:    25.8ms
+  p95:    76.6ms
+  p99:    188.7ms
+  max:    397.4ms
+========================================
 ```
+
+Ten workers on one machine do not saturate the server; `doc/BASELINES.md`
+records the throughput it reaches with more.
 
 ### Architecture Notes
 
-Each concurrent worker creates its own libp2p host and client connection, avoiding yamux stream multiplexing contention. For protocols that require pre-existing data (MAA, SFA, SCA), the tool automatically creates the necessary resources during the warmup phase.
+Each concurrent worker creates its own libp2p host and client connection, avoiding yamux stream multiplexing contention. For protocols that require pre-existing data (MAA, SFA, SCA), the tool creates the necessary resources before the warmup and the measured run.
 
 ## Testing
 
 ```bash
-# Run unit tests
-go test ./internal/core/... ./internal/protocol/... ./internal/mta/... ./pkg/...
+# Run the unit tests (no database needed; packages that want one skip without it)
+go test $(go list ./... | grep -v test/integration)
 
 # Run integration tests (requires PostgreSQL)
 RICOCHET_TEST_POSTGRES_DSN="postgresql://user:pass@localhost:5432/ricochet_test?sslmode=disable" \
@@ -598,8 +652,8 @@ go test -v ./pkg/client/...
 
 ### Test Coverage
 
-- **Unit tests**: Core types, frame encoding, MTA routing, compression, encryption (46 tests)
-- **Integration tests**: Full client-server workflows, document CRUD, flag operations, mailbox management (21 tests, require PostgreSQL)
+- **Unit tests**: the six protocol handlers driven in-process against an in-memory store, mailbox and ACL rules, routing, the client against loopback servers, server lifecycle, config parsing, frame codec, compression and encryption. The server, storage and delivery packages also carry tests that run only when `RICOCHET_TEST_POSTGRES_DSN` is set.
+- **Integration tests**: full client-server workflows over UDX against PostgreSQL: messaging, flags and expunge, mailbox management and ACLs, documents, feeds, collections, the directory, notifications, shutdown and authorization.
 
 ## Protocol Wire Format
 
@@ -631,6 +685,11 @@ The PostgreSQL schema (`schema.sql`) includes:
 | `reader_cursors` | Per-reader position tracking (public mailboxes) |
 | `documents` | Document storage with ETag versioning |
 | `document_versions` | Document version history |
+| `directory_listings` | Peer directory entries for search |
+| `feeds` | Append-only feeds |
+| `feed_entries` | Feed entries with sequence numbers |
+| `collections` | Keyed collections |
+| `collection_items` | Collection items with JSONB content and versions |
 | `block_store` | Reserved for content-addressed body offload (see the scale roadmap); unused today |
 
 ## License
