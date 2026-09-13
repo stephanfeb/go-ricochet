@@ -18,31 +18,31 @@ import (
 // ServerConfig holds all server configuration.
 type ServerConfig struct {
 	// Network
-	Port              int      `yaml:"port" json:"port"`
-	ListenAddresses   []string `yaml:"listen_addresses" json:"listenAddresses"`
-	ExternalAddresses []string `yaml:"external_addresses" json:"externalAddresses"`
-	BootstrapPeers    []string `yaml:"bootstrap_peers" json:"bootstrapPeers"`
+	Port              int      `json:"port"`
+	ListenAddresses   []string `json:"listenAddresses"`
+	ExternalAddresses []string `json:"externalAddresses"`
+	BootstrapPeers    []string `json:"bootstrapPeers"`
 
 	// Storage
-	Storage               StorageBackendConfig `yaml:"storage" json:"storage"`
-	DataDirectory         string               `yaml:"data_directory" json:"dataDirectory"`
-	MaxStorageBytes       int64                `yaml:"max_storage_bytes" json:"maxStorageBytes"`
-	RetentionPolicy       time.Duration        `yaml:"retention_policy" json:"retentionPolicy"`
-	MaxMessagesPerMailbox int                  `yaml:"max_messages_per_mailbox" json:"maxMessagesPerMailbox"`
+	Storage               StorageBackendConfig `json:"storage"`
+	DataDirectory         string               `json:"dataDirectory"`
+	MaxStorageBytes       int64                `json:"maxStorageBytes"`
+	RetentionPolicy       time.Duration        `json:"retentionPolicy"`
+	MaxMessagesPerMailbox int                  `json:"maxMessagesPerMailbox"`
 	// MaxMailboxes caps mailboxes across the whole server; a delivery or
 	// create that would exceed it is refused.
-	MaxMailboxes int `yaml:"max_mailboxes" json:"maxMailboxes"`
+	MaxMailboxes int `json:"maxMailboxes"`
 	// MaxMailboxesPerOwner caps the folders one identity may hold. Delivery
 	// creates a folder on the sender's say-so, so without this any peer
 	// could give any other peer an unbounded number of them.
-	MaxMailboxesPerOwner int `yaml:"max_mailboxes_per_owner" json:"maxMailboxesPerOwner"`
+	MaxMailboxesPerOwner int `json:"maxMailboxesPerOwner"`
 	// MaxEntriesPerFeed caps entries in one feed. A feed's own max_entries
 	// is a rolling window the owner chooses; this is the ceiling under it.
-	MaxEntriesPerFeed int `yaml:"max_entries_per_feed" json:"maxEntriesPerFeed"`
+	MaxEntriesPerFeed int `json:"maxEntriesPerFeed"`
 	// MailboxCacheSize bounds the delivery path's cache of loaded mailboxes.
 	// It is a memory bound, not a throughput one: a miss costs one indexed
 	// SELECT, and the least recently used entry is what makes room.
-	MailboxCacheSize int `yaml:"mailbox_cache_size" json:"mailboxCacheSize"`
+	MailboxCacheSize int `json:"mailboxCacheSize"`
 
 	// NearCapacityRatio is the fill fraction at which a mailbox counts as
 	// near capacity, driving ricochet_mailboxes_near_capacity and the figure
@@ -50,63 +50,63 @@ type ServerConfig struct {
 	// belongs to them rather than to the code: how much warning you want
 	// before a mailbox starts rejecting depends on how quickly you can act.
 	// Zero means the built-in 0.9.
-	NearCapacityRatio float64 `yaml:"near_capacity_ratio" json:"nearCapacityRatio"`
+	NearCapacityRatio float64 `json:"nearCapacityRatio"`
 
 	// Performance
-	MaxConcurrentConnections int `yaml:"max_concurrent_connections" json:"maxConcurrentConnections"`
+	MaxConcurrentConnections int `json:"maxConcurrentConnections"`
 	// MaxConnectionsPerIP caps the connections one source address may hold
 	// open. Zero, the default, is no per-address cap: clients share
 	// addresses behind carrier NATs and office gateways, and a cap turns
 	// the ones past it away. A peer identity costs nothing to mint, so this
 	// is the only limit tied to something a client cannot rotate for free.
-	MaxConnectionsPerIP int           `yaml:"max_connections_per_ip" json:"maxConnectionsPerIP"`
-	ConnectionTimeout   time.Duration `yaml:"connection_timeout" json:"connectionTimeout"`
-	MessageTimeout      time.Duration `yaml:"message_timeout" json:"messageTimeout"`
-	WorkerThreads       int           `yaml:"worker_threads" json:"workerThreads"`
+	MaxConnectionsPerIP int           `json:"maxConnectionsPerIP"`
+	ConnectionTimeout   time.Duration `json:"connectionTimeout"`
+	MessageTimeout      time.Duration `json:"messageTimeout"`
+	WorkerThreads       int           `json:"workerThreads"`
 
 	// Regional
-	ServerRegion     string   `yaml:"server_region" json:"serverRegion"`
-	SupportedRegions []string `yaml:"supported_regions" json:"supportedRegions"`
+	ServerRegion     string   `json:"serverRegion"`
+	SupportedRegions []string `json:"supportedRegions"`
 
 	// Service Coordination
-	ServiceAnnouncementInterval time.Duration `yaml:"service_announcement_interval" json:"serviceAnnouncementInterval"`
-	HealthCheckInterval         time.Duration `yaml:"health_check_interval" json:"healthCheckInterval"`
-	CleanupInterval             time.Duration `yaml:"cleanup_interval" json:"cleanupInterval"`
-	PresenceCheckInterval       time.Duration `yaml:"presence_check_interval" json:"presenceCheckInterval"`
+	ServiceAnnouncementInterval time.Duration `json:"serviceAnnouncementInterval"`
+	HealthCheckInterval         time.Duration `json:"healthCheckInterval"`
+	CleanupInterval             time.Duration `json:"cleanupInterval"`
+	PresenceCheckInterval       time.Duration `json:"presenceCheckInterval"`
 
 	// Features
-	EnableForwarding         bool `yaml:"enable_forwarding" json:"enableForwarding"`
-	EnablePushDelivery       bool `yaml:"enable_push_delivery" json:"enablePushDelivery"`
-	EnablePresenceMonitoring bool `yaml:"enable_presence_monitoring" json:"enablePresenceMonitoring"`
-	EnablePresenceBroadcast  bool `yaml:"enable_presence_broadcast" json:"enablePresenceBroadcast"`
-	EnableMetrics            bool `yaml:"enable_metrics" json:"enableMetrics"`
-	EnableRelay              bool `yaml:"enable_relay" json:"enableRelay"`
-	EnableRelayService       bool `yaml:"enable_relay_service" json:"enableRelayService"`
-	EnableAutoRelay          bool `yaml:"enable_auto_relay" json:"enableAutoRelay"`
-	EnableHolePunching       bool `yaml:"enable_hole_punching" json:"enableHolePunching"`
-	EnableAutoNAT            bool `yaml:"enable_autonat" json:"enableAutoNAT"`
+	EnableForwarding         bool `json:"enableForwarding"`
+	EnablePushDelivery       bool `json:"enablePushDelivery"`
+	EnablePresenceMonitoring bool `json:"enablePresenceMonitoring"`
+	EnablePresenceBroadcast  bool `json:"enablePresenceBroadcast"`
+	EnableMetrics            bool `json:"enableMetrics"`
+	EnableRelay              bool `json:"enableRelay"`
+	EnableRelayService       bool `json:"enableRelayService"`
+	EnableAutoRelay          bool `json:"enableAutoRelay"`
+	EnableHolePunching       bool `json:"enableHolePunching"`
+	EnableAutoNAT            bool `json:"enableAutoNAT"`
 
 	// Presence broadcasting
-	PresenceHeartbeatInterval time.Duration `yaml:"presence_heartbeat_interval" json:"presenceHeartbeatInterval"`
-	PresenceTimeoutDuration   time.Duration `yaml:"presence_timeout_duration" json:"presenceTimeoutDuration"`
-	PresenceBatchWindow       time.Duration `yaml:"presence_batch_window" json:"presenceBatchWindow"`
+	PresenceHeartbeatInterval time.Duration `json:"presenceHeartbeatInterval"`
+	PresenceTimeoutDuration   time.Duration `json:"presenceTimeoutDuration"`
+	PresenceBatchWindow       time.Duration `json:"presenceBatchWindow"`
 
 	// Security
-	EnableAuthentication bool       `yaml:"enable_authentication" json:"enableAuthentication"`
-	TrustedPeers         []string   `yaml:"trusted_peers" json:"trustedPeers"`
-	RateLimits           RateLimits `yaml:"rate_limits" json:"rateLimits"`
+	EnableAuthentication bool       `json:"enableAuthentication"`
+	TrustedPeers         []string   `json:"trustedPeers"`
+	RateLimits           RateLimits `json:"rateLimits"`
 
 	// Capacity
-	Admission AdmissionControl `yaml:"admission_control" json:"admissionControl"`
+	Admission AdmissionControl `json:"admissionControl"`
 
 	// Operator HTTP surface
-	Ops OpsConfig `yaml:"ops" json:"ops"`
+	Ops OpsConfig `json:"ops"`
 
 	// Relay limits
-	RelayLimits RelayLimits `yaml:"relay_limits" json:"relayLimits"`
+	RelayLimits RelayLimits `json:"relayLimits"`
 
 	// Identity
-	IdentityFile string `yaml:"identity_file" json:"identityFile,omitempty"`
+	IdentityFile string `json:"identityFile,omitempty"`
 }
 
 // EffectiveNearCapacityRatio returns the configured threshold, or 0.9.
@@ -127,21 +127,21 @@ func (c *ServerConfig) EffectiveNearCapacityRatio() float64 {
 // is shed with a 503, which is a signal to add capacity rather than a verdict
 // on the client.
 type AdmissionControl struct {
-	Enabled bool `yaml:"enabled" json:"enabled"`
+	Enabled bool `json:"enabled"`
 
 	// MaxInFlight bounds concurrent requests server-wide. Zero derives it
 	// from the database pool size, which is the resource it is protecting.
-	MaxInFlight int `yaml:"max_in_flight" json:"maxInFlight"`
+	MaxInFlight int `json:"maxInFlight"`
 
 	// MaxInFlightPerPeer stops one client occupying every slot. This is what
 	// makes it safe to run with per-peer rate limiting switched off. Zero
 	// disables the per-peer bound.
-	MaxInFlightPerPeer int `yaml:"max_in_flight_per_peer" json:"maxInFlightPerPeer"`
+	MaxInFlightPerPeer int `json:"maxInFlightPerPeer"`
 
 	// AcquireTimeout is how long a request waits for a slot before being
 	// shed. Waiting is normal and is how a client is paced to the database;
 	// only a genuinely saturated server should reach this.
-	AcquireTimeout time.Duration `yaml:"acquire_timeout" json:"acquireTimeout"`
+	AcquireTimeout time.Duration `json:"acquireTimeout"`
 }
 
 // inFlightPerPoolConnection is how many requests may be in flight per database
@@ -187,33 +187,33 @@ func (a AdmissionControl) EffectiveAcquireTimeout() time.Duration {
 // storage figures and internal topology, so reaching it from off-host is an
 // explicit decision rather than the default.
 type OpsConfig struct {
-	Enabled bool `yaml:"enabled" json:"enabled"`
+	Enabled bool `json:"enabled"`
 
 	// Bind is the interface to listen on. Empty means loopback.
-	Bind string `yaml:"bind" json:"bind"`
+	Bind string `json:"bind"`
 
 	// Port is the TCP port. Zero binds an ephemeral port, which is useful in
 	// tests; the chosen port is logged at startup.
-	Port int `yaml:"port" json:"port"`
+	Port int `json:"port"`
 
 	// EnablePprof mounts /debug/pprof. It is off by default: the profiles
 	// include goroutine stacks and heap contents.
-	EnablePprof bool `yaml:"enable_pprof" json:"enablePprof"`
+	EnablePprof bool `json:"enablePprof"`
 
 	// ReadinessTimeout bounds how long /readyz will wait on its checks. A
 	// readiness probe that hangs is worse than one that fails.
-	ReadinessTimeout time.Duration `yaml:"readiness_timeout" json:"readinessTimeout"`
+	ReadinessTimeout time.Duration `json:"readinessTimeout"`
 
 	// QueryTimeout bounds each /ops/* query. Those endpoints scan every
 	// mailbox, and how long that takes is a property of the database, not
 	// something a constant can know. Zero means ten seconds.
-	QueryTimeout time.Duration `yaml:"query_timeout" json:"queryTimeout"`
+	QueryTimeout time.Duration `json:"queryTimeout"`
 
 	// ShutdownTimeout bounds how long Stop waits for requests already in
 	// flight, on the protocol handlers and the ops surface alike, before it
 	// closes storage under whatever is left. New requests are refused with a
 	// 503 from the moment the wait begins.
-	ShutdownTimeout time.Duration `yaml:"shutdown_timeout" json:"shutdownTimeout"`
+	ShutdownTimeout time.Duration `json:"shutdownTimeout"`
 
 	// DrainDelay is how long shutdown keeps serving after /readyz starts
 	// reporting unready. Without it the instance disappears in the same
@@ -221,7 +221,7 @@ type OpsConfig struct {
 	// the 503 — it discovers the shutdown through failed requests instead.
 	// Set it to a couple of probe intervals. Zero, the default, skips the
 	// wait, which is right when nothing is probing.
-	DrainDelay time.Duration `yaml:"drain_delay" json:"drainDelay"`
+	DrainDelay time.Duration `json:"drainDelay"`
 }
 
 // DefaultOpsConfig returns the built-in operator surface settings.
@@ -298,8 +298,8 @@ const (
 // to Rate, reproducing the classic "N requests per window" behaviour; a Burst
 // below Rate paces a peer without lowering its sustained throughput.
 type Limit struct {
-	Rate  int `yaml:"rate" json:"rate"`
-	Burst int `yaml:"burst" json:"burst"`
+	Rate  int `json:"rate"`
+	Burst int `json:"burst"`
 }
 
 // RateUnlimited is the Rate value that switches a bucket off.
@@ -311,9 +311,9 @@ const RateUnlimited = -1
 // Requests. Protocols that separate cheap reads from expensive writes (SDA,
 // SFA, SCA) use Read and Write instead.
 type ProtocolLimits struct {
-	Requests Limit `yaml:"requests" json:"requests"`
-	Read     Limit `yaml:"read" json:"read"`
-	Write    Limit `yaml:"write" json:"write"`
+	Requests Limit `json:"requests"`
+	Read     Limit `json:"read"`
+	Write    Limit `json:"write"`
 }
 
 // RateLimits configures optional per-peer rate limiting.
@@ -334,8 +334,8 @@ type ProtocolLimits struct {
 // BATCH_PUT costs the same as one PUT regardless of how many documents it
 // carries.
 type RateLimits struct {
-	Window    time.Duration             `yaml:"window" json:"window"`
-	Protocols map[string]ProtocolLimits `yaml:"protocols" json:"protocols"`
+	Window    time.Duration             `json:"window"`
+	Protocols map[string]ProtocolLimits `json:"protocols"`
 }
 
 // DefaultRateLimits returns the built-in per-protocol limits, which are off.
@@ -385,21 +385,21 @@ func (r RateLimits) EffectiveWindow() time.Duration {
 // RelayLimits configures circuit relay v2 service resource limits.
 // Zero values mean "use go-libp2p defaults".
 type RelayLimits struct {
-	MaxReservations        int           `yaml:"max_reservations" json:"maxReservations"`
-	MaxCircuits            int           `yaml:"max_circuits" json:"maxCircuits"`
-	BufferSize             int           `yaml:"buffer_size" json:"bufferSize"`
-	MaxReservationsPerPeer int           `yaml:"max_reservations_per_peer" json:"maxReservationsPerPeer"`
-	MaxReservationsPerIP   int           `yaml:"max_reservations_per_ip" json:"maxReservationsPerIP"`
-	MaxReservationsPerASN  int           `yaml:"max_reservations_per_asn" json:"maxReservationsPerASN"`
-	ReservationTTL         time.Duration `yaml:"reservation_ttl" json:"reservationTTL"`
-	ConnectionDuration     time.Duration `yaml:"connection_duration" json:"connectionDuration"`
-	ConnectionData         int64         `yaml:"connection_data" json:"connectionData"`
+	MaxReservations        int           `json:"maxReservations"`
+	MaxCircuits            int           `json:"maxCircuits"`
+	BufferSize             int           `json:"bufferSize"`
+	MaxReservationsPerPeer int           `json:"maxReservationsPerPeer"`
+	MaxReservationsPerIP   int           `json:"maxReservationsPerIP"`
+	MaxReservationsPerASN  int           `json:"maxReservationsPerASN"`
+	ReservationTTL         time.Duration `json:"reservationTTL"`
+	ConnectionDuration     time.Duration `json:"connectionDuration"`
+	ConnectionData         int64         `json:"connectionData"`
 }
 
 // StorageBackendConfig configures the storage backend.
 type StorageBackendConfig struct {
-	Backend  string          `yaml:"backend" json:"backend"`
-	Postgres *PostgresConfig `yaml:"postgres,omitempty" json:"postgres,omitempty"`
+	Backend  string          `json:"backend"`
+	Postgres *PostgresConfig `json:"postgres,omitempty"`
 }
 
 // UsePostgres returns true if the backend is PostgreSQL.
@@ -409,14 +409,14 @@ func (c *StorageBackendConfig) UsePostgres() bool {
 
 // PostgresConfig holds PostgreSQL connection configuration.
 type PostgresConfig struct {
-	Host           string        `yaml:"host" json:"host"`
-	Port           int           `yaml:"port" json:"port"`
-	Database       string        `yaml:"database" json:"database"`
-	Username       string        `yaml:"username" json:"username"`
-	Password       string        `yaml:"password" json:"password"`
-	PoolSize       int           `yaml:"pool_size" json:"poolSize"`
-	SSLMode        string        `yaml:"ssl_mode" json:"sslMode"`
-	ConnectTimeout time.Duration `yaml:"connect_timeout" json:"connectTimeout"`
+	Host           string        `json:"host"`
+	Port           int           `json:"port"`
+	Database       string        `json:"database"`
+	Username       string        `json:"username"`
+	Password       string        `json:"password"`
+	PoolSize       int           `json:"poolSize"`
+	SSLMode        string        `json:"sslMode"`
+	ConnectTimeout time.Duration `json:"connectTimeout"`
 }
 
 // ConnectionURI returns the PostgreSQL connection URI.

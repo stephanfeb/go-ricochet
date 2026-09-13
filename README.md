@@ -626,7 +626,7 @@ The PostgreSQL schema (`schema.sql`) includes:
 | `reader_cursors` | Per-reader position tracking (public mailboxes) |
 | `documents` | Document storage with ETag versioning |
 | `document_versions` | Document version history |
-| `block_store` | CRDT block storage |
+| `block_store` | Reserved for content-addressed body offload (see the scale roadmap); unused today |
 
 ## License
 

@@ -100,6 +100,13 @@ CREATE TABLE IF NOT EXISTS reader_cursors (
 -- =============================================================================
 -- BLOCK STORE (CRDTs)
 -- =============================================================================
+-- Reserved. No Go code reads or writes this table yet: it is the storage the
+-- scale roadmap's body offload is designed around (doc/SCALE_ROADMAP.md,
+-- "content-addressed storage"; doc/SCALABILITY.md §7.7), where message bodies
+-- move out of stored_messages into immutable, content-addressed blocks. It
+-- stays so that the offload ships as a code change against a table every
+-- deployment already has. Its shape is provisional until then; nothing
+-- depends on it, so it may change freely when that work lands.
 CREATE TABLE IF NOT EXISTS block_store (
     id BIGSERIAL PRIMARY KEY,
     cid TEXT NOT NULL,
@@ -326,36 +333,6 @@ CREATE TRIGGER trg_stored_messages_deleted
     EXECUTE FUNCTION stored_messages_deleted();
 
 -- =============================================================================
--- USEFUL QUERIES FOR MONITORING
--- =============================================================================
-
--- View for mailbox statistics
-CREATE OR REPLACE VIEW mailbox_stats AS
-SELECT 
-    m.id,
-    m.owner_peer_id,
-    m.folder_path,
-    m.mailbox_type,
-    COUNT(sm.id) AS message_count,
-    MAX(sm.created_at) AS last_message_at,
-    m.max_messages,
-    m.retention_days
-FROM mailboxes m
-LEFT JOIN stored_messages sm ON m.id = sm.mailbox_id
-GROUP BY m.id;
-
--- View for message statistics by priority
-CREATE OR REPLACE VIEW message_priority_stats AS
-SELECT 
-    priority,
-    COUNT(*) AS count,
-    AVG(EXTRACT(EPOCH FROM (expires_at - created_at))) AS avg_ttl_seconds
-FROM stored_messages
-WHERE expires_at > NOW()
-GROUP BY priority
-ORDER BY priority DESC;
-
--- =============================================================================
 -- PERMISSIONS
 -- =============================================================================
 
@@ -428,6 +405,15 @@ WHERE (m.message_count <> 0 OR m.message_bytes <> 0)
 -- unrecoverable.
 ALTER TABLE stored_messages
     ADD COLUMN IF NOT EXISTS sf_flags INTEGER NOT NULL DEFAULT 0;
+
+-- mailbox_stats and message_priority_stats views (dropped 2026-09): nothing
+-- read them. mailbox_stats also recomputed message_count with a join over
+-- every stored message, when mailboxes.message_count has been maintained by
+-- trigger since the counter column arrived; an operator who ran it on a large
+-- database got a slow, redundant answer. The operator surface is the ops HTTP
+-- API (readiness, metrics, and the stored-data views under /ops).
+DROP VIEW IF EXISTS mailbox_stats;
+DROP VIEW IF EXISTS message_priority_stats;
 
 -- =============================================================================
 -- PERMISSIONS
