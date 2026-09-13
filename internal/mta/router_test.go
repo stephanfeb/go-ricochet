@@ -172,6 +172,10 @@ func (m *mockStorage) GetDocument(_ context.Context, _ peer.ID, _ string) (*stor
 	panic("not implemented")
 }
 
+func (m *mockStorage) HeadDocument(_ context.Context, _ peer.ID, _ string) (*storage.DocumentRecord, error) {
+	panic("not implemented")
+}
+
 func (m *mockStorage) PutDocument(_ context.Context, _ peer.ID, _ string, _ []byte, _ string, _ peer.ID, _ *string) (*storage.DocumentPutResult, error) {
 	panic("not implemented")
 }
@@ -304,11 +308,11 @@ func (m *mockStorage) DeleteCollectionItem(_ context.Context, _ int64, _ string)
 	panic("not implemented")
 }
 
-func (m *mockStorage) ListCollectionKeys(_ context.Context, _ int64, _, _ int) ([]string, int, error) {
+func (m *mockStorage) ListCollectionKeys(_ context.Context, _ int64, _, _ int, _ string) ([]string, int, string, error) {
 	panic("not implemented")
 }
 
-func (m *mockStorage) QueryCollection(_ context.Context, _ int64, _ map[string]any, _ string, _ bool, _, _ int) (*storage.CollectionQueryResult, error) {
+func (m *mockStorage) QueryCollection(_ context.Context, _ int64, _ map[string]any, _ string, _ bool, _, _ int, _ string) (*storage.CollectionQueryResult, error) {
 	panic("not implemented")
 }
 

@@ -342,6 +342,16 @@ type collectionQueryConfig struct {
 	SortAsc      *bool
 	Limit        *int
 	Offset       *int
+	Cursor       string
+}
+
+// WithQueryCursor continues a listing or query from the NextCursor of the
+// previous page. It takes precedence over WithQueryOffset, and a page fetched
+// by cursor reports TotalCount as -1: the first page already said.
+func WithQueryCursor(cursor string) CollectionQueryOption {
+	return func(c *collectionQueryConfig) {
+		c.Cursor = cursor
+	}
 }
 
 // WithQuerySort sets the sort field and direction for query results.

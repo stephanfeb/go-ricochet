@@ -25,6 +25,9 @@ CREATE TABLE IF NOT EXISTS mailboxes (
     -- delete trigger on stored_messages. Delivery used to run COUNT(*) per
     -- message and check the cap outside any lock.
     message_count INTEGER NOT NULL DEFAULT 0,
+    -- Summed payload length of those rows, maintained the same way, so the
+    -- capacity sampler and the operator listings never sum stored_messages.
+    message_bytes BIGINT NOT NULL DEFAULT 0,
 
     CONSTRAINT uq_mailbox_owner_folder UNIQUE(owner_peer_id, folder_path)
 );
@@ -306,8 +309,10 @@ CREATE OR REPLACE FUNCTION stored_messages_deleted()
 RETURNS TRIGGER AS $$
 BEGIN
     UPDATE mailboxes m
-    SET message_count = GREATEST(m.message_count - d.n, 0)
-    FROM (SELECT mailbox_id, COUNT(*) AS n FROM deleted GROUP BY mailbox_id) d
+    SET message_count = GREATEST(m.message_count - d.n, 0),
+        message_bytes = GREATEST(m.message_bytes - d.bytes, 0)
+    FROM (SELECT mailbox_id, COUNT(*) AS n, SUM(octet_length(payload)) AS bytes
+          FROM deleted GROUP BY mailbox_id) d
     WHERE m.id = d.mailbox_id;
     RETURN NULL;
 END;
@@ -399,14 +404,19 @@ WHERE m.current_sequence < COALESCE(
 ALTER TABLE mailboxes
     ADD COLUMN IF NOT EXISTS message_count INTEGER NOT NULL DEFAULT 0;
 
-UPDATE mailboxes m
-SET message_count = c.n
-FROM (SELECT mailbox_id, COUNT(*) AS n FROM stored_messages GROUP BY mailbox_id) c
-WHERE m.id = c.mailbox_id AND m.message_count <> c.n;
+-- mailboxes.message_bytes (added 2026-09) rides on the same statements.
+ALTER TABLE mailboxes
+    ADD COLUMN IF NOT EXISTS message_bytes BIGINT NOT NULL DEFAULT 0;
 
 UPDATE mailboxes m
-SET message_count = 0
-WHERE m.message_count <> 0
+SET message_count = c.n, message_bytes = c.bytes
+FROM (SELECT mailbox_id, COUNT(*) AS n, SUM(octet_length(payload)) AS bytes
+      FROM stored_messages GROUP BY mailbox_id) c
+WHERE m.id = c.mailbox_id AND (m.message_count <> c.n OR m.message_bytes <> c.bytes);
+
+UPDATE mailboxes m
+SET message_count = 0, message_bytes = 0
+WHERE (m.message_count <> 0 OR m.message_bytes <> 0)
   AND NOT EXISTS (SELECT 1 FROM stored_messages sm WHERE sm.mailbox_id = m.id);
 
 -- stored_messages.sf_flags (added 2026-09): the protocol-level flags a sender

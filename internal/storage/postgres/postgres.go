@@ -260,11 +260,12 @@ func (s *PostgresStorage) StoreMessage(ctx context.Context, mailbox *storage.Mai
 		UPDATE mailboxes
 		SET current_sequence = current_sequence + 1,
 		    message_count = message_count + 1,
+		    message_bytes = message_bytes + $2,
 		    last_access_at = NOW()
 		WHERE id = $1
 		  AND (max_messages <= 0 OR message_count < max_messages)
 		RETURNING current_sequence`,
-		mailbox.ID,
+		mailbox.ID, len(msg.Payload),
 	).Scan(&seq)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -620,6 +621,31 @@ func (s *PostgresStorage) GetDocument(ctx context.Context, ownerID peer.ID, path
 	if err != nil {
 		return nil, fmt.Errorf("get document: %w", err)
 	}
+	r.ContentLength = len(r.Content)
+	return &r, nil
+}
+
+// HeadDocument reads everything about a document except its body. HEAD used
+// to go through GetDocument and pull the whole content across the wire from
+// the database to report its length.
+func (s *PostgresStorage) HeadDocument(ctx context.Context, ownerID peer.ID, path string) (*storage.DocumentRecord, error) {
+	var r storage.DocumentRecord
+	err := s.pool.QueryRow(ctx, `
+		SELECT id, owner_peer_id, path, octet_length(content), content_type, content_hash,
+			   created_at, updated_at, updated_by_peer_id, version_number,
+			   history_enabled, max_history_versions, version_vector
+		FROM documents
+		WHERE owner_peer_id = $1 AND path = $2`,
+		ownerID.String(), path,
+	).Scan(&r.ID, &r.OwnerPeerID, &r.Path, &r.ContentLength, &r.ContentType,
+		&r.ContentHash, &r.CreatedAt, &r.UpdatedAt, &r.UpdatedByPeerID,
+		&r.VersionNumber, &r.HistoryEnabled, &r.MaxHistoryVersions, &r.VersionVector)
+	if err == pgx.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("head document: %w", err)
+	}
 	return &r, nil
 }
 
@@ -852,13 +878,16 @@ func (s *PostgresStorage) ListDocuments(ctx context.Context, ownerID peer.ID, af
 }
 
 func (s *PostgresStorage) GetDocumentHistory(ctx context.Context, ownerID peer.ID, path string, maxVersions *int) ([]*storage.DocumentVersionRecord, error) {
-	doc, err := s.GetDocument(ctx, ownerID, path)
+	doc, err := s.HeadDocument(ctx, ownerID, path)
 	if err != nil || doc == nil {
 		return nil, err
 	}
 
+	// A listing reports sizes, so the size is measured in the database and
+	// the bodies stay there. Loading every archived version to call len()
+	// on it made HISTORY cost the whole history's bytes per call.
 	query := `
-		SELECT id, document_id, version_number, content, content_hash,
+		SELECT id, document_id, version_number, octet_length(content), content_hash,
 			   content_type, created_at, created_by_peer_id
 		FROM document_versions
 		WHERE document_id = $1
@@ -879,7 +908,7 @@ func (s *PostgresStorage) GetDocumentHistory(ctx context.Context, ownerID peer.I
 	var records []*storage.DocumentVersionRecord
 	for rows.Next() {
 		var r storage.DocumentVersionRecord
-		if err := rows.Scan(&r.ID, &r.DocumentID, &r.VersionNumber, &r.Content,
+		if err := rows.Scan(&r.ID, &r.DocumentID, &r.VersionNumber, &r.ContentLength,
 			&r.ContentHash, &r.ContentType, &r.CreatedAt, &r.CreatedByPeerID); err != nil {
 			return nil, err
 		}
@@ -889,7 +918,7 @@ func (s *PostgresStorage) GetDocumentHistory(ctx context.Context, ownerID peer.I
 }
 
 func (s *PostgresStorage) GetDocumentAtVersion(ctx context.Context, ownerID peer.ID, path string, versionNumber int) (*storage.DocumentVersionRecord, error) {
-	doc, err := s.GetDocument(ctx, ownerID, path)
+	doc, err := s.HeadDocument(ctx, ownerID, path)
 	if err != nil || doc == nil {
 		return nil, err
 	}
@@ -910,6 +939,7 @@ func (s *PostgresStorage) GetDocumentAtVersion(ctx context.Context, ownerID peer
 	if err != nil {
 		return nil, err
 	}
+	r.ContentLength = len(r.Content)
 	return &r, nil
 }
 
@@ -1252,20 +1282,22 @@ func (s *PostgresStorage) EnforceAllRetention(ctx context.Context) (int, error) 
 // =============================================================================
 
 // ReconcileMessageCounts is the backfill statement from schema.sql, re-run.
+// It covers message_bytes as well as message_count.
 func (s *PostgresStorage) ReconcileMessageCounts(ctx context.Context) (int, error) {
 	tag, err := s.pool.Exec(ctx, `
 		UPDATE mailboxes m
-		SET message_count = c.n
-		FROM (SELECT mailbox_id, COUNT(*) AS n FROM stored_messages GROUP BY mailbox_id) c
-		WHERE m.id = c.mailbox_id AND m.message_count <> c.n`)
+		SET message_count = c.n, message_bytes = c.bytes
+		FROM (SELECT mailbox_id, COUNT(*) AS n, SUM(octet_length(payload)) AS bytes
+		      FROM stored_messages GROUP BY mailbox_id) c
+		WHERE m.id = c.mailbox_id AND (m.message_count <> c.n OR m.message_bytes <> c.bytes)`)
 	if err != nil {
 		return 0, fmt.Errorf("reconcile message counts: %w", err)
 	}
 	drifted := int(tag.RowsAffected())
 	tag, err = s.pool.Exec(ctx, `
 		UPDATE mailboxes m
-		SET message_count = 0
-		WHERE m.message_count <> 0
+		SET message_count = 0, message_bytes = 0
+		WHERE (m.message_count <> 0 OR m.message_bytes <> 0)
 		  AND NOT EXISTS (SELECT 1 FROM stored_messages sm WHERE sm.mailbox_id = m.id)`)
 	if err != nil {
 		return drifted, fmt.Errorf("reconcile empty mailboxes: %w", err)

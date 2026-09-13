@@ -30,13 +30,13 @@ var depthBucketEdges = []struct {
 // enough to be meaningful and early enough to act on.
 const DefaultNearCapacityRatio = 0.9
 
-// ServerStats aggregates across every owner in one pass.
+// ServerStats aggregates across every owner in one pass over mailboxes.
 //
-// The whole thing is a single query on purpose. Counting mailboxes, summing
-// payload bytes and bucketing mailbox depth all need the same per-mailbox
-// message count, so computing them separately would scan stored_messages three
-// times. Sampled on a timer rather than per request; nothing here is cheap
-// enough to sit on a request path.
+// Every figure comes from the counters the store and delete paths maintain
+// on the mailbox row (message_count, message_bytes), so the pass never
+// touches stored_messages. It used to join and SUM(octet_length(payload))
+// over the whole table every sampling interval, which is a full scan of the
+// largest table on the server to answer a question about its size.
 func (s *PostgresStorage) ServerStats(ctx context.Context, nearCapacityRatio float64) (*storage.ServerStats, error) {
 	if nearCapacityRatio <= 0 {
 		nearCapacityRatio = DefaultNearCapacityRatio
@@ -55,14 +55,8 @@ func (s *PostgresStorage) ServerStats(ctx context.Context, nearCapacityRatio flo
 
 	query := fmt.Sprintf(`
 		WITH per_mailbox AS (
-			SELECT
-				m.id,
-				m.max_messages,
-				COUNT(sm.id) AS n,
-				COALESCE(SUM(octet_length(sm.payload)), 0) AS bytes
-			FROM mailboxes m
-			LEFT JOIN stored_messages sm ON sm.mailbox_id = m.id
-			GROUP BY m.id, m.max_messages
+			SELECT id, max_messages, message_count AS n, message_bytes AS bytes
+			FROM mailboxes
 		)
 		SELECT
 			COUNT(*),

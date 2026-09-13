@@ -138,6 +138,15 @@ func TestMessageCountFollowsDeletes(t *testing.T) {
 		if n := rowCount(t, store, mailbox.ID); n != want {
 			t.Fatalf("after %s: rows = %d, want %d", step, n, want)
 		}
+		var counted, summed int64
+		if err := store.pool.QueryRow(ctx, `
+			SELECT m.message_bytes, COALESCE((SELECT SUM(octet_length(payload)) FROM stored_messages WHERE mailbox_id = m.id), 0)
+			FROM mailboxes m WHERE m.id = $1`, mailbox.ID).Scan(&counted, &summed); err != nil {
+			t.Fatalf("after %s: bytes: %v", step, err)
+		}
+		if counted != summed {
+			t.Fatalf("after %s: message_bytes = %d, rows sum to %d", step, counted, summed)
+		}
 	}
 	expect("six stores", 6)
 

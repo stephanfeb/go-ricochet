@@ -10,11 +10,11 @@ import (
 
 // This file holds the cross-owner listings behind the operator surface.
 //
-// Every query here derives the message count from stored_messages rather than
-// reading a counter off mailboxes, because there is no such counter and a
-// cached one would be the thing most likely to be wrong at the moment somebody
-// is investigating. The cost is a scan, which is why these are bounded and
-// kept off the request path.
+// Every figure comes from the counters on the mailbox row (message_count,
+// message_bytes), which the store path and the delete trigger maintain and
+// the maintenance sweep reconciles. They used to be derived by joining
+// stored_messages and summing payload lengths on every call, a full scan of
+// the largest table to answer "who is using the space".
 
 // ListMailboxUsage lists mailboxes with their live counts.
 //
@@ -38,29 +38,30 @@ func (s *PostgresStorage) ListMailboxUsage(ctx context.Context, q storage.Mailbo
 	query := fmt.Sprintf(`
 		WITH per_mailbox AS (
 			SELECT
-				m.id,
-				m.owner_peer_id,
-				m.folder_path,
-				m.max_messages,
-				COUNT(sm.id) AS n,
-				COALESCE(SUM(octet_length(sm.payload)), 0) AS bytes,
-				MAX(sm.created_at) AS last_message_at
-			FROM mailboxes m
-			LEFT JOIN stored_messages sm ON sm.mailbox_id = m.id
-			WHERE $1::text = '' OR m.owner_peer_id = $1::text
-			GROUP BY m.id
+				id, owner_peer_id, folder_path, max_messages,
+				message_count AS n,
+				message_bytes AS bytes,
+				-- An uncapped mailbox has no fill ratio, so it sorts last
+				-- however much it holds. Reporting one against a cap of zero
+				-- would invent a division that does not exist.
+				CASE WHEN max_messages > 0
+					 THEN message_count::double precision / max_messages
+					 ELSE 0 END AS fill
+			FROM mailboxes
+			WHERE $1::text = '' OR owner_peer_id = $1::text
+		),
+		page AS (
+			SELECT * FROM per_mailbox
+			ORDER BY %s
+			LIMIT $2 OFFSET $3
 		)
+		-- Only the page pays for the newest-message lookup.
 		SELECT
-			id, owner_peer_id, folder_path, max_messages, n, bytes, last_message_at,
-			-- An uncapped mailbox has no fill ratio, so it sorts last however
-			-- much it holds. Reporting one against a cap of zero would invent
-			-- a division that does not exist.
-			CASE WHEN max_messages > 0
-				 THEN n::double precision / max_messages
-				 ELSE 0 END AS fill
-		FROM per_mailbox
-		ORDER BY %s
-		LIMIT $2 OFFSET $3`, order)
+			p.id, p.owner_peer_id, p.folder_path, p.max_messages, p.n, p.bytes,
+			(SELECT MAX(created_at) FROM stored_messages sm WHERE sm.mailbox_id = p.id),
+			p.fill
+		FROM page p
+		ORDER BY %s`, order, order)
 
 	rows, err := s.pool.Query(ctx, query, q.Owner, limit, offset)
 	if err != nil {
@@ -97,22 +98,12 @@ func (s *PostgresStorage) ListOwnerUsage(ctx context.Context, limit, offset int)
 	}
 
 	rows, err := s.pool.Query(ctx, `
-		WITH per_mailbox AS (
-			SELECT
-				m.id,
-				m.owner_peer_id,
-				COUNT(sm.id) AS n,
-				COALESCE(SUM(octet_length(sm.payload)), 0) AS bytes
-			FROM mailboxes m
-			LEFT JOIN stored_messages sm ON sm.mailbox_id = m.id
-			GROUP BY m.id
-		)
 		SELECT
 			owner_peer_id,
 			COUNT(*) AS mailboxes,
-			COALESCE(SUM(n), 0) AS messages,
-			COALESCE(SUM(bytes), 0) AS bytes
-		FROM per_mailbox
+			COALESCE(SUM(message_count), 0) AS messages,
+			COALESCE(SUM(message_bytes), 0) AS bytes
+		FROM mailboxes
 		GROUP BY owner_peer_id
 		ORDER BY bytes DESC, messages DESC, owner_peer_id
 		LIMIT $1 OFFSET $2`, limit, offset)

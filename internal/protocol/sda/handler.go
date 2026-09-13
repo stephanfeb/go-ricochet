@@ -457,7 +457,8 @@ func handleHead(sc *forge.StreamContext, next func()) {
 	ctx, cancel := context.WithTimeout(sc.Ctx, 30*time.Second)
 	defer cancel()
 
-	doc, err := store.GetDocument(ctx, ownerID.(peer.ID), req.Path)
+	// The body never leaves the database on a HEAD.
+	doc, err := store.HeadDocument(ctx, ownerID.(peer.ID), req.Path)
 	if err != nil {
 		if errors.Is(err, storage.ErrDocumentNotFound) {
 			sc.Response = &DocResponse{Status: StatusNotFound}
@@ -490,7 +491,7 @@ func handleHead(sc *forge.StreamContext, next func()) {
 		Headers: map[string]any{
 			"ETag":           doc.ContentHash,
 			"Content-Type":   doc.ContentType,
-			"Content-Length": len(doc.Content),
+			"Content-Length": doc.ContentLength,
 			"Last-Modified":  doc.UpdatedAt.Format(time.RFC3339),
 			"Version":        fmt.Sprintf("%d", doc.VersionNumber),
 		},
@@ -807,7 +808,7 @@ func handleHistory(sc *forge.StreamContext, next func()) {
 			ContentHash:   v.ContentHash,
 			ContentType:   v.ContentType,
 			CreatedAt:     v.CreatedAt.Format(time.RFC3339),
-			Size:          len(v.Content),
+			Size:          v.ContentLength,
 		})
 	}
 

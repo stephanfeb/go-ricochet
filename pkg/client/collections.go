@@ -39,9 +39,21 @@ type CollectionItemResult struct {
 
 // CollectionQueryResponse wraps a paged query result.
 type CollectionQueryResponse struct {
-	Items      []*CollectionItem `json:"items"`
-	TotalCount int               `json:"totalCount"`
-	HasMore    bool              `json:"hasMore"`
+	Items []*CollectionItem `json:"items"`
+	// TotalCount is -1 on a page fetched with WithQueryCursor.
+	TotalCount int  `json:"totalCount"`
+	HasMore    bool `json:"hasMore"`
+	// NextCursor fetches the page after this one; empty on the last.
+	NextCursor string `json:"nextCursor,omitempty"`
+}
+
+// CollectionKeysPage is one page of keys.
+type CollectionKeysPage struct {
+	Keys []string `json:"keys"`
+	// TotalCount is -1 on a page fetched with WithQueryCursor.
+	TotalCount int    `json:"totalCount"`
+	HasMore    bool   `json:"hasMore"`
+	NextCursor string `json:"nextCursor,omitempty"`
 }
 
 // ---------------------------------------------------------------------------
@@ -112,6 +124,9 @@ func (c *Client) doCollectionQuery(ctx context.Context, req *sca.CollectionReque
 	}
 	if cfg.Offset != nil {
 		req.Offset = cfg.Offset
+	}
+	if cfg.Cursor != "" {
+		req.Cursor = cfg.Cursor
 	}
 
 	// Convert to CollectionOption for the shared doCollection helper
@@ -343,8 +358,19 @@ func (c *Client) DeleteCollectionItem(ctx context.Context, path, key string, opt
 	return resp.Status != sca.StatusNotFound, nil
 }
 
-// ListCollectionKeys returns all keys in a collection.
+// ListCollectionKeys returns one page of keys and the total. Use
+// ListCollectionKeysPage to page with a cursor.
 func (c *Client) ListCollectionKeys(ctx context.Context, ownerPeerID peer.ID, path string, opts ...CollectionQueryOption) ([]string, int, error) {
+	page, err := c.ListCollectionKeysPage(ctx, ownerPeerID, path, opts...)
+	if err != nil {
+		return nil, 0, err
+	}
+	return page.Keys, page.TotalCount, nil
+}
+
+// ListCollectionKeysPage returns one page of keys in key order, with the
+// cursor that fetches the next.
+func (c *Client) ListCollectionKeysPage(ctx context.Context, ownerPeerID peer.ID, path string, opts ...CollectionQueryOption) (*CollectionKeysPage, error) {
 	req := &sca.CollectionRequest{
 		Operation:   sca.OpLIST,
 		OwnerPeerID: ownerPeerID.String(),
@@ -353,37 +379,40 @@ func (c *Client) ListCollectionKeys(ctx context.Context, ownerPeerID peer.ID, pa
 
 	resp, err := c.doCollectionQuery(ctx, req, opts)
 	if err != nil {
-		return nil, 0, err
+		return nil, err
 	}
 
 	if resp.Status == sca.StatusNotFound {
-		return nil, 0, fmt.Errorf("collection not found")
+		return nil, fmt.Errorf("collection not found")
 	}
 	if resp.Status != sca.StatusOK {
-		return nil, 0, responseError("list collection keys", resp.Status, resp.Headers)
+		return nil, responseError("list collection keys", resp.Status, resp.Headers)
 	}
+	page := &CollectionKeysPage{TotalCount: -1}
 	if resp.Body == "" {
-		return nil, 0, nil
+		return page, nil
 	}
 
 	bodyBytes, err := base64.StdEncoding.DecodeString(resp.Body)
 	if err != nil {
-		return nil, 0, fmt.Errorf("decode keys body: %w", err)
+		return nil, fmt.Errorf("decode keys body: %w", err)
 	}
 
 	var raw struct {
 		Keys []string `json:"keys"`
 	}
 	if err := json.Unmarshal(bodyBytes, &raw); err != nil {
-		return nil, 0, fmt.Errorf("unmarshal keys: %w", err)
+		return nil, fmt.Errorf("unmarshal keys: %w", err)
 	}
-
-	totalCount := 0
+	page.Keys = raw.Keys
 	if tc, ok := resp.Headers["X-Total-Count"]; ok {
-		totalCount = int(headerToInt64(tc))
+		page.TotalCount = int(headerToInt64(tc))
 	}
-
-	return raw.Keys, totalCount, nil
+	if hm, ok := resp.Headers["X-Has-More"]; ok {
+		page.HasMore, _ = hm.(bool)
+	}
+	page.NextCursor, _ = resp.Headers["Next-Cursor"].(string)
+	return page, nil
 }
 
 // QueryCollection queries collection items using JSONB filters.
@@ -440,7 +469,8 @@ func (c *Client) QueryCollection(ctx context.Context, ownerPeerID peer.ID, path 
 	}
 
 	result := &CollectionQueryResponse{
-		Items: items,
+		Items:      items,
+		TotalCount: -1,
 	}
 	if tc, ok := resp.Headers["X-Total-Count"]; ok {
 		result.TotalCount = int(headerToInt64(tc))
@@ -448,6 +478,7 @@ func (c *Client) QueryCollection(ctx context.Context, ownerPeerID peer.ID, path 
 	if hm, ok := resp.Headers["X-Has-More"]; ok {
 		result.HasMore, _ = hm.(bool)
 	}
+	result.NextCursor, _ = resp.Headers["Next-Cursor"].(string)
 
 	return result, nil
 }

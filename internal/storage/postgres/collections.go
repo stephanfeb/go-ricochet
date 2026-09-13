@@ -3,7 +3,10 @@ package postgres
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -225,93 +228,169 @@ func (s *PostgresStorage) DeleteCollectionItem(ctx context.Context, collectionID
 	return deleted, nil
 }
 
-func (s *PostgresStorage) ListCollectionKeys(ctx context.Context, collectionID int64, limit, offset int) ([]string, int, error) {
+// Paging over collection items is keyset: a cursor names the last item seen
+// (its sort value and key) and the next page starts strictly after it, so a
+// page costs the rows it returns however deep into the collection it is.
+// OFFSET paging is still honoured for callers that use it, but it re-reads
+// and discards every skipped row, and a listing paged that way ran the JSONB
+// filter twice per page: once to count and once to fetch. The count is now a
+// window over the same pass, taken on a first page only.
+
+// itemCursor is the opaque cursor a page hands back.
+type itemCursor struct {
+	Sort string `json:"s"`
+	Key  string `json:"k"`
+}
+
+func encodeItemCursor(sort, key string) string {
+	b, _ := json.Marshal(itemCursor{Sort: sort, Key: key})
+	return base64.RawURLEncoding.EncodeToString(b)
+}
+
+func decodeItemCursor(cursor string) (itemCursor, error) {
+	var c itemCursor
+	b, err := base64.RawURLEncoding.DecodeString(cursor)
+	if err != nil {
+		return c, fmt.Errorf("%w: %v", storage.ErrInvalidCursor, err)
+	}
+	if err := json.Unmarshal(b, &c); err != nil {
+		return c, fmt.Errorf("%w: %v", storage.ErrInvalidCursor, err)
+	}
+	if c.Key == "" {
+		return c, fmt.Errorf("%w: no key", storage.ErrInvalidCursor)
+	}
+	return c, nil
+}
+
+func clampCollectionLimit(limit int) int {
 	if limit <= 0 {
-		limit = 50
+		return 50
 	}
 	if limit > 1000 {
-		limit = 1000
+		return 1000
 	}
+	return limit
+}
 
-	rows, err := s.pool.Query(ctx, `
-		SELECT key, COUNT(*) OVER() AS total_count
+func (s *PostgresStorage) ListCollectionKeys(ctx context.Context, collectionID int64, limit, offset int, cursor string) ([]string, int, string, error) {
+	limit = clampCollectionLimit(limit)
+
+	conditions := []string{"collection_id = $1"}
+	args := []any{collectionID}
+	countExpr := "COUNT(*) OVER()"
+	if cursor != "" {
+		c, err := decodeItemCursor(cursor)
+		if err != nil {
+			return nil, 0, "", err
+		}
+		conditions = append(conditions, fmt.Sprintf("key > $%d", len(args)+1))
+		args = append(args, c.Key)
+		countExpr = "-1"
+		offset = 0
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	args = append(args, limit+1, offset)
+
+	rows, err := s.pool.Query(ctx, fmt.Sprintf(`
+		SELECT key, %s AS total_count
 		FROM collection_items
-		WHERE collection_id = $1
+		WHERE %s
 		ORDER BY key
-		LIMIT $2 OFFSET $3`,
-		collectionID, limit, offset,
+		LIMIT $%d OFFSET $%d`, countExpr, strings.Join(conditions, " AND "), len(args)-1, len(args)),
+		args...,
 	)
 	if err != nil {
-		return nil, 0, fmt.Errorf("list collection keys: %w", err)
+		return nil, 0, "", fmt.Errorf("list collection keys: %w", err)
 	}
 	defer rows.Close()
 
 	var keys []string
-	var totalCount int
+	total := -1
 	for rows.Next() {
 		var key string
 		var tc int
 		if err := rows.Scan(&key, &tc); err != nil {
-			return nil, 0, fmt.Errorf("scan collection key: %w", err)
+			return nil, 0, "", fmt.Errorf("scan collection key: %w", err)
 		}
 		keys = append(keys, key)
-		totalCount = tc
+		total = tc
 	}
-	return keys, totalCount, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, 0, "", err
+	}
+	if cursor == "" && total < 0 {
+		total = 0
+	}
+	next := ""
+	if len(keys) > limit {
+		keys = keys[:limit]
+		next = encodeItemCursor("", keys[len(keys)-1])
+	}
+	return keys, total, next, nil
 }
 
-func (s *PostgresStorage) QueryCollection(ctx context.Context, collectionID int64, filter map[string]any, sortField string, sortAsc bool, limit, offset int) (*storage.CollectionQueryResult, error) {
-	if limit <= 0 {
-		limit = 50
-	}
-	if limit > 1000 {
-		limit = 1000
-	}
+func (s *PostgresStorage) QueryCollection(ctx context.Context, collectionID int64, filter map[string]any, sortField string, sortAsc bool, limit, offset int, cursor string) (*storage.CollectionQueryResult, error) {
+	limit = clampCollectionLimit(limit)
 
-	// Build JSONB filter clause
 	filterClause, filterArgs, err := BuildJSONBFilter(filter, 2) // $1 is collection_id
 	if err != nil {
 		return nil, fmt.Errorf("build filter: %w", err)
 	}
-
-	// Build the query
 	args := []any{collectionID}
 	args = append(args, filterArgs...)
+	conditions := []string{"collection_id = $1", filterClause}
 
-	whereClause := fmt.Sprintf("collection_id = $1 AND %s", filterClause)
-
-	// Sort
-	orderClause := "key ASC"
+	// The sort expression is what the cursor carries, so a missing field
+	// sorts as the empty string in both places rather than as NULL, whose
+	// position depends on direction and cannot be named in a comparison.
+	dir, cmp := "ASC", ">"
+	if !sortAsc {
+		dir, cmp = "DESC", "<"
+	}
+	sortExpr := "''"
+	orderClause := "key " + dir
 	if sortField != "" {
 		if !validFieldName.MatchString(sortField) {
 			return nil, fmt.Errorf("invalid sort field name: %q", sortField)
 		}
-		dir := "ASC"
-		if !sortAsc {
-			dir = "DESC"
+		sortExpr = fmt.Sprintf("COALESCE(content->>'%s', '')", sortField)
+		orderClause = fmt.Sprintf("%s %s, key %s", sortExpr, dir, dir)
+	}
+
+	countExpr := "COUNT(*) OVER()"
+	if cursor != "" {
+		c, err := decodeItemCursor(cursor)
+		if err != nil {
+			return nil, err
 		}
-		orderClause = fmt.Sprintf("content->>'%s' %s", sortField, dir)
+		n := len(args) + 1
+		if sortField != "" {
+			conditions = append(conditions, fmt.Sprintf("(%s, key) %s ($%d, $%d)", sortExpr, cmp, n, n+1))
+			args = append(args, c.Sort, c.Key)
+		} else {
+			conditions = append(conditions, fmt.Sprintf("key %s $%d", cmp, n))
+			args = append(args, c.Key)
+		}
+		countExpr = "-1"
+		offset = 0
 	}
-
-	// Count total matches
-	countQuery := fmt.Sprintf(`SELECT COUNT(*) FROM collection_items WHERE %s`, whereClause)
-	var totalCount int
-	if err := s.pool.QueryRow(ctx, countQuery, args...).Scan(&totalCount); err != nil {
-		return nil, fmt.Errorf("count collection items: %w", err)
+	if offset < 0 {
+		offset = 0
 	}
+	args = append(args, limit+1, offset) // limit+1 for hasMore detection
 
-	// Fetch items
-	nextArgIdx := len(args) + 1
 	query := fmt.Sprintf(`
 		SELECT id, collection_id, key, content, content_hash, version,
-			   created_at, updated_at, updated_by_peer_id
+			   created_at, updated_at, updated_by_peer_id,
+			   %s AS sort_key, %s AS total_count
 		FROM collection_items
 		WHERE %s
 		ORDER BY %s
 		LIMIT $%d OFFSET $%d`,
-		whereClause, orderClause, nextArgIdx, nextArgIdx+1,
+		sortExpr, countExpr, strings.Join(conditions, " AND "), orderClause, len(args)-1, len(args),
 	)
-	args = append(args, limit+1, offset) // limit+1 for hasMore detection
 
 	rows, err := s.pool.Query(ctx, query, args...)
 	if err != nil {
@@ -319,28 +398,38 @@ func (s *PostgresStorage) QueryCollection(ctx context.Context, collectionID int6
 	}
 	defer rows.Close()
 
-	var items []*storage.CollectionItemRecord
+	var (
+		items    []*storage.CollectionItemRecord
+		sortKeys []string
+		total    = -1
+	)
 	for rows.Next() {
-		r, err := scanCollectionItemRecord(rows)
-		if err != nil {
-			return nil, err
+		var r storage.CollectionItemRecord
+		var sortKey string
+		var tc int
+		if err := rows.Scan(&r.ID, &r.CollectionID, &r.Key, &r.Content, &r.ContentHash,
+			&r.Version, &r.CreatedAt, &r.UpdatedAt, &r.UpdatedByPeerID, &sortKey, &tc); err != nil {
+			return nil, fmt.Errorf("scan collection item: %w", err)
 		}
-		items = append(items, r)
+		items = append(items, &r)
+		sortKeys = append(sortKeys, sortKey)
+		total = tc
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-
-	hasMore := len(items) > limit
-	if hasMore {
-		items = items[:limit]
+	if cursor == "" && total < 0 {
+		total = 0
 	}
 
-	return &storage.CollectionQueryResult{
-		Items:      items,
-		TotalCount: totalCount,
-		HasMore:    hasMore,
-	}, nil
+	result := &storage.CollectionQueryResult{TotalCount: total}
+	if len(items) > limit {
+		items = items[:limit]
+		result.HasMore = true
+		result.NextCursor = encodeItemCursor(sortKeys[limit-1], items[limit-1].Key)
+	}
+	result.Items = items
+	return result, nil
 }
 
 // =============================================================================

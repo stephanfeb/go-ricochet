@@ -76,6 +76,9 @@ type Storage interface {
 
 	// Document operations
 	GetDocument(ctx context.Context, ownerID peer.ID, path string) (*DocumentRecord, error)
+	// HeadDocument is GetDocument without the body: every field but Content,
+	// with ContentLength measured in the database. Nil when absent.
+	HeadDocument(ctx context.Context, ownerID peer.ID, path string) (*DocumentRecord, error)
 	PutDocument(ctx context.Context, ownerID peer.ID, path string, content []byte, contentType string, updatedBy peer.ID, ifMatch *string) (*DocumentPutResult, error)
 	PatchDocument(ctx context.Context, ownerID peer.ID, path string, patch map[string]any, updatedBy peer.ID, ifMatch *string) (*DocumentPutResult, error)
 	DeleteDocument(ctx context.Context, ownerID peer.ID, path string) (bool, error)
@@ -110,8 +113,13 @@ type Storage interface {
 	GetCollectionItem(ctx context.Context, collectionID int64, key string) (*CollectionItemRecord, error)
 	PutCollectionItem(ctx context.Context, collectionID int64, key string, content []byte, updatedBy peer.ID, ifMatch *string) (*CollectionItemRecord, bool, error)
 	DeleteCollectionItem(ctx context.Context, collectionID int64, key string) (bool, error)
-	ListCollectionKeys(ctx context.Context, collectionID int64, limit, offset int) ([]string, int, error)
-	QueryCollection(ctx context.Context, collectionID int64, filter map[string]any, sortField string, sortAsc bool, limit, offset int) (*CollectionQueryResult, error)
+	// ListCollectionKeys pages keys in key order. A cursor continues after
+	// the key it names and takes precedence over offset; total is -1 on a
+	// cursor page. next is empty on the last page.
+	ListCollectionKeys(ctx context.Context, collectionID int64, limit, offset int, cursor string) (keys []string, total int, next string, err error)
+	// QueryCollection pages matching items. Same paging contract as
+	// ListCollectionKeys: cursor over offset, total on a first page only.
+	QueryCollection(ctx context.Context, collectionID int64, filter map[string]any, sortField string, sortAsc bool, limit, offset int, cursor string) (*CollectionQueryResult, error)
 
 	// Directory operations
 	UpsertDirectoryEntry(ctx context.Context, entry *DirectoryEntry) error

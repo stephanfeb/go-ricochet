@@ -72,6 +72,10 @@ type CollectionRequest struct {
 	SortAsc   *bool          `json:"sortAsc,omitempty"`
 	Limit     *int           `json:"limit,omitempty"`
 	Offset    *int           `json:"offset,omitempty"`
+	// Cursor continues a LIST or QUERY after the page that returned it in
+	// its Next-Cursor header. It takes precedence over Offset, and a page
+	// fetched this way carries no X-Total-Count.
+	Cursor string `json:"cursor,omitempty"`
 }
 
 // CollectionResponse is the JSON response format for collection operations.
@@ -614,10 +618,12 @@ func handleListKeys(sc *forge.StreamContext, next func()) {
 		offset = *req.Offset
 	}
 
-	keys, totalCount, err := store.ListCollectionKeys(ctx, coll.ID, limit, offset)
+	keys, totalCount, nextCursor, err := store.ListCollectionKeys(ctx, coll.ID, limit, offset, req.Cursor)
 	if err != nil {
-		sc.Logger.Error("failed to list collection keys", "error", err)
-		sc.Response = &CollectionResponse{Status: StatusInternalError}
+		status, _ := wire.Classify(err)
+		wire.LogRejection(sc, status, err)
+		sc.Response = &CollectionResponse{Status: status,
+			Headers: map[string]any{"Error": wire.ClientMessage(err)}}
 		return
 	}
 
@@ -630,13 +636,9 @@ func handleListKeys(sc *forge.StreamContext, next func()) {
 	}
 
 	sc.Response = &CollectionResponse{
-		Status: StatusOK,
-		Headers: map[string]any{
-			"Content-Type":  "application/json",
-			"X-Total-Count": totalCount,
-			"X-Has-More":    offset+limit < totalCount,
-		},
-		Body: base64.StdEncoding.EncodeToString(bodyBytes),
+		Status:  StatusOK,
+		Headers: pageHeaders(totalCount, nextCursor),
+		Body:    base64.StdEncoding.EncodeToString(bodyBytes),
 	}
 }
 
@@ -678,10 +680,11 @@ func handleQuery(sc *forge.StreamContext, next func()) {
 		sortAsc = *req.SortAsc
 	}
 
-	result, err := store.QueryCollection(ctx, coll.ID, req.Filter, req.SortField, sortAsc, limit, offset)
+	result, err := store.QueryCollection(ctx, coll.ID, req.Filter, req.SortField, sortAsc, limit, offset, req.Cursor)
 	if err != nil {
-		sc.Logger.Error("failed to query collection", "error", err)
-		sc.Response = &CollectionResponse{Status: StatusInternalError,
+		status, _ := wire.Classify(err)
+		wire.LogRejection(sc, status, err)
+		sc.Response = &CollectionResponse{Status: status,
 			Headers: map[string]any{"Error": wire.ClientMessage(err)}}
 		return
 	}
@@ -714,14 +717,26 @@ func handleQuery(sc *forge.StreamContext, next func()) {
 	}
 
 	sc.Response = &CollectionResponse{
-		Status: StatusOK,
-		Headers: map[string]any{
-			"Content-Type":  "application/json",
-			"X-Total-Count": result.TotalCount,
-			"X-Has-More":    result.HasMore,
-		},
-		Body: base64.StdEncoding.EncodeToString(bodyBytes),
+		Status:  StatusOK,
+		Headers: pageHeaders(result.TotalCount, result.NextCursor),
+		Body:    base64.StdEncoding.EncodeToString(bodyBytes),
 	}
+}
+
+// pageHeaders describes a page: the total when it was counted (a first
+// page), whether more follow, and the cursor that fetches them.
+func pageHeaders(total int, next string) map[string]any {
+	h := map[string]any{
+		"Content-Type": "application/json",
+		"X-Has-More":   next != "",
+	}
+	if total >= 0 {
+		h["X-Total-Count"] = total
+	}
+	if next != "" {
+		h["Next-Cursor"] = next
+	}
+	return h
 }
 
 // =============================================================================

@@ -93,6 +93,9 @@ type DocumentRecord struct {
 	OwnerPeerID        string    `json:"ownerPeerId"`
 	Path               string    `json:"path"`
 	Content            []byte    `json:"content"`
+	// ContentLength is the body's size in bytes. HeadDocument fills it
+	// without loading Content; GetDocument leaves it at len(Content).
+	ContentLength      int       `json:"contentLength"`
 	ContentType        string    `json:"contentType"`
 	ContentHash        string    `json:"contentHash"` // ETag
 	CreatedAt          time.Time `json:"createdAt"`
@@ -127,7 +130,10 @@ type DocumentVersionRecord struct {
 	ID              int64     `json:"id"`
 	DocumentID      int64     `json:"documentId"`
 	VersionNumber   int       `json:"versionNumber"`
+	// Content is nil from GetDocumentHistory, which lists versions; use
+	// GetDocumentAtVersion for a body. ContentLength is always set.
 	Content         []byte    `json:"content"`
+	ContentLength   int       `json:"contentLength"`
 	ContentHash     string    `json:"contentHash"`
 	ContentType     string    `json:"contentType"`
 	CreatedAt       time.Time `json:"createdAt"`
@@ -239,9 +245,15 @@ type CollectionItemRecord struct {
 
 // CollectionQueryResult wraps a paged query response.
 type CollectionQueryResult struct {
-	Items      []*CollectionItemRecord `json:"items"`
-	TotalCount int                     `json:"totalCount"`
-	HasMore    bool                    `json:"hasMore"`
+	Items []*CollectionItemRecord `json:"items"`
+	// TotalCount is the number of matching items, counted on a first page
+	// only; a page fetched by cursor reports -1, since the caller already
+	// has the figure and counting again would scan every match per page.
+	TotalCount int  `json:"totalCount"`
+	HasMore    bool `json:"hasMore"`
+	// NextCursor continues the listing after the last item here. Empty when
+	// HasMore is false.
+	NextCursor string `json:"nextCursor,omitempty"`
 }
 
 // Storage errors.

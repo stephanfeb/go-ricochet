@@ -274,11 +274,18 @@ func TestPutDocumentArchivesPreviousVersion(t *testing.T) {
 	if len(versions) != 1 {
 		t.Fatalf("got %d archived versions, want 1", len(versions))
 	}
-	if string(versions[0].Content) != "v1-body" {
-		t.Fatalf("archived body is %q, want %q", versions[0].Content, "v1-body")
+	if versions[0].ContentLength != len("v1-body") || versions[0].Content != nil {
+		t.Fatalf("history entry = %d bytes, body %q; want the length only", versions[0].ContentLength, versions[0].Content)
 	}
 	if versions[0].VersionNumber != 1 {
 		t.Fatalf("archived version number is %d, want 1", versions[0].VersionNumber)
+	}
+	archived, err := store.GetDocumentAtVersion(ctx, owner, path, 1)
+	if err != nil || archived == nil {
+		t.Fatalf("get version 1: %v", err)
+	}
+	if string(archived.Content) != "v1-body" || archived.ContentLength != len("v1-body") {
+		t.Fatalf("archived body is %q (%d bytes), want %q", archived.Content, archived.ContentLength, "v1-body")
 	}
 
 	current, err := store.GetDocument(ctx, owner, path)
