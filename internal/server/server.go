@@ -347,6 +347,7 @@ func (s *Server) buildForgeConfig() *forge.Config {
 	// Connection cap. Enforced by the libp2p resource manager, with a
 	// connection manager trimming idle peers before the cap is reached.
 	cfg.Host.MaxConnections = s.config.MaxConcurrentConnections
+	cfg.Host.MaxConnectionsPerIP = s.config.MaxConnectionsPerIP
 
 	// Authentication: with it on, only trusted peers may connect at all.
 	if s.config.EnableAuthentication {

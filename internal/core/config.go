@@ -49,10 +49,16 @@ type ServerConfig struct {
 	NearCapacityRatio float64 `yaml:"near_capacity_ratio" json:"nearCapacityRatio"`
 
 	// Performance
-	MaxConcurrentConnections int           `yaml:"max_concurrent_connections" json:"maxConcurrentConnections"`
-	ConnectionTimeout        time.Duration `yaml:"connection_timeout" json:"connectionTimeout"`
-	MessageTimeout           time.Duration `yaml:"message_timeout" json:"messageTimeout"`
-	WorkerThreads            int           `yaml:"worker_threads" json:"workerThreads"`
+	MaxConcurrentConnections int `yaml:"max_concurrent_connections" json:"maxConcurrentConnections"`
+	// MaxConnectionsPerIP caps the connections one source address may hold
+	// open. Zero, the default, is no per-address cap: clients share
+	// addresses behind carrier NATs and office gateways, and a cap turns
+	// the ones past it away. A peer identity costs nothing to mint, so this
+	// is the only limit tied to something a client cannot rotate for free.
+	MaxConnectionsPerIP int           `yaml:"max_connections_per_ip" json:"maxConnectionsPerIP"`
+	ConnectionTimeout   time.Duration `yaml:"connection_timeout" json:"connectionTimeout"`
+	MessageTimeout      time.Duration `yaml:"message_timeout" json:"messageTimeout"`
+	WorkerThreads       int           `yaml:"worker_threads" json:"workerThreads"`
 
 	// Regional
 	ServerRegion     string   `yaml:"server_region" json:"serverRegion"`
@@ -556,6 +562,9 @@ func (c *ServerConfig) Validate() error {
 	if c.WorkerThreads < 0 {
 		return fmt.Errorf("worker_threads must not be negative")
 	}
+	if c.MaxConnectionsPerIP < 0 {
+		return fmt.Errorf("max_connections_per_ip must not be negative")
+	}
 	if c.MessageTimeout < 0 || c.ConnectionTimeout < 0 {
 		return fmt.Errorf("timeouts must not be negative")
 	}
@@ -658,6 +667,7 @@ type yamlFileConfig struct {
 
 	Performance struct {
 		MaxConcurrentConnections int `yaml:"max_concurrent_connections"`
+		MaxConnectionsPerIP      int `yaml:"max_connections_per_ip"`
 		ConnectionTimeoutSec     int `yaml:"connection_timeout_sec"`
 		MessageTimeoutSec        int `yaml:"message_timeout_sec"`
 		WorkerThreads            int `yaml:"worker_threads"`
@@ -825,6 +835,9 @@ func LoadConfigFromFile(path string, base *ServerConfig) error {
 	}
 
 	// Performance section
+	if yc.Performance.MaxConnectionsPerIP > 0 {
+		base.MaxConnectionsPerIP = yc.Performance.MaxConnectionsPerIP
+	}
 	if yc.Performance.MaxConcurrentConnections > 0 {
 		base.MaxConcurrentConnections = yc.Performance.MaxConcurrentConnections
 	}

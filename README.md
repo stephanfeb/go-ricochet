@@ -315,6 +315,25 @@ opens. With `enable_forwarding` on it is the set of peers allowed to submit a
 message whose sender is not themselves: the message is marked forwarded, its
 hop count advanced, and it is refused past the hop limit.
 
+### Identity Is Free, So Per-Peer Limits Are Fairness Controls
+
+A peer identity is an Ed25519 key, which costs nothing to mint, so every
+limit keyed by peer ID -- the per-peer rate limiters, the per-peer admission
+slots, mailbox quotas -- bounds what one *well-behaved* client can consume,
+not what a determined one can. The abuse controls are the ones a client
+cannot rotate out of: `max_concurrent_connections` caps the server as a
+whole, and admission control bounds work in flight against the database
+regardless of how many identities ask for it.
+
+The one limit tied to a source address is `max_connections_per_ip`, and it
+is off by default. Phones behind a carrier NAT and desks behind an office
+gateway share an address, and any cap turns the clients past it away.
+go-libp2p applies its own per-address defaults, eight connections and
+0.2 new connections a second, to every host; this server replaces them with
+no per-address cap and no per-address rate limit, because it bounds
+concurrency, never rate. Set `max_connections_per_ip` only where one address
+is known to be one client.
+
 ### Transport Security
 
 All P2P connections use the [Noise protocol framework](https://noiseprotocol.org/) for transport encryption and mutual authentication.
