@@ -143,8 +143,9 @@ func collectionResponseWriter() forge.Middleware {
 		if sc.Err != nil && sc.Response == nil {
 			status, retryAfter := wire.Classify(sc.Err)
 
+			wire.LogRejection(sc, status, sc.Err)
 			resp := &CollectionResponse{Status: status}
-			resp.Headers = map[string]any{"Error": sc.Err.Error()}
+			resp.Headers = map[string]any{"Error": wire.ClientMessage(sc.Err)}
 			if ms := wire.RetryAfterMs(retryAfter); ms > 0 {
 				resp.Headers[wire.RetryAfterHeaderKey] = ms
 			}
@@ -666,7 +667,7 @@ func handleQuery(sc *forge.StreamContext, next func()) {
 	if err != nil {
 		sc.Logger.Error("failed to query collection", "error", err)
 		sc.Response = &CollectionResponse{Status: StatusInternalError,
-			Headers: map[string]any{"Error": err.Error()}}
+			Headers: map[string]any{"Error": wire.ClientMessage(err)}}
 		return
 	}
 

@@ -199,7 +199,8 @@ func docResponseWriter() forge.Middleware {
 		// Convert pipeline errors into error responses.
 		if sc.Err != nil && sc.Response == nil {
 			status, retryAfter := wire.Classify(sc.Err)
-			headers := map[string]any{"Error": sc.Err.Error()}
+			wire.LogRejection(sc, status, sc.Err)
+			headers := map[string]any{"Error": wire.ClientMessage(sc.Err)}
 			if ms := wire.RetryAfterMs(retryAfter); ms > 0 {
 				headers[wire.RetryAfterHeaderKey] = ms
 			}

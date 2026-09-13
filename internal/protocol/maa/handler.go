@@ -86,8 +86,9 @@ func maaResponseWriter() forge.Middleware {
 		// Convert pipeline errors into JSON error responses.
 		if sc.Err != nil && sc.Response == nil {
 			status, retryAfter := wire.Classify(sc.Err)
+			wire.LogRejection(sc, status, sc.Err)
 			sc.Response = &ErrorResponse{
-				Error:        sc.Err.Error(),
+				Error:        wire.ClientMessage(sc.Err),
 				Status:       status,
 				RetryAfterMs: wire.RetryAfterMs(retryAfter),
 			}

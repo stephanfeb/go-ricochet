@@ -2,7 +2,6 @@ package mma
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -160,13 +159,10 @@ func adminResponseWriter() forge.Middleware {
 		// Convert pipeline errors into error responses.
 		if sc.Err != nil && sc.Response == nil {
 			status, retryAfter := wire.Classify(sc.Err)
-			errMsg := sc.Err.Error()
-			if errors.Is(sc.Err, forge.ErrRateLimited) {
-				errMsg = "rate limit exceeded"
-			}
+			wire.LogRejection(sc, status, sc.Err)
 			sc.Response = &AdminResponse{
 				Success:      false,
-				ErrorMessage: errMsg,
+				ErrorMessage: wire.ClientMessage(sc.Err),
 				Status:       status,
 				RetryAfterMs: wire.RetryAfterMs(retryAfter),
 			}
@@ -223,6 +219,21 @@ func verifyOwner(ownerPeerIDStr string, callerID peer.ID) error {
 	return nil
 }
 
+// failed builds the response for a request the MDA or storage could not
+// serve. The prefix names the operation; the rest of the text is what the
+// client is allowed to see for that error, and the real error goes to the
+// log.
+func failed(sc *forge.StreamContext, prefix string, err error) *AdminResponse {
+	status, retryAfter := wire.Classify(err)
+	wire.LogRejection(sc, status, err)
+	return &AdminResponse{
+		Success:      false,
+		ErrorMessage: prefix + ": " + wire.ClientMessage(err),
+		Status:       status,
+		RetryAfterMs: wire.RetryAfterMs(retryAfter),
+	}
+}
+
 // handleCreateMailbox creates a new mailbox for the caller.
 func handleCreateMailbox(sc *forge.StreamContext, next func()) {
 	req := sc.Request.(*AdminRequest)
@@ -269,7 +280,7 @@ func handleCreateMailbox(sc *forge.StreamContext, next func()) {
 
 	ctx := sc.Ctx
 	if err := mailboxServer.CreateMailbox(ctx, addr, maxMessages, retentionDays, retentionCount); err != nil {
-		sc.Response = &AdminResponse{Success: false, ErrorMessage: fmt.Sprintf("failed to create mailbox: %v", err)}
+		sc.Response = failed(sc, "failed to create mailbox", err)
 		return
 	}
 
@@ -305,7 +316,7 @@ func handleDeleteMailbox(sc *forge.StreamContext, next func()) {
 
 	ctx := sc.Ctx
 	if err := mailboxServer.DeleteMailbox(ctx, addr); err != nil {
-		sc.Response = &AdminResponse{Success: false, ErrorMessage: fmt.Sprintf("failed to delete mailbox: %v", err)}
+		sc.Response = failed(sc, "failed to delete mailbox", err)
 		return
 	}
 
@@ -358,7 +369,7 @@ func handleGrantAccess(sc *forge.StreamContext, next func()) {
 	// Find the mailbox
 	record, err := mailboxServer.Storage.FindMailbox(ctx, callerID, req.FolderPath)
 	if err != nil {
-		sc.Response = &AdminResponse{Success: false, ErrorMessage: fmt.Sprintf("failed to find mailbox: %v", err)}
+		sc.Response = failed(sc, "failed to find mailbox", err)
 		return
 	}
 	if record == nil {
@@ -367,7 +378,7 @@ func handleGrantAccess(sc *forge.StreamContext, next func()) {
 	}
 
 	if err := mailboxServer.Storage.GrantAccess(ctx, record.ID, granteePeerID, accessMode); err != nil {
-		sc.Response = &AdminResponse{Success: false, ErrorMessage: fmt.Sprintf("failed to grant access: %v", err)}
+		sc.Response = failed(sc, "failed to grant access", err)
 		return
 	}
 
@@ -412,7 +423,7 @@ func handleRevokeAccess(sc *forge.StreamContext, next func()) {
 	// Find the mailbox
 	record, err := mailboxServer.Storage.FindMailbox(ctx, callerID, req.FolderPath)
 	if err != nil {
-		sc.Response = &AdminResponse{Success: false, ErrorMessage: fmt.Sprintf("failed to find mailbox: %v", err)}
+		sc.Response = failed(sc, "failed to find mailbox", err)
 		return
 	}
 	if record == nil {
@@ -421,7 +432,7 @@ func handleRevokeAccess(sc *forge.StreamContext, next func()) {
 	}
 
 	if err := mailboxServer.Storage.RevokeAccess(ctx, record.ID, granteePeerID); err != nil {
-		sc.Response = &AdminResponse{Success: false, ErrorMessage: fmt.Sprintf("failed to revoke access: %v", err)}
+		sc.Response = failed(sc, "failed to revoke access", err)
 		return
 	}
 
@@ -454,7 +465,7 @@ func handleListACL(sc *forge.StreamContext, next func()) {
 	// Find the mailbox
 	record, err := mailboxServer.Storage.FindMailbox(ctx, callerID, req.FolderPath)
 	if err != nil {
-		sc.Response = &AdminResponse{Success: false, ErrorMessage: fmt.Sprintf("failed to find mailbox: %v", err)}
+		sc.Response = failed(sc, "failed to find mailbox", err)
 		return
 	}
 	if record == nil {
@@ -464,7 +475,7 @@ func handleListACL(sc *forge.StreamContext, next func()) {
 
 	aclRecords, err := mailboxServer.Storage.ListACL(ctx, record.ID)
 	if err != nil {
-		sc.Response = &AdminResponse{Success: false, ErrorMessage: fmt.Sprintf("failed to list ACL: %v", err)}
+		sc.Response = failed(sc, "failed to list ACL", err)
 		return
 	}
 
@@ -497,7 +508,7 @@ func handleListMailboxes(sc *forge.StreamContext, next func()) {
 	ctx := sc.Ctx
 	records, err := mailboxServer.ListMailboxes(ctx, callerID)
 	if err != nil {
-		sc.Response = &AdminResponse{Success: false, ErrorMessage: fmt.Sprintf("failed to list mailboxes: %v", err)}
+		sc.Response = failed(sc, "failed to list mailboxes", err)
 		return
 	}
 
@@ -533,7 +544,7 @@ func handleUpdateConfig(sc *forge.StreamContext, next func()) {
 
 	record, err := mailboxServer.Storage.FindMailbox(ctx, callerID, req.FolderPath)
 	if err != nil {
-		sc.Response = &AdminResponse{Success: false, ErrorMessage: fmt.Sprintf("failed to find mailbox: %v", err)}
+		sc.Response = failed(sc, "failed to find mailbox", err)
 		return
 	}
 	if record == nil {
@@ -551,7 +562,7 @@ func handleUpdateConfig(sc *forge.StreamContext, next func()) {
 	}
 
 	if err := mailboxServer.Storage.UpdateMailbox(ctx, record); err != nil {
-		sc.Response = &AdminResponse{Success: false, ErrorMessage: fmt.Sprintf("failed to update mailbox: %v", err)}
+		sc.Response = failed(sc, "failed to update mailbox", err)
 		return
 	}
 
@@ -578,7 +589,7 @@ func handleGetMailboxInfo(sc *forge.StreamContext, next func()) {
 
 	record, err := mailboxServer.Storage.FindMailbox(ctx, callerID, req.FolderPath)
 	if err != nil {
-		sc.Response = &AdminResponse{Success: false, ErrorMessage: fmt.Sprintf("failed to find mailbox: %v", err)}
+		sc.Response = failed(sc, "failed to find mailbox", err)
 		return
 	}
 	if record == nil {
@@ -588,7 +599,7 @@ func handleGetMailboxInfo(sc *forge.StreamContext, next func()) {
 
 	msgCount, err := mailboxServer.Storage.GetMessageCount(ctx, record.ID)
 	if err != nil {
-		sc.Response = &AdminResponse{Success: false, ErrorMessage: fmt.Sprintf("failed to get message count: %v", err)}
+		sc.Response = failed(sc, "failed to get message count", err)
 		return
 	}
 

@@ -94,10 +94,11 @@ func batchResponseWriter() forge.Middleware {
 			// whole request: the messages were never looked at individually,
 			// and inventing a per-message verdict would claim knowledge the
 			// server does not have.
+			wire.LogRejection(sc, status, sc.Err)
 			sc.Response = &BatchSubmitResponse{
 				Acks: []core.StoreAck{{
 					Success:      false,
-					ErrorMessage: sc.Err.Error(),
+					ErrorMessage: wire.ClientMessage(sc.Err),
 					Status:       status,
 					RetryAfterMs: wire.RetryAfterMs(retryAfter),
 				}},
@@ -179,7 +180,9 @@ func batchSubmitHandler(sc *forge.StreamContext, next func()) {
 		messageID, err := router.AcceptMessage(ctx, msg, sc.PeerID)
 		ack := core.StoreAck{MessageID: messageID, Success: err == nil}
 		if err != nil {
-			ack.ErrorMessage = err.Error()
+			ack.Status, _ = wire.Classify(err)
+			wire.LogRejection(sc, ack.Status, err)
+			ack.ErrorMessage = wire.ClientMessage(err)
 		} else {
 			accepted++
 		}
@@ -208,9 +211,10 @@ func ackResponseWriter() forge.Middleware {
 		// Convert pipeline errors into error ack responses.
 		if sc.Err != nil && sc.Response == nil {
 			status, retryAfter := wire.Classify(sc.Err)
+			wire.LogRejection(sc, status, sc.Err)
 			sc.Response = &core.StoreAck{
 				Success:      false,
-				ErrorMessage: sc.Err.Error(),
+				ErrorMessage: wire.ClientMessage(sc.Err),
 				Status:       status,
 				RetryAfterMs: wire.RetryAfterMs(retryAfter),
 			}
@@ -277,8 +281,9 @@ func submitHandler(sc *forge.StreamContext, next func()) {
 		// A full mailbox is the one failure here a client can act on, and it
 		// is not backpressure: only the recipient can clear it, so a client
 		// that reads it as "retry later" retries forever.
-		ack.ErrorMessage = err.Error()
 		ack.Status, _ = wire.Classify(err)
+		wire.LogRejection(sc, ack.Status, err)
+		ack.ErrorMessage = wire.ClientMessage(err)
 	}
 
 	sc.Response = ack
