@@ -8,7 +8,7 @@ go-ricochet is the Go implementation of the [Ricochet](https://github.com/user/r
 
 - **Store-and-Forward Messaging** -- Messages are stored on the server until the recipient comes online to retrieve them
 - **Mailbox Management** -- Private, shared, and public mailboxes with ACL-based access control
-- **Document Store** -- Key-value document storage with ETag-based conditional operations, versioning, and merge-patch support
+- **Document Store** -- Key-value document storage with ETag-based conditional operations, versioning, and merge-patch support. Documents, feeds, collections and the directory are readable by any peer; see [What Any Peer Can Read](#what-any-peer-can-read)
 - **End-to-End Encryption** -- NaCl box encryption (X25519 + XSalsa20-Poly1305) derived from Ed25519 identity keys
 - **LZ4 Compression** -- Transparent payload compression with configurable threshold
 - **Push Notifications** -- Hybrid delivery: direct P2P streams for private mailboxes, GossipSub for shared/public
@@ -295,6 +295,27 @@ that cannot be read or parsed, or that contains a key the server does not
 know, stops the server at startup rather than running on the preset.
 
 ## Security
+
+### What Any Peer Can Read
+
+Only mailboxes have access control. Every other store is public-read by
+design: any peer that knows an owner's peer ID can read everything that
+owner has put there. Writes are the owner's alone, with one exception.
+
+| Store | Readable by | Writable by |
+|-------|-------------|-------------|
+| Mailboxes | Owner; shared mailboxes by the peers on their ACL; public mailboxes by anyone | Per mailbox type and ACL; see [doc/MAILBOX_LIFECYCLE_AND_ACLS.md](doc/MAILBOX_LIFECYCLE_AND_ACLS.md) |
+| Documents (`GET`, `HEAD`, `LIST`, `HISTORY`) | Any peer, including every stored version | Owner only (`PUT`, `PATCH`, `DELETE`, `BATCH_PUT`) |
+| Feeds (`GET`, `LIST`, `BATCH_GET`) | Any peer | Owner only, except that any peer may `APPEND` to a feed its owner created as collaborative |
+| Collections (`GET`, `LIST`, `QUERY`) | Any peer | Owner only (`CREATE`, `PUT`, `DELETE`) |
+| Directory | Any peer can browse and search every listing | Each peer joins, updates and leaves only its own listing |
+
+The server stores document, feed and collection bytes exactly as sent and
+never encrypts them. A client that needs a document kept from other peers
+must encrypt it before storing it, the way the messaging layer does with
+NaCl box, and must accept that the document's path, size, content type and
+version history stay visible. There is no private document, feed or
+collection: putting something in these stores publishes it to the network.
 
 ### End-to-End Encryption
 

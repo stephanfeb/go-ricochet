@@ -199,6 +199,22 @@ client-side reconciliation straightforward.
 
 ---
 
+## Gotcha 6 — ACLs are a mailbox thing. Documents, feeds, collections and the directory have none.
+
+**Symptom to expect:** a client stores a settings document under its own peer
+ID, assumes it is as private as its inbox, and it is not. Any peer that knows
+the peer ID can `GET`, `LIST` and read the `HISTORY` of every document, read
+every feed and collection, and browse every directory listing. Writes are
+owner-only (a collaborative feed also takes `APPEND` from anyone), but reads
+are open by design.
+
+**What to do:** treat these stores as publishing. Anything a peer must not
+read goes through a mailbox with the right type and ACL, or is encrypted by
+the client before it is stored. The README's security section has the full
+table under "What Any Peer Can Read".
+
+---
+
 ## A client-integration checklist (what we wish we'd had on day one)
 
 1. **Drain what you consume.** After applying a retrieved message, `deleteMessages`
