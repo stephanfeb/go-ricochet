@@ -14,6 +14,8 @@ if [ "$1" = "purge" ]; then
     rm -rf /var/lib/ricochet
     rm -rf /var/log/ricochet
     rm -f /etc/ricochet/config.yaml
+    # The env file holds the database password; purge means gone.
+    rm -f /etc/ricochet/env
 
     echo "Ricochet server data purged"
 fi

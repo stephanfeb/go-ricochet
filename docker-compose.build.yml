@@ -10,9 +10,13 @@ services:
     image: go-ricochet-builder:latest
     container_name: go-ricochet-builder
     volumes:
-      # Mount parent directory to get local Go module dependencies
-      # (go-libp2p-udx-transport, go-udx are siblings via replace directives)
-      - ..:/workspace/IdeaProjects/agentic:ro
+      # Mount this repo and only the sibling modules go.mod's replace
+      # directives point at. Mounting the whole parent directory would hand
+      # the build container every unrelated file beside this checkout.
+      - .:/workspace/IdeaProjects/agentic/go-ricochet:ro
+      - ../go-p2p-forge:/workspace/IdeaProjects/agentic/go-p2p-forge:ro
+      - ../go-udx:/workspace/IdeaProjects/agentic/go-udx:ro
+      - ../go-libp2p-udx-transport:/workspace/IdeaProjects/agentic/go-libp2p-udx-transport:ro
       # Mount build output directory (read-write)
       - ./build:/workspace/IdeaProjects/agentic/go-ricochet/build:rw
       # Cache Go modules

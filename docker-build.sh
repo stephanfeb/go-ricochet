@@ -28,25 +28,32 @@ echo "Go version:"
 go version
 echo ""
 
-# Step 1: Copy source files to writable workspace
+# Step 1: Copy source files to writable workspace. Only this repo and the
+# sibling modules named in go.mod's replace directives are copied; the mounts
+# in docker-compose.build.yml expose nothing else.
 echo "[1/7] Copying source files..."
+SRC_DIR=/workspace/IdeaProjects/agentic
 WORK_DIR=/home/builder/workspace/agentic
 mkdir -p $WORK_DIR
-rsync -a --exclude='build' --exclude='.idea' --exclude='*.iml' \
-      --exclude='*.log' --exclude='test_storage' --exclude='sf_storage' \
-      --exclude='*.deb' \
-      /workspace/IdeaProjects/agentic/ $WORK_DIR/
+for repo in go-ricochet go-p2p-forge go-udx go-libp2p-udx-transport; do
+    if [ ! -d "$SRC_DIR/$repo" ]; then
+        echo "ERROR: $SRC_DIR/$repo is not mounted (see docker-compose.build.yml)"
+        exit 1
+    fi
+    rsync -a --exclude='build' --exclude='.git' --exclude='.idea' --exclude='*.iml' \
+          --exclude='*.log' --exclude='test_storage' --exclude='sf_storage' \
+          --exclude='*.deb' --exclude='*.key' \
+          "$SRC_DIR/$repo/" "$WORK_DIR/$repo/"
+done
 cd $WORK_DIR/go-ricochet
 echo "✓ Source files copied"
 echo ""
 
-# Step 2: Fix module replace directives to use workspace paths
-echo "[2/7] Fixing module paths..."
-sed -i \
-    -e 's|=> \.\./go-libp2p-udx-transport|=> ../go-libp2p-udx-transport|g' \
-    -e 's|=> \.\./go-udx|=> ../go-udx|g' \
-    go.mod
-echo "✓ Module paths configured"
+# Step 2: The replace directives in go.mod are relative (../go-p2p-forge and
+# so on), and the workspace mirrors that layout, so they resolve unchanged.
+echo "[2/7] Checking module paths..."
+go list -m all >/dev/null
+echo "✓ Module paths resolve"
 echo ""
 
 # Step 3: Get dependencies

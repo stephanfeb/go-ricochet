@@ -23,6 +23,10 @@ func init() {
 	gologshim.SetDefaultHandler(logging.SlogHandler())
 }
 
+// pgPasswordEnv names the environment variable the PostgreSQL password is
+// read from. It is applied after the config file and before the CLI flags.
+const pgPasswordEnv = "RICOCHET_PG_PASSWORD"
+
 func main() {
 	// Flags
 	port := flag.Int("port", 0, "Listen port (default: 55223)")
@@ -37,7 +41,7 @@ func main() {
 	pgPort := flag.Int("pg-port", 0, "PostgreSQL port")
 	pgDatabase := flag.String("pg-database", "", "PostgreSQL database")
 	pgUsername := flag.String("pg-username", "", "PostgreSQL username")
-	pgPassword := flag.String("pg-password", "", "PostgreSQL password")
+	pgPassword := flag.String("pg-password", "", "PostgreSQL password (prefer the "+pgPasswordEnv+" environment variable: a flag is visible to every local user in the process list)")
 	pgSSLMode := flag.String("pg-sslmode", "", "PostgreSQL SSL mode")
 	externalAddrs := flag.String("external-addrs", "", "Comma-separated external multiaddrs to advertise (e.g., /ip4/1.2.3.4/udp/55223/udx)")
 	configFile := flag.String("config", "", "Path to YAML config file (e.g., /etc/ricochet/config.yaml)")
@@ -105,6 +109,12 @@ func main() {
 	}
 	if *pgUsername != "" {
 		cfg.Storage.Postgres.Username = *pgUsername
+	}
+	// The environment sits between the config file and the flags: a
+	// deployment keeps the password out of the world-readable command line
+	// by exporting it, and an explicit flag still wins for local runs.
+	if pw := os.Getenv(pgPasswordEnv); pw != "" {
+		cfg.Storage.Postgres.Password = pw
 	}
 	if *pgPassword != "" {
 		cfg.Storage.Postgres.Password = *pgPassword

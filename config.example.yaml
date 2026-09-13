@@ -93,8 +93,11 @@ database:
   port: 5432
   name: ricochet
   username: ricochet
-  # password: set via DB_PASSWORD in /etc/ricochet/env
-  sslmode: disable
+  # password: set DB_PASSWORD in /etc/ricochet/env (the package install) or
+  # export RICOCHET_PG_PASSWORD. Both keep it off the command line.
+  # TLS to PostgreSQL. "require" is the default; "disable" only for a database
+  # on the same host or a private network you trust.
+  sslmode: require
   pool_size: 10
 
 # Performance configuration

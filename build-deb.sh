@@ -40,7 +40,7 @@ if [ -f "build/dist/ricochet-server_${VERSION}.deb" ]; then
     echo "  sudo dpkg -i build/dist/ricochet-server_${VERSION}.deb"
     echo ""
     echo "Configuration:"
-    echo "  1. Create /etc/ricochet/env with DB_PASSWORD=your_password"
+    echo "  1. Edit /etc/ricochet/env: set DB_PASSWORD and EXTERNAL_IP"
     echo "  2. Initialize database: psql -U ricochet -d ricochet -f /opt/ricochet/schema.sql"
     echo "  3. Start: sudo supervisorctl start ricochet"
 else

@@ -72,21 +72,26 @@ psql ricochet < schema.sql
 # Build
 go build -o ricochet ./cmd/ricochet
 
-# Run in development mode
+# Run in development mode (TLS to PostgreSQL off for a local database)
+export RICOCHET_PG_PASSWORD=secret
 ./ricochet --development \
   --pg-host localhost \
   --pg-database ricochet \
   --pg-username ricochet \
-  --pg-password secret \
   --pg-sslmode disable
 
-# Run in production mode
+# Run in production mode (TLS to PostgreSQL required by default)
+export RICOCHET_PG_PASSWORD=secret
 ./ricochet --production \
   --pg-host db.example.com \
   --pg-database ricochet \
-  --pg-username ricochet \
-  --pg-password secret
+  --pg-username ricochet
 ```
+
+The PostgreSQL password comes from the `RICOCHET_PG_PASSWORD` environment
+variable or the config file. A `--pg-password` flag also exists, but the
+command line of a running process is readable by every local user, so keep it
+to throwaway local runs.
 
 ### CLI Options
 
@@ -100,8 +105,8 @@ go build -o ricochet ./cmd/ricochet
 --pg-port           PostgreSQL port (default: 5432)
 --pg-database       PostgreSQL database name
 --pg-username       PostgreSQL username
---pg-password       PostgreSQL password
---pg-sslmode        PostgreSQL SSL mode (require, disable)
+--pg-password       PostgreSQL password (prefer RICOCHET_PG_PASSWORD)
+--pg-sslmode        PostgreSQL SSL mode: require (default), disable
 ```
 
 ## Client Library

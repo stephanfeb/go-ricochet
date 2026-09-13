@@ -61,9 +61,12 @@ The package automatically:
 ### Configure and Start
 
 ```bash
-# 1. Set database password
+# 1. Set the database password and public IP. The package created this file
+#    root:ricochet 640; run.sh passes the password to the server through the
+#    environment, never on the command line.
 sudo nano /etc/ricochet/env
-# Add: DB_PASSWORD=your_password
+# Set: DB_PASSWORD=your_password
+#      EXTERNAL_IP=<the address clients reach this host on>
 
 # 2. Configure server (optional)
 sudo nano /etc/ricochet/config.yaml
@@ -87,7 +90,7 @@ If you prefer manual installation without the package:
 
 ```bash
 cd /path/to/ricochet
-dart compile exe bin/ricochet.dart -o ricochet_server
+go build -o ricochet_server ./cmd/ricochet
 ```
 
 ### 2. Install Files
@@ -103,12 +106,14 @@ sudo mkdir -p /var/log/ricochet
 sudo cp ricochet_server /opt/ricochet/
 sudo cp schema.sql /opt/ricochet/
 sudo cp deploy/run.sh /opt/ricochet/
-sudo cp config.postgres.example.yaml /etc/ricochet/config.yaml
+sudo cp config.example.yaml /etc/ricochet/config.yaml
 sudo cp deploy/env.example /etc/ricochet/env
 
 # Set permissions
 sudo chmod +x /opt/ricochet/ricochet_server
 sudo chmod +x /opt/ricochet/run.sh
+sudo chown root:ricochet /etc/ricochet/env
+sudo chmod 640 /etc/ricochet/env
 
 # Create user
 sudo useradd -r -s /bin/false -d /var/lib/ricochet ricochet
@@ -529,5 +534,5 @@ sudo supervisorctl start ricochet
 
 - Main deployment guide: `doc/LINUX_POSTGRES_DEPLOYMENT.md`
 - Package README: `deploy/README.md`
-- Configuration examples: `config.postgres.example.yaml`
+- Configuration examples: `config.example.yaml`
 

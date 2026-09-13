@@ -20,6 +20,15 @@ if [ -f /etc/ricochet/config.yaml ]; then
     chmod 640 /etc/ricochet/config.yaml
 fi
 
+# The env file holds the database password. Create it from the example on
+# first install so it exists with safe permissions before anyone edits it,
+# and tighten the permissions on every upgrade in case they were loosened.
+if [ ! -f /etc/ricochet/env ]; then
+    cp /etc/ricochet/env.example /etc/ricochet/env
+fi
+chown root:ricochet /etc/ricochet/env
+chmod 640 /etc/ricochet/env
+
 # Ensure config directory has correct permissions
 chown root:ricochet /etc/ricochet
 chmod 750 /etc/ricochet
@@ -37,7 +46,7 @@ echo "Ricochet Server Installation Complete"
 echo "============================================"
 echo ""
 echo "Next steps:"
-echo "  1. Create /etc/ricochet/env with DB_PASSWORD=your_password"
+echo "  1. Edit /etc/ricochet/env: set DB_PASSWORD and EXTERNAL_IP"
 echo "  2. Initialize database: psql -U ricochet -d ricochet -f /opt/ricochet/schema.sql"
 echo "  3. Start service: sudo supervisorctl start ricochet"
 echo ""
