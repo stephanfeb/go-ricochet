@@ -1,0 +1,23 @@
+# Ricochet Server configuration
+#
+# Installed by the package at /etc/ricochet/config.yaml and loaded on top of
+# the production preset that /opt/ricochet/run.sh selects. This file changes
+# nothing on its own: a key that is absent keeps the preset's value, and a
+# server running on this file as installed is a stock production server.
+#
+# Every key, with its default, is documented in config.yaml.example next to
+# this file. Uncomment a key here to change it. The database password, the
+# public address and the listen port are set in /etc/ricochet/env, not here.
+#
+# The server refuses to start on a key it does not know, so a typo fails
+# loudly rather than being ignored.
+
+# server:
+#   region: us-east-1        # label advertised to clients; "default" until set
+
+# storage:
+#   max_storage_gb: 50       # production preset: 50 (built-in default: 10)
+
+# database:
+#   pool_size: 50            # production preset: 50 (built-in default: 25)
+#   sslmode: require         # or set DB_SSLMODE in /etc/ricochet/env

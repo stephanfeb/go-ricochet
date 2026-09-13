@@ -156,7 +156,7 @@ func TestExampleValuesActuallyApply(t *testing.T) {
 		{"storage.retention_days", cfg.RetentionPolicy, 30 * 24 * time.Hour},
 		{"storage.max_mailboxes", cfg.MaxMailboxes, 100000},
 		{"storage.max_storage_gb", cfg.MaxStorageBytes, int64(50) * 1024 * 1024 * 1024},
-		{"database.pool_size", cfg.Storage.Postgres.PoolSize, 10},
+		{"database.pool_size", cfg.Storage.Postgres.PoolSize, 25},
 		{"admission_control.max_in_flight_per_peer", cfg.Admission.MaxInFlightPerPeer, 64},
 		{"ops.port", cfg.Ops.Port, 9090},
 		{"ops.query_timeout", cfg.Ops.QueryTimeout, 10 * time.Second},

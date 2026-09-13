@@ -61,7 +61,7 @@ The package automatically:
 - Sets up directories with correct permissions
 - Installs supervisor configuration
 - Installs the server, `run.sh`, `health_check.sh` and `schema.sql` under `/opt/ricochet`
-- Copies example configuration files
+- Installs `/etc/ricochet/config.yaml` (`deploy/config.yaml`: comments only, so the server runs on the production preset until you change something) with every key documented beside it in `config.yaml.example`
 
 ### Configure and Start
 
@@ -115,7 +115,8 @@ sudo cp ricochet_server /opt/ricochet/
 sudo cp schema.sql /opt/ricochet/
 sudo cp deploy/run.sh /opt/ricochet/
 sudo cp deploy/health_check.sh /opt/ricochet/
-sudo cp config.example.yaml /etc/ricochet/config.yaml
+sudo cp deploy/config.yaml /etc/ricochet/config.yaml
+sudo cp config.example.yaml /etc/ricochet/config.yaml.example
 sudo cp deploy/env.example /etc/ricochet/env
 
 # Set permissions

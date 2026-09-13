@@ -8,7 +8,7 @@
 # Server identity and network configuration
 server:
   port: 55223
-  region: us-east-1
+  region: default        # label advertised to clients; set it to where this server is
 
   # Identity configuration (optional)
   # If not specified, checks RICOCHET_SEED_HEX environment variable,
@@ -105,7 +105,7 @@ database:
   # TLS to PostgreSQL. "require" is the default; "disable" only for a database
   # on the same host or a private network you trust.
   sslmode: require
-  pool_size: 10
+  pool_size: 25          # default: 25; the production preset uses 50
 
 # Performance configuration
 performance:

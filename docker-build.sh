@@ -88,7 +88,7 @@ cp deploy/run.sh "$BUILD_DIR/opt/ricochet/"
 cp deploy/health_check.sh "$BUILD_DIR/opt/ricochet/"
 # Copy config as both .example and actual config (for conffiles)
 cp config.example.yaml "$BUILD_DIR/etc/ricochet/config.yaml.example"
-cp config.example.yaml "$BUILD_DIR/etc/ricochet/config.yaml"
+cp deploy/config.yaml "$BUILD_DIR/etc/ricochet/config.yaml"
 cp deploy/env.example "$BUILD_DIR/etc/ricochet/"
 cp deploy/supervisor/ricochet.conf "$BUILD_DIR/etc/supervisor/conf.d/"
 
