@@ -230,13 +230,13 @@ func (s *PostgresStorage) StoreMessage(ctx context.Context, mailbox *storage.Mai
 		INSERT INTO stored_messages (
 			mailbox_id, sequence_number, message_id, recipient_peer_id,
 			sender_peer_id, payload, priority, created_at, expires_at,
-			hop_count, flags_bitmap, persistent, folder_path
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
+			hop_count, flags_bitmap, sf_flags, persistent, folder_path
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
 		mailbox.ID, seq, msg.MessageID, msg.RecipientPeerID,
 		msg.SenderPeerID, msg.Payload, int(msg.Priority),
 		time.UnixMilli(msg.CreatedTimestamp),
 		time.UnixMilli(msg.ExpiryTimestamp),
-		msg.HopCount, uint32(msg.MsgFlags), msg.Persistent, msg.FolderPath,
+		msg.HopCount, uint32(msg.MsgFlags), uint32(msg.Flags), msg.Persistent, msg.FolderPath,
 	)
 	if err != nil {
 		return 0, fmt.Errorf("store message: %w", err)
@@ -270,7 +270,7 @@ func (s *PostgresStorage) RetrieveMessages(ctx context.Context, mailbox *storage
 	query := fmt.Sprintf(`
 		SELECT id, mailbox_id, sequence_number, message_id, recipient_peer_id,
 			   sender_peer_id, payload, priority, created_at, expires_at,
-			   hop_count, flags_bitmap, persistent, folder_path
+			   hop_count, flags_bitmap, sf_flags, persistent, folder_path
 		FROM stored_messages
 		WHERE %s
 		ORDER BY priority DESC, sequence_number ASC`,
@@ -1106,13 +1106,14 @@ func scanMessage(rows pgx.Rows) (*core.Message, error) {
 		expiresAt     time.Time
 		hopCount      int
 		flagsBitmap   uint32
+		sfFlags       uint32
 		persistent    bool
 		folderPath    *string
 	)
 
 	err := rows.Scan(&id, &mailboxID, &seqNum, &msgID, &recipientID,
 		&senderID, &payload, &priority, &createdAt, &expiresAt,
-		&hopCount, &flagsBitmap, &persistent, &folderPath)
+		&hopCount, &flagsBitmap, &sfFlags, &persistent, &folderPath)
 	if err != nil {
 		return nil, fmt.Errorf("scan message: %w", err)
 	}
@@ -1125,7 +1126,7 @@ func scanMessage(rows pgx.Rows) (*core.Message, error) {
 		Priority:         core.MessagePriority(priority),
 		ExpiryTimestamp:  expiresAt.UnixMilli(),
 		HopCount:         hopCount,
-		Flags:            core.FlagNone,
+		Flags:            core.SFMessageFlags(sfFlags),
 		CreatedTimestamp: createdAt.UnixMilli(),
 		SequenceNumber:   uint64(seqNum),
 		MsgFlags:         core.MessageFlags(flagsBitmap),

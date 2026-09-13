@@ -40,7 +40,10 @@ CREATE TABLE IF NOT EXISTS stored_messages (
     created_at TIMESTAMPTZ NOT NULL,
     expires_at TIMESTAMPTZ NOT NULL,
     hop_count INTEGER NOT NULL DEFAULT 0,
-    flags_bitmap INTEGER NOT NULL DEFAULT 0,
+    flags_bitmap INTEGER NOT NULL DEFAULT 0,  -- IMAP-style MessageFlags (\Seen, \Deleted, ...)
+    -- Protocol-level SFMessageFlags: encrypted, compressed, signed. Set by the
+    -- sender and needed verbatim by the recipient to undo what the sender did.
+    sf_flags INTEGER NOT NULL DEFAULT 0,
     persistent BOOLEAN NOT NULL DEFAULT FALSE,
     folder_path TEXT,
     
@@ -367,6 +370,16 @@ WHERE m.current_sequence < COALESCE(
 -- deliberately not added: databases predating this change may already hold
 -- duplicates, and the constraint would fail to build against them. Add it once
 -- a deployment has verified it is clean.
+
+-- stored_messages.sf_flags (added 2026-09): the protocol-level flags a sender
+-- sets (encrypted, compressed) were never stored -- only the IMAP flags were --
+-- and retrieval returned every message with flags = 0. A client that had
+-- encrypted a message therefore got its own ciphertext back with nothing to
+-- say it was ciphertext, and never decrypted it. Rows predating this column
+-- keep 0, which is the honest value: whatever flags they were sent with are
+-- unrecoverable.
+ALTER TABLE stored_messages
+    ADD COLUMN IF NOT EXISTS sf_flags INTEGER NOT NULL DEFAULT 0;
 
 -- =============================================================================
 -- PERMISSIONS
