@@ -8,15 +8,8 @@ on:
 permissions:
   contents: read
 
-# go.mod replaces three modules with sibling checkouts (../go-p2p-forge,
-# ../go-udx, ../go-libp2p-udx-transport). Until those repos carry tags and
-# the replace directives go, the job checks each one out beside this repo at
-# the commit the code is built against. Bump a ref here when go.mod moves.
 env:
   GOTOOLCHAIN: local
-  FORGE_REF: ea09be1
-  GO_UDX_REF: 157a4aa
-  UDX_TRANSPORT_REF: 526d79f
 
 jobs:
   build-and-test:
@@ -36,45 +29,22 @@ jobs:
           --health-retries 10
     steps:
       - uses: actions/checkout@v4
-        with:
-          path: go-ricochet
-      - uses: actions/checkout@v4
-        with:
-          repository: twostack/go-p2p-forge
-          ref: ${{ env.FORGE_REF }}
-          path: go-p2p-forge
-      - uses: actions/checkout@v4
-        with:
-          repository: stephanfeb/go-udx
-          ref: ${{ env.GO_UDX_REF }}
-          path: go-udx
-      - uses: actions/checkout@v4
-        with:
-          repository: stephanfeb/go-libp2p-udx-transport
-          ref: ${{ env.UDX_TRANSPORT_REF }}
-          path: go-libp2p-udx-transport
-
       - uses: actions/setup-go@v5
         with:
-          go-version-file: go-ricochet/go.mod
-          cache-dependency-path: go-ricochet/go.sum
+          go-version-file: go.mod
 
       - name: Build
-        working-directory: go-ricochet
         run: go build ./...
 
       - name: Vet
-        working-directory: go-ricochet
         run: go vet ./...
 
       - name: Load schema
-        working-directory: go-ricochet
         env:
           PGPASSWORD: testpw
         run: psql -h localhost -U ricochet -d ricochet_test -v ON_ERROR_STOP=1 -f schema.sql
 
       - name: Test
-        working-directory: go-ricochet
         env:
           RICOCHET_TEST_POSTGRES_DSN: postgres://ricochet:testpw@localhost:5432/ricochet_test?sslmode=disable
         run: go test -count=1 ./...

@@ -248,6 +248,10 @@ github.com/smartystreets/goconvey v1.7.2 h1:9RBaZCeXEQ3UselpuwUQHltGVXvdwm6cv1hg
 github.com/smartystreets/goconvey v1.7.2/go.mod h1:Vw0tHAZW6lzCRk3xgdin6fKYcG+G3Pg9vgXWeJpQFMM=
 github.com/spaolacci/murmur3 v1.1.0 h1:7c1g84S4BPRrfL5Xrdp6fOJ206sU9y293DDHaoy0bLI=
 github.com/spaolacci/murmur3 v1.1.0/go.mod h1:JwIasOWyU6f++ZhiEuf87xNszmSA2myDM2Kzu9HwQUA=
+github.com/stephanfeb/go-libp2p-udx-transport v0.1.0 h1:ude7tsODXy3DdnnAyk7m4JIjGo2sd6hEwBrUuJ4TLsI=
+github.com/stephanfeb/go-libp2p-udx-transport v0.1.0/go.mod h1:gipEcmGwDNNZ7MdJfFYtAmlDOpSH3oWc02lidGPmOXo=
+github.com/stephanfeb/go-udx v0.1.0 h1:HfAgddCj+SYWppMniqDyYMaVHqh6p45az4sASsQZYT4=
+github.com/stephanfeb/go-udx v0.1.0/go.mod h1:j7htlIJ9JspKQ+x4bUKZHsJotuZ8SqrzPSQRGyMS0WU=
 github.com/stretchr/objx v0.1.0/go.mod h1:HFkY916IF+rwdDfMAkV7OtwuqBVzrE8GR6GFx+wExME=
 github.com/stretchr/objx v0.4.0/go.mod h1:YvHI0jy2hoMjB+UWwv71VJQ9isScKT/TqJzVSSt89Yw=
 github.com/stretchr/objx v0.5.0/go.mod h1:Yh+to48EsGEfYuaHDzXPcE3xhTkx73EhmCGUpEOglKo=
@@ -260,6 +264,8 @@ github.com/stretchr/testify v1.8.3/go.mod h1:sz/lmYIOXD/1dqDmKjjqLyZ2RngseejIcXl
 github.com/stretchr/testify v1.8.4/go.mod h1:sz/lmYIOXD/1dqDmKjjqLyZ2RngseejIcXlSw2iwfAo=
 github.com/stretchr/testify v1.11.1 h1:7s2iGBzp5EwR7/aIZr8ao5+dra3wiQyKjjFuvgVKu7U=
 github.com/stretchr/testify v1.11.1/go.mod h1:wZwfW3scLgRK+23gO65QZefKpKQRnfz6sD981Nm4B6U=
+github.com/twostack/go-p2p-forge v0.1.0 h1:0j3TlcsS6m/j1T2YtSsFnmby9Udhwsmm83iWnHL4Mqs=
+github.com/twostack/go-p2p-forge v0.1.0/go.mod h1:wsi9EHj24NtlTyfSjxhnXQKEd0p+h1EhHpdRhNuttZI=
 github.com/urfave/cli v1.22.10/go.mod h1:Gos4lmkARVdJ6EkW0WaNv/tZAAMe9V7XWyB60NtXRu0=
 github.com/warpfork/go-wish v0.0.0-20220906213052-39a1cc7a02d0 h1:GDDkbFiaK8jsSDJfjId/PEGEShv6ugrt4kYsC5UIDaQ=
 github.com/warpfork/go-wish v0.0.0-20220906213052-39a1cc7a02d0/go.mod h1:x6AKhvSSexNrVSrViXSHUEbICjmGXhtgABaHIySUSGw=

@@ -2,12 +2,7 @@ module github.com/twostack/go-ricochet
 
 go 1.25
 
-replace (
-	github.com/libp2p/go-libp2p-kad-dht => github.com/libp2p/go-libp2p-kad-dht v0.37.1
-	github.com/stephanfeb/go-libp2p-udx-transport => ../go-libp2p-udx-transport
-	github.com/stephanfeb/go-udx => ../go-udx
-	github.com/twostack/go-p2p-forge => ../go-p2p-forge
-)
+replace github.com/libp2p/go-libp2p-kad-dht => github.com/libp2p/go-libp2p-kad-dht v0.37.1
 
 require (
 	filippo.io/edwards25519 v1.1.0
@@ -19,8 +14,8 @@ require (
 	github.com/pierrec/lz4/v4 v4.1.25
 	github.com/prometheus/client_golang v1.23.2
 	github.com/prometheus/client_model v0.6.2
-	github.com/stephanfeb/go-libp2p-udx-transport v0.0.0-00010101000000-000000000000
-	github.com/twostack/go-p2p-forge v0.0.0-20260227112649-b6b924931356
+	github.com/stephanfeb/go-libp2p-udx-transport v0.1.0
+	github.com/twostack/go-p2p-forge v0.1.0
 	golang.org/x/crypto v0.47.0
 	gopkg.in/yaml.v3 v3.0.1
 )
@@ -111,7 +106,7 @@ require (
 	github.com/quic-go/quic-go v0.59.0 // indirect
 	github.com/quic-go/webtransport-go v0.10.0 // indirect
 	github.com/spaolacci/murmur3 v1.1.0 // indirect
-	github.com/stephanfeb/go-udx v0.0.0-00010101000000-000000000000 // indirect
+	github.com/stephanfeb/go-udx v0.1.0 // indirect
 	github.com/whyrusleeping/go-keyspace v0.0.0-20160322163242-5b898ac5add1 // indirect
 	github.com/wlynxg/anet v0.0.5 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
