@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -50,7 +51,14 @@ type Registry struct {
 	mu        sync.RWMutex
 	logger    *slog.Logger
 	cancel    context.CancelFunc
+
+	// rejected counts announcements refused because they were malformed or
+	// named a server other than their signer.
+	rejected atomic.Int64
 }
+
+// RejectedAnnouncements reports how many announcements were refused.
+func (r *Registry) RejectedAnnouncements() int64 { return r.rejected.Load() }
 
 // NewRegistry creates a new service registry.
 func NewRegistry(n *node.Node, cfg *core.ServerConfig, ownPeerID peer.ID, logger *slog.Logger) *Registry {
@@ -143,6 +151,7 @@ func (r *Registry) GetStats() map[string]any {
 	return map[string]any{
 		"total_known":      len(r.servers),
 		"available":        available,
+		"rejected":         r.rejected.Load(),
 		"own_peer_id":      r.ownPeerID.String(),
 		"announce_topic":   AnnounceTopic,
 		"heartbeat_topic":  HeartbeatTopic,
@@ -214,28 +223,40 @@ func (r *Registry) subscriptionLoop(ctx context.Context) {
 			continue
 		}
 
-		// Ignore our own messages.
-		if msg.ReceivedFrom == r.ownPeerID {
+		// GetFrom is the peer that signed the message, which GossipSub
+		// verified (the node runs StrictSign); ReceivedFrom is only the
+		// neighbour that relayed it.
+		from := msg.GetFrom()
+		if from == r.ownPeerID {
 			continue
 		}
-
-		var info SFServerInfo
-		if err := json.Unmarshal(msg.Data, &info); err != nil {
-			r.logger.Warn("failed to decode announcement",
-				"from", msg.ReceivedFrom,
-				"error", err,
-			)
-			continue
+		if err := r.handleAnnouncement(from, msg.Data); err != nil {
+			r.rejected.Add(1)
+			r.logger.Warn("rejected announcement", "from", from, "error", err)
 		}
-
-		r.mu.Lock()
-		r.servers[info.ServerID.String()] = &info
-		r.mu.Unlock()
-
-		r.logger.Debug("discovered server",
-			"peer_id", info.ServerID,
-			"regions", info.Regions,
-			"uptime_score", info.UptimeScore,
-		)
 	}
+}
+
+// handleAnnouncement stores an announcement signed by from. The entry is
+// keyed by the signer, and a payload naming any other server is refused:
+// otherwise any peer on the topic could overwrite another server's entry.
+func (r *Registry) handleAnnouncement(from peer.ID, data []byte) error {
+	var info SFServerInfo
+	if err := json.Unmarshal(data, &info); err != nil {
+		return fmt.Errorf("decode announcement: %w", err)
+	}
+	if info.ServerID != from {
+		return fmt.Errorf("announcement for %s signed by %s", info.ServerID, from)
+	}
+
+	r.mu.Lock()
+	r.servers[from.String()] = &info
+	r.mu.Unlock()
+
+	r.logger.Debug("discovered server",
+		"peer_id", info.ServerID,
+		"regions", info.Regions,
+		"uptime_score", info.UptimeScore,
+	)
+	return nil
 }

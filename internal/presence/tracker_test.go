@@ -83,3 +83,49 @@ func TestTrackerReassemblesPagedHeartbeat(t *testing.T) {
 		t.Fatalf("%d partial sequences left pending, want 0", len(tracker.partial))
 	}
 }
+
+// A presence message counts only when its verified signer is the server the
+// topic belongs to and the payload names that same server.
+func TestTrackerIgnoresPresenceFromAnotherPublisher(t *testing.T) {
+	ids := randomPeerIDs(t, 3)
+	server, impostor, contact := ids[0], ids[1], ids[2]
+
+	tracker := NewTracker(nil, NewCache(time.Hour), slog.New(slog.NewTextHandler(io.Discard, nil)))
+	tracker.AddContact(contact)
+
+	online := func(claimedServer peer.ID) []byte {
+		ev := &PresenceEvent{ServerID: claimedServer, Timestamp: time.Now(),
+			Changes: []PresenceChange{{PeerID: contact, State: Online, TTLSeconds: 60}}}
+		data, err := ev.Encode()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return data
+	}
+
+	if err := tracker.handleMessage(impostor, server, online(server)); err == nil {
+		t.Fatal("event signed by another peer on the server's topic was accepted")
+	}
+	if err := tracker.handleMessage(server, server, online(impostor)); err == nil {
+		t.Fatal("event naming another server was accepted")
+	}
+	if got := tracker.GetPresence(contact); got != Unknown {
+		t.Fatalf("contact = %v after rejected events, want Unknown", got)
+	}
+
+	if err := tracker.handleMessage(server, server, online(server)); err != nil {
+		t.Fatalf("genuine event rejected: %v", err)
+	}
+	if got := tracker.GetPresence(contact); got != Online {
+		t.Fatalf("contact = %v after the server's own event, want Online", got)
+	}
+
+	hb := &PresenceHeartbeat{ServerID: impostor, OnlinePeerIDs: nil}
+	data, _ := hb.Encode()
+	if err := tracker.handleMessage(server, server, data); err == nil {
+		t.Fatal("heartbeat naming another server was accepted")
+	}
+	if got := tracker.GetPresence(contact); got != Online {
+		t.Fatalf("contact = %v after a rejected heartbeat, want Online", got)
+	}
+}

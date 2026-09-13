@@ -2,6 +2,7 @@ package presence
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"sync"
 	"time"
@@ -82,7 +83,7 @@ func (t *Tracker) SubscribeToServer(ctx context.Context, serverID peer.ID) error
 	t.cancel = cancel
 	t.mu.Unlock()
 
-	go t.subscriptionLoop(ctx, topic)
+	go t.subscriptionLoop(ctx, topic, serverID)
 
 	t.logger.Info("subscribed to presence", "server", serverID, "topic", topic)
 	return nil
@@ -122,7 +123,7 @@ func (t *Tracker) Stop() {
 	t.logger.Info("presence tracker stopped")
 }
 
-func (t *Tracker) subscriptionLoop(ctx context.Context, topic string) {
+func (t *Tracker) subscriptionLoop(ctx context.Context, topic string, serverID peer.ID) {
 	sub := t.node.Subscribe(topic)
 	if sub == nil {
 		t.logger.Error("no subscription for presence topic", "topic", topic)
@@ -139,31 +140,47 @@ func (t *Tracker) subscriptionLoop(ctx context.Context, topic string) {
 			continue
 		}
 
-		t.handleMessage(msg.Data)
+		// GetFrom is the verified signer (the node runs StrictSign), not
+		// the neighbour that relayed the message.
+		if err := t.handleMessage(msg.GetFrom(), serverID, msg.Data); err != nil {
+			t.logger.Warn("rejected presence message", "topic", topic, "from", msg.GetFrom(), "error", err)
+		}
 	}
 }
 
-func (t *Tracker) handleMessage(data []byte) {
-	msgType := DetectMessageType(data)
+// handleMessage applies a presence message signed by from on the topic of
+// serverID. The topic is open to any publisher, so only the server the topic
+// belongs to may speak on it, and the payload must name that same server;
+// otherwise any peer could announce presence for peers it does not have.
+func (t *Tracker) handleMessage(from, serverID peer.ID, data []byte) error {
+	if from != serverID {
+		return fmt.Errorf("published by %s on the topic of %s", from, serverID)
+	}
 
+	msgType := DetectMessageType(data)
 	switch msgType {
 	case "event":
 		event, err := DecodePresenceEvent(data)
 		if err != nil {
-			t.logger.Warn("failed to decode presence event", "error", err)
-			return
+			return fmt.Errorf("decode presence event: %w", err)
+		}
+		if event.ServerID != from {
+			return fmt.Errorf("event names server %s, signed by %s", event.ServerID, from)
 		}
 		t.processEvent(event)
 	case "heartbeat":
 		hb, err := DecodePresenceHeartbeat(data)
 		if err != nil {
-			t.logger.Warn("failed to decode presence heartbeat", "error", err)
-			return
+			return fmt.Errorf("decode presence heartbeat: %w", err)
+		}
+		if hb.ServerID != from {
+			return fmt.Errorf("heartbeat names server %s, signed by %s", hb.ServerID, from)
 		}
 		t.processHeartbeat(hb)
 	default:
 		t.logger.Debug("unknown presence message type", "type", msgType)
 	}
+	return nil
 }
 
 func (t *Tracker) processEvent(event *PresenceEvent) {
