@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/twostack/go-ricochet/internal/core"
+	"github.com/twostack/go-ricochet/pkg/wire"
 )
 
 func TestCompressDecompressRoundTrip(t *testing.T) {
@@ -17,7 +17,7 @@ func TestCompressDecompressRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("compress: %v", err)
 	}
-	if flags&core.FlagCompressed == 0 {
+	if flags&wire.FlagCompressed == 0 {
 		t.Fatal("expected FlagCompressed to be set")
 	}
 	if len(compressed) >= len(payload) {
@@ -40,7 +40,7 @@ func TestCompressBelowThreshold(t *testing.T) {
 	if err != nil {
 		t.Fatalf("compress: %v", err)
 	}
-	if flags&core.FlagCompressed != 0 {
+	if flags&wire.FlagCompressed != 0 {
 		t.Error("should not set FlagCompressed for below-threshold payload")
 	}
 	if !bytes.Equal(result, payload) {
@@ -60,7 +60,7 @@ func TestCompressIncompressibleData(t *testing.T) {
 		t.Fatalf("compress: %v", err)
 	}
 	// Should either pass through uncompressed or compress (both valid).
-	if flags&core.FlagCompressed == 0 {
+	if flags&wire.FlagCompressed == 0 {
 		if !bytes.Equal(result, payload) {
 			t.Error("uncompressed result should equal original")
 		}
@@ -79,7 +79,7 @@ func TestDecompressNotCompressed(t *testing.T) {
 }
 
 func TestDecompressTooShort(t *testing.T) {
-	_, err := DecompressPayload([]byte{1, 2}, core.FlagCompressed, MaxDecompressedSize)
+	_, err := DecompressPayload([]byte{1, 2}, wire.FlagCompressed, MaxDecompressedSize)
 	if err == nil {
 		t.Error("expected error for too-short compressed payload")
 	}
@@ -92,7 +92,7 @@ func TestDecompressExceedsMaxSize(t *testing.T) {
 	payload[1] = 0xFF
 	payload[2] = 0xFF
 	payload[3] = 0xFF
-	_, err := DecompressPayload(payload, core.FlagCompressed, 1024)
+	_, err := DecompressPayload(payload, wire.FlagCompressed, 1024)
 	if err == nil {
 		t.Error("expected error for oversized decompressed payload")
 	}

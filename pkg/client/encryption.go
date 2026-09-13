@@ -12,7 +12,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 	"golang.org/x/crypto/nacl/box"
 
-	"github.com/twostack/go-ricochet/internal/core"
+	"github.com/twostack/go-ricochet/pkg/wire"
 )
 
 const nonceSize = 24
@@ -82,7 +82,7 @@ func PeerIDToX25519PublicKey(id peer.ID) ([32]byte, error) {
 //
 // The sender's Ed25519 private key and the recipient's peer ID are used to
 // derive the shared secret via X25519.
-func EncryptPayload(payload []byte, recipientPeerID peer.ID, senderPrivKey crypto.PrivKey) ([]byte, core.SFMessageFlags, error) {
+func EncryptPayload(payload []byte, recipientPeerID peer.ID, senderPrivKey crypto.PrivKey) ([]byte, wire.SFMessageFlags, error) {
 	// Convert sender's private key to X25519.
 	edPriv, err := libp2pKeyToEd25519(senderPrivKey)
 	if err != nil {
@@ -105,7 +105,7 @@ func EncryptPayload(payload []byte, recipientPeerID peer.ID, senderPrivKey crypt
 	// Encrypt: prepend nonce, then box.Seal appends ciphertext.
 	encrypted := box.Seal(nonce[:], payload, &nonce, &recipientX, &senderX)
 
-	return encrypted, core.FlagEncrypted, nil
+	return encrypted, wire.FlagEncrypted, nil
 }
 
 // DecryptPayload decrypts a NaCl box encrypted payload.

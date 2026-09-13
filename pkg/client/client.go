@@ -15,12 +15,12 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/core/protocol"
 
-	"github.com/twostack/go-ricochet/internal/core"
 	"github.com/twostack/go-ricochet/internal/protocol/frame"
 	"github.com/twostack/go-ricochet/internal/protocol/maa"
 	"github.com/twostack/go-ricochet/internal/protocol/mma"
 	"github.com/twostack/go-ricochet/internal/protocol/msa"
 	"github.com/twostack/go-ricochet/internal/protocol/sda"
+	"github.com/twostack/go-ricochet/pkg/wire"
 )
 
 // Client provides access to Ricochet store-and-forward services over libp2p streams.
@@ -161,7 +161,7 @@ func (c *Client) openStream(ctx context.Context, serverID peer.ID, pid protocol.
 // prepareMessage builds the wire message for a submission, applying the send
 // options along with compression and encryption. Shared by SendMessage and
 // SendMessages so a batched submission is byte-identical to an individual one.
-func (c *Client) prepareMessage(recipient peer.ID, payload []byte, opts []SendOption) (*core.Message, error) {
+func (c *Client) prepareMessage(recipient peer.ID, payload []byte, opts []SendOption) (*wire.Message, error) {
 	cfg := sendConfig{
 		Priority: PriorityNormal,
 	}
@@ -169,7 +169,7 @@ func (c *Client) prepareMessage(recipient peer.ID, payload []byte, opts []SendOp
 		o(&cfg)
 	}
 
-	msg := core.NewMessageWithDefaultExpiry(c.host.ID(), recipient, payload)
+	msg := wire.NewMessageWithDefaultExpiry(c.host.ID(), recipient, payload)
 	msg.Priority = cfg.Priority
 	msg.FolderPath = cfg.FolderPath
 	msg.Persistent = cfg.Persistent
@@ -219,7 +219,7 @@ func (c *Client) SendMessage(ctx context.Context, recipient peer.ID, payload []b
 // marks it forwarded and advances its hop count. Servers accept forwarded
 // submissions only from peers they list as trusted, with forwarding enabled;
 // otherwise the result carries a 403.
-func (c *Client) ForwardMessage(ctx context.Context, msg *core.Message) (*SendResult, error) {
+func (c *Client) ForwardMessage(ctx context.Context, msg *wire.Message) (*SendResult, error) {
 	if msg == nil {
 		return nil, fmt.Errorf("forward: nil message")
 	}
@@ -227,7 +227,7 @@ func (c *Client) ForwardMessage(ctx context.Context, msg *core.Message) (*SendRe
 }
 
 // submit writes one message to the selected server and reads its ack.
-func (c *Client) submit(ctx context.Context, msg *core.Message) (*SendResult, error) {
+func (c *Client) submit(ctx context.Context, msg *wire.Message) (*SendResult, error) {
 	msgData, err := frame.EncodeMessage(msg)
 	if err != nil {
 		return nil, fmt.Errorf("encode message: %w", err)
@@ -391,7 +391,7 @@ func (c *Client) SendMessages(ctx context.Context, msgs []BatchMessage) ([]Batch
 
 // RetrieveMessages retrieves messages from the server. By default it retrieves
 // messages for the client's own peer ID from the inbox folder.
-func (c *Client) RetrieveMessages(ctx context.Context, opts ...RetrieveOption) ([]*core.Message, error) {
+func (c *Client) RetrieveMessages(ctx context.Context, opts ...RetrieveOption) ([]*wire.Message, error) {
 	page, err := c.RetrievePage(ctx, opts...)
 	if err != nil {
 		return nil, err
@@ -407,7 +407,7 @@ func (c *Client) RetrieveMessages(ctx context.Context, opts ...RetrieveOption) (
 // number would return more. Retrieval is not consumption: the same messages
 // come back until they are marked delivered, deleted or expire.
 type RetrievePage struct {
-	Messages []*core.Message
+	Messages []*wire.Message
 	HasMore  bool
 }
 
@@ -424,7 +424,7 @@ func (c *Client) RetrievePage(ctx context.Context, opts ...RetrieveOption) (*Ret
 		targetPeerID = *cfg.TargetPeerID
 	}
 
-	req := &core.RetrieveRequest{
+	req := &wire.RetrieveRequest{
 		PeerID:       targetPeerID.String(),
 		FolderPath:   cfg.FolderPath,
 		FromSequence: cfg.FromSequence,
@@ -489,7 +489,7 @@ func (c *Client) RetrievePage(ctx context.Context, opts ...RetrieveOption) (*Ret
 				return nil, fmt.Errorf("decrypt message %s: %w", msg.MessageID, err)
 			}
 			msg.Payload = decrypted
-			msg.Flags = msg.Flags.WithoutFlag(core.FlagEncrypted)
+			msg.Flags = msg.Flags.WithoutFlag(wire.FlagEncrypted)
 		}
 		if msg.Flags.IsCompressed() {
 			decompressed, err := DecompressPayload(msg.Payload, msg.Flags, MaxDecompressedSize)
@@ -497,7 +497,7 @@ func (c *Client) RetrievePage(ctx context.Context, opts ...RetrieveOption) (*Ret
 				return nil, fmt.Errorf("decompress message %s: %w", msg.MessageID, err)
 			}
 			msg.Payload = decompressed
-			msg.Flags = msg.Flags.WithoutFlag(core.FlagCompressed)
+			msg.Flags = msg.Flags.WithoutFlag(wire.FlagCompressed)
 		}
 	}
 
@@ -505,8 +505,8 @@ func (c *Client) RetrievePage(ctx context.Context, opts ...RetrieveOption) (*Ret
 }
 
 // MarkDelivered marks the given message IDs as delivered (seen) on the server.
-func (c *Client) MarkDelivered(ctx context.Context, messageIDs []string) (*core.MarkDeliveredAck, error) {
-	req := &core.MarkDeliveredRequest{
+func (c *Client) MarkDelivered(ctx context.Context, messageIDs []string) (*wire.MarkDeliveredAck, error) {
+	req := &wire.MarkDeliveredRequest{
 		OperationType: "markDelivered",
 		MessageIDs:    messageIDs,
 	}
@@ -549,8 +549,8 @@ func (c *Client) MarkDelivered(ctx context.Context, messageIDs []string) (*core.
 }
 
 // UpdateFlags updates IMAP-style flags on a message.
-func (c *Client) UpdateFlags(ctx context.Context, messageID string, addFlags, removeFlags uint32) (*core.UpdateFlagsAck, error) {
-	req := &core.UpdateFlagsRequest{
+func (c *Client) UpdateFlags(ctx context.Context, messageID string, addFlags, removeFlags uint32) (*wire.UpdateFlagsAck, error) {
+	req := &wire.UpdateFlagsRequest{
 		OperationType: "updateFlags",
 		MessageID:     messageID,
 		AddFlags:      addFlags,
@@ -595,13 +595,13 @@ func (c *Client) UpdateFlags(ctx context.Context, messageID string, addFlags, re
 }
 
 // Expunge deletes all messages with the \Deleted flag in the client's mailbox.
-func (c *Client) Expunge(ctx context.Context, opts ...ExpungeOption) (*core.ExpungeAck, error) {
+func (c *Client) Expunge(ctx context.Context, opts ...ExpungeOption) (*wire.ExpungeAck, error) {
 	cfg := expungeConfig{}
 	for _, o := range opts {
 		o(&cfg)
 	}
 
-	req := &core.ExpungeRequest{
+	req := &wire.ExpungeRequest{
 		OperationType: "expunge",
 		PeerID:        c.host.ID().String(),
 		FolderPath:    cfg.FolderPath,
@@ -645,8 +645,8 @@ func (c *Client) Expunge(ctx context.Context, opts ...ExpungeOption) (*core.Expu
 }
 
 // DeleteMessages immediately deletes messages by their IDs.
-func (c *Client) DeleteMessages(ctx context.Context, messageIDs []string) (*core.DeleteMessagesAck, error) {
-	req := &core.DeleteMessagesRequest{
+func (c *Client) DeleteMessages(ctx context.Context, messageIDs []string) (*wire.DeleteMessagesAck, error) {
+	req := &wire.DeleteMessagesRequest{
 		OperationType: "deleteMessages",
 		MessageIDs:    messageIDs,
 	}
@@ -747,7 +747,7 @@ func (c *Client) doAdmin(ctx context.Context, req *mma.AdminRequest) (*mma.Admin
 }
 
 // CreateMailbox creates a new mailbox on the server.
-func (c *Client) CreateMailbox(ctx context.Context, folderPath string, mailboxType core.MailboxType, opts ...MailboxOption) error {
+func (c *Client) CreateMailbox(ctx context.Context, folderPath string, mailboxType wire.MailboxType, opts ...MailboxOption) error {
 	cfg := mailboxConfig{}
 	for _, o := range opts {
 		o(&cfg)
@@ -780,7 +780,7 @@ func (c *Client) DeleteMailbox(ctx context.Context, folderPath string) error {
 }
 
 // GrantAccess grants a peer access to a mailbox.
-func (c *Client) GrantAccess(ctx context.Context, folderPath string, grantee peer.ID, mode core.AccessMode) error {
+func (c *Client) GrantAccess(ctx context.Context, folderPath string, grantee peer.ID, mode wire.AccessMode) error {
 	req := &mma.AdminRequest{
 		OperationType: mma.OpGrantAccess,
 		OwnerPeerID:   c.host.ID().String(),
@@ -1059,7 +1059,7 @@ func (c *Client) GetDirectoryEntry(ctx context.Context, peerID peer.ID, opts ...
 }
 
 // QueryCapacity returns the server's capacity metrics.
-func (c *Client) QueryCapacity(ctx context.Context) (*core.ServerCapacity, error) {
+func (c *Client) QueryCapacity(ctx context.Context) (*wire.ServerCapacity, error) {
 	req := &mma.AdminRequest{
 		OperationType: mma.OpQueryCapacity,
 	}
@@ -1164,7 +1164,7 @@ func (c *Client) doDoc(ctx context.Context, req *sda.DocRequest, opts []DocOptio
 }
 
 // GetDocument retrieves a document by owner peer ID and path.
-func (c *Client) GetDocument(ctx context.Context, ownerPeerID peer.ID, path string, opts ...DocOption) (*core.DocumentResponse, error) {
+func (c *Client) GetDocument(ctx context.Context, ownerPeerID peer.ID, path string, opts ...DocOption) (*wire.DocumentResponse, error) {
 	req := &sda.DocRequest{
 		Operation:   sda.OpGET,
 		OwnerPeerID: ownerPeerID.String(),
@@ -1176,7 +1176,7 @@ func (c *Client) GetDocument(ctx context.Context, ownerPeerID peer.ID, path stri
 		return nil, err
 	}
 
-	result := &core.DocumentResponse{
+	result := &wire.DocumentResponse{
 		Status: resp.Status,
 	}
 
@@ -1202,7 +1202,7 @@ func (c *Client) GetDocument(ctx context.Context, ownerPeerID peer.ID, path stri
 }
 
 // PutDocument creates or replaces a document.
-func (c *Client) PutDocument(ctx context.Context, ownerPeerID peer.ID, path string, content []byte, opts ...DocOption) (*core.DocumentPutResponse, error) {
+func (c *Client) PutDocument(ctx context.Context, ownerPeerID peer.ID, path string, content []byte, opts ...DocOption) (*wire.DocumentPutResponse, error) {
 	req := &sda.DocRequest{
 		Operation:   sda.OpPUT,
 		OwnerPeerID: ownerPeerID.String(),
@@ -1220,7 +1220,7 @@ func (c *Client) PutDocument(ctx context.Context, ownerPeerID peer.ID, path stri
 		return nil, responseError("document put", resp.Status, resp.Headers)
 	}
 
-	result := &core.DocumentPutResponse{
+	result := &wire.DocumentPutResponse{
 		Status:  resp.Status,
 		Created: resp.Status == sda.StatusCreated,
 	}
@@ -1236,7 +1236,7 @@ func (c *Client) PutDocument(ctx context.Context, ownerPeerID peer.ID, path stri
 }
 
 // PatchDocument applies a partial update (merge-patch) to a document.
-func (c *Client) PatchDocument(ctx context.Context, ownerPeerID peer.ID, path string, patch map[string]any, opts ...DocOption) (*core.DocumentPutResponse, error) {
+func (c *Client) PatchDocument(ctx context.Context, ownerPeerID peer.ID, path string, patch map[string]any, opts ...DocOption) (*wire.DocumentPutResponse, error) {
 	patchBytes, err := json.Marshal(patch)
 	if err != nil {
 		return nil, fmt.Errorf("marshal patch: %w", err)
@@ -1257,7 +1257,7 @@ func (c *Client) PatchDocument(ctx context.Context, ownerPeerID peer.ID, path st
 		return nil, err
 	}
 
-	result := &core.DocumentPutResponse{
+	result := &wire.DocumentPutResponse{
 		Status: resp.Status,
 	}
 
@@ -1272,7 +1272,7 @@ func (c *Client) PatchDocument(ctx context.Context, ownerPeerID peer.ID, path st
 }
 
 // HeadDocument retrieves metadata for a document without its body.
-func (c *Client) HeadDocument(ctx context.Context, ownerPeerID peer.ID, path string, opts ...DocOption) (*core.DocumentMetadata, error) {
+func (c *Client) HeadDocument(ctx context.Context, ownerPeerID peer.ID, path string, opts ...DocOption) (*wire.DocumentMetadata, error) {
 	req := &sda.DocRequest{
 		Operation:   sda.OpHEAD,
 		OwnerPeerID: ownerPeerID.String(),
@@ -1288,7 +1288,7 @@ func (c *Client) HeadDocument(ctx context.Context, ownerPeerID peer.ID, path str
 		return nil, fmt.Errorf("document not found")
 	}
 
-	result := &core.DocumentMetadata{}
+	result := &wire.DocumentMetadata{}
 
 	if etag, ok := resp.Headers["ETag"]; ok {
 		result.ETag, _ = etag.(string)
@@ -1485,9 +1485,9 @@ func BatchDocuments(docs []BatchDocumentPut) [][]BatchDocumentPut {
 // The server pages listings, so this walks the cursor until it is exhausted and
 // returns the complete set -- the contract callers already relied on when
 // listing was unbounded server-side.
-func (c *Client) ListDocuments(ctx context.Context, ownerPeerID peer.ID, opts ...DocOption) ([]core.DocumentInfo, error) {
+func (c *Client) ListDocuments(ctx context.Context, ownerPeerID peer.ID, opts ...DocOption) ([]wire.DocumentInfo, error) {
 	var (
-		infos  []core.DocumentInfo
+		infos  []wire.DocumentInfo
 		cursor string
 	)
 
@@ -1506,7 +1506,7 @@ func (c *Client) ListDocuments(ctx context.Context, ownerPeerID peer.ID, opts ..
 
 // listDocumentPage fetches one page and returns the cursor for the next one, or
 // "" when the listing is complete.
-func (c *Client) listDocumentPage(ctx context.Context, ownerPeerID peer.ID, cursor string, opts []DocOption) ([]core.DocumentInfo, string, error) {
+func (c *Client) listDocumentPage(ctx context.Context, ownerPeerID peer.ID, cursor string, opts []DocOption) ([]wire.DocumentInfo, string, error) {
 	req := &sda.DocRequest{
 		Operation:   sda.OpLIST,
 		OwnerPeerID: ownerPeerID.String(),
@@ -1531,7 +1531,7 @@ func (c *Client) listDocumentPage(ctx context.Context, ownerPeerID peer.ID, curs
 		return nil, "", fmt.Errorf("decode list body: %w", err)
 	}
 
-	// The server returns a list of docEntry objects; map them to core.DocumentInfo.
+	// The server returns a list of docEntry objects; map them to wire.DocumentInfo.
 	type docEntry struct {
 		Path          string `json:"path"`
 		ContentType   string `json:"contentType"`
@@ -1546,13 +1546,13 @@ func (c *Client) listDocumentPage(ctx context.Context, ownerPeerID peer.ID, curs
 		return nil, "", fmt.Errorf("unmarshal document list: %w", err)
 	}
 
-	infos := make([]core.DocumentInfo, 0, len(entries))
+	infos := make([]wire.DocumentInfo, 0, len(entries))
 	for _, e := range entries {
 		var lastMod int64
 		if t, err := time.Parse(time.RFC3339, e.UpdatedAt); err == nil {
 			lastMod = t.UnixMilli()
 		}
-		infos = append(infos, core.DocumentInfo{
+		infos = append(infos, wire.DocumentInfo{
 			Path:         e.Path,
 			ContentType:  e.ContentType,
 			Size:         e.Size,

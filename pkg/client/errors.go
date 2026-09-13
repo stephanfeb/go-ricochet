@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/twostack/go-ricochet/internal/protocol/maa"
-	"github.com/twostack/go-ricochet/internal/protocol/wire"
+	"github.com/twostack/go-ricochet/pkg/wire"
 )
 
 // Errors from this package carry the server's classification instead of

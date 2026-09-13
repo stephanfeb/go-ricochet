@@ -4,17 +4,17 @@ import (
 	"time"
 
 	"github.com/libp2p/go-libp2p/core/peer"
-	"github.com/twostack/go-ricochet/internal/core"
+	"github.com/twostack/go-ricochet/pkg/wire"
 )
 
 // MessagePriority is the priority level for a message.
-type MessagePriority = core.MessagePriority
+type MessagePriority = wire.MessagePriority
 
 const (
-	PriorityLow    = core.PriorityLow
-	PriorityNormal = core.PriorityNormal
-	PriorityHigh   = core.PriorityHigh
-	PriorityUrgent = core.PriorityUrgent
+	PriorityLow    = wire.PriorityLow
+	PriorityNormal = wire.PriorityNormal
+	PriorityHigh   = wire.PriorityHigh
+	PriorityUrgent = wire.PriorityUrgent
 )
 
 // SendOption configures SendMessage behavior.

@@ -1,4 +1,4 @@
-package core
+package wire
 
 import (
 	"encoding/base64"

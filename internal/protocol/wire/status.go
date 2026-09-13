@@ -24,26 +24,21 @@ import (
 	"github.com/twostack/go-ricochet/internal/capacity"
 	"github.com/twostack/go-ricochet/internal/mda/mailboxes"
 	"github.com/twostack/go-ricochet/internal/mta"
+	public "github.com/twostack/go-ricochet/pkg/wire"
 )
 
-// Status codes. They are HTTP's, because the semantics line up and every
-// client library and operator already knows them; SDA, SFA and SCA were
-// already using this vocabulary before this package existed.
+// Status codes are defined in pkg/wire, where clients can name them; they
+// are aliased here so the handlers keep reading wire.StatusX.
 const (
-	StatusOK                 = 200
-	StatusBadRequest         = 400
-	StatusForbidden          = 403
-	StatusNotFound           = 404
-	StatusConflict           = 409
-	StatusTooManyRequests    = 429
-	StatusInternalError      = 500
-	StatusServiceUnavailable = 503
-
-	// StatusInsufficientStorage is a full mailbox. It is distinct from a 503:
-	// the server is fine and retrying will not help until the owner drains
-	// the mailbox, so a client that treats it as backpressure would retry
-	// forever against a condition only the recipient can clear.
-	StatusInsufficientStorage = 507
+	StatusOK                  = public.StatusOK
+	StatusBadRequest          = public.StatusBadRequest
+	StatusForbidden           = public.StatusForbidden
+	StatusNotFound            = public.StatusNotFound
+	StatusConflict            = public.StatusConflict
+	StatusTooManyRequests     = public.StatusTooManyRequests
+	StatusInternalError       = public.StatusInternalError
+	StatusServiceUnavailable  = public.StatusServiceUnavailable
+	StatusInsufficientStorage = public.StatusInsufficientStorage
 )
 
 // Classify maps a pipeline or handler error onto the status a client should
@@ -146,4 +141,4 @@ func RetryAfterMs(d time.Duration) int64 {
 // protocols already have a headers map and no room for a new top-level field
 // without changing three response structs, so the hint travels as a header;
 // the mailbox protocols, whose responses are flat, carry it as a field.
-const RetryAfterHeaderKey = "Retry-After-Ms"
+const RetryAfterHeaderKey = public.RetryAfterHeaderKey

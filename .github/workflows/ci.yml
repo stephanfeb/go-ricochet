@@ -39,6 +39,9 @@ jobs:
       - name: Vet
         run: go vet ./...
 
+      - name: README examples compile from an external module
+        run: ./scripts/check-readme-examples.sh
+
       - name: Load schema
         env:
           PGPASSWORD: testpw

@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/twostack/go-ricochet/internal/protocol/maa"
-	"github.com/twostack/go-ricochet/internal/protocol/wire"
+	"github.com/twostack/go-ricochet/pkg/wire"
 )
 
 // The point of the whole file: a caller can tell the four conditions apart

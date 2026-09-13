@@ -111,7 +111,7 @@ to throwaway local runs.
 
 ## Client Library
 
-The `pkg/client` package provides a full-featured client for interacting with Ricochet servers.
+The `pkg/client` package provides a full-featured client for interacting with Ricochet servers. The message model it speaks (messages, flags, priorities, mailbox types, acknowledgements, notifications, status codes) is in `pkg/wire`, so both packages are importable from any module. The snippets below compile as written; CI checks them.
 
 ### Creating a Client
 
@@ -119,6 +119,7 @@ The `pkg/client` package provides a full-featured client for interacting with Ri
 import (
     "github.com/libp2p/go-libp2p"
     client "github.com/twostack/go-ricochet/pkg/client"
+    "github.com/twostack/go-ricochet/pkg/wire"
 )
 
 // Create a libp2p host
@@ -141,9 +142,9 @@ cl := client.New(h, client.Config{
 result, err := cl.SendMessage(ctx, recipientID, []byte("hello"))
 
 // With options
-result, err := cl.SendMessage(ctx, recipientID, payload,
+result, err = cl.SendMessage(ctx, recipientID, payload,
     client.WithFolderPath("orders"),
-    client.WithPriority(core.PriorityUrgent),
+    client.WithPriority(wire.PriorityUrgent),
     client.WithExpiry(24 * time.Hour),
     client.WithCompression(),       // LZ4, default 1KB threshold
     client.WithEncryption(),        // NaCl box E2E encryption
@@ -157,11 +158,11 @@ result, err := cl.SendMessage(ctx, recipientID, payload,
 messages, err := cl.RetrieveMessages(ctx)
 
 // With filters
-messages, err := cl.RetrieveMessages(ctx,
+messages, err = cl.RetrieveMessages(ctx,
     client.WithRetrieveFolderPath("orders"),
     client.WithFromSequence(100),
     client.WithMaxMessages(50),
-    client.WithMinPriority(core.PriorityHigh),
+    client.WithMinPriority(wire.PriorityHigh),
 )
 ```
 
@@ -181,31 +182,31 @@ for page.HasMore {
 }
 
 // Flag a message
-ack, err := cl.UpdateFlags(ctx, msg.MessageID, uint32(core.MsgFlagFlagged), 0)
+flagAck, err := cl.UpdateFlags(ctx, msg.MessageID, uint32(wire.MsgFlagFlagged), 0)
 
 // Mark for deletion
-ack, err := cl.UpdateFlags(ctx, msg.MessageID, uint32(core.MsgFlagDeleted), 0)
+flagAck, err = cl.UpdateFlags(ctx, msg.MessageID, uint32(wire.MsgFlagDeleted), 0)
 
 // Permanently remove deleted messages
-ack, err := cl.Expunge(ctx)
+expungeAck, err := cl.Expunge(ctx)
 
 // Immediate delete (bypasses flag/expunge)
-ack, err := cl.DeleteMessages(ctx, []string{msg.MessageID})
+deleteAck, err := cl.DeleteMessages(ctx, []string{msg.MessageID})
 ```
 
 ### Mailbox Management
 
 ```go
 // Create mailboxes
-cl.CreateMailbox(ctx, "invoices", core.MailboxPrivate)
-cl.CreateMailbox(ctx, "team-updates", core.MailboxShared)
-cl.CreateMailbox(ctx, "announcements", core.MailboxPublic,
+cl.CreateMailbox(ctx, "invoices", wire.MailboxPrivate)
+cl.CreateMailbox(ctx, "team-updates", wire.MailboxShared)
+cl.CreateMailbox(ctx, "announcements", wire.MailboxPublic,
     client.WithMailboxMaxMessages(500),
     client.WithRetentionDays(7),
 )
 
 // Access control
-cl.GrantAccess(ctx, "team-updates", colleaguePeerID, core.AccessReadWrite)
+cl.GrantAccess(ctx, "team-updates", colleaguePeerID, wire.AccessReadWrite)
 cl.RevokeAccess(ctx, "team-updates", colleaguePeerID)
 entries, _ := cl.ListACL(ctx, "team-updates")
 
@@ -258,7 +259,7 @@ deleted, err := cl.DeleteDocument(ctx, ownerID, "config/settings")
 ### Push Notifications
 
 ```go
-cl.RegisterNotificationHandler(func(n *notify.Notification) {
+cl.RegisterNotificationHandler(func(n *wire.Notification) {
     fmt.Printf("New message in %s (type: %s)\n",
         n.MailboxPath, n.MailboxType)
 })
@@ -472,7 +473,7 @@ Each concurrent worker creates its own libp2p host and client connection, avoidi
 
 ```bash
 # Run unit tests
-go test ./internal/core/... ./internal/protocol/... ./internal/mta/... ./pkg/client/...
+go test ./internal/core/... ./internal/protocol/... ./internal/mta/... ./pkg/...
 
 # Run integration tests (requires PostgreSQL)
 RICOCHET_TEST_POSTGRES_DSN="postgresql://user:pass@localhost:5432/ricochet_test?sslmode=disable" \

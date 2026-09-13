@@ -80,7 +80,7 @@ pkg/client/
 
 | Package | Test File | Coverage Target |
 |---------|-----------|----------------|
-| `internal/core` | `message_test.go` | Message creation, expiry, JSON round-trip, hop count, flags |
+| `pkg/wire` | `message_test.go` | Message creation, expiry, JSON round-trip, hop count, flags |
 | `internal/core` | `mailbox_test.go` | Address parsing, validation, FullPath formatting |
 | `internal/core` | `config_test.go` | Preset creation, validation, edge cases |
 | `internal/protocol/frame` | `frame_test.go` | Encode/decode round-trip for all 12+ message types |

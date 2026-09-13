@@ -9,7 +9,7 @@ import (
 	libp2pcrypto "github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/peer"
 
-	"github.com/twostack/go-ricochet/internal/core"
+	"github.com/twostack/go-ricochet/pkg/wire"
 )
 
 func generateTestKeyPair(t *testing.T) (libp2pcrypto.PrivKey, peer.ID) {
@@ -35,7 +35,7 @@ func TestEncryptDecryptRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("encrypt: %v", err)
 	}
-	if flags&core.FlagEncrypted == 0 {
+	if flags&wire.FlagEncrypted == 0 {
 		t.Fatal("expected FlagEncrypted to be set")
 	}
 	if bytes.Equal(encrypted, payload) {
@@ -61,7 +61,7 @@ func TestEncryptDecryptEmptyPayload(t *testing.T) {
 	if err != nil {
 		t.Fatalf("encrypt: %v", err)
 	}
-	if flags&core.FlagEncrypted == 0 {
+	if flags&wire.FlagEncrypted == 0 {
 		t.Fatal("expected FlagEncrypted to be set")
 	}
 

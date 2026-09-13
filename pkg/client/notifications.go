@@ -8,10 +8,13 @@ import (
 
 	"github.com/twostack/go-ricochet/internal/protocol/frame"
 	"github.com/twostack/go-ricochet/internal/protocol/notify"
+	"github.com/twostack/go-ricochet/pkg/wire"
 )
 
-// NotificationHandler is called when a push notification is received.
-type NotificationHandler func(*notify.Notification)
+// NotificationHandler is called when a push notification is received. The
+// notification type is wire.Notification, so handlers can be written outside
+// this module.
+type NotificationHandler func(*wire.Notification)
 
 // RegisterNotificationHandler registers a handler for incoming push notifications.
 // The handler is called on a separate goroutine for each notification.
@@ -27,7 +30,7 @@ func (c *Client) RegisterNotificationHandler(handler NotificationHandler) {
 			return
 		}
 
-		n, err := notify.DecodeNotification(data)
+		n, err := wire.DecodeNotification(data)
 		if err != nil {
 			slog.Debug("failed to decode notification", "error", err)
 			return

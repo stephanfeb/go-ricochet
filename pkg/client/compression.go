@@ -6,7 +6,7 @@ import (
 
 	"github.com/pierrec/lz4/v4"
 
-	"github.com/twostack/go-ricochet/internal/core"
+	"github.com/twostack/go-ricochet/pkg/wire"
 )
 
 const (
@@ -19,7 +19,7 @@ const (
 
 // CompressPayload compresses the payload using LZ4 block compression if it exceeds
 // the threshold. Returns the (possibly compressed) payload and updated flags.
-func CompressPayload(payload []byte, flags core.SFMessageFlags, threshold int) ([]byte, core.SFMessageFlags, error) {
+func CompressPayload(payload []byte, flags wire.SFMessageFlags, threshold int) ([]byte, wire.SFMessageFlags, error) {
 	if len(payload) < threshold {
 		return payload, flags, nil
 	}
@@ -42,12 +42,12 @@ func CompressPayload(payload []byte, flags core.SFMessageFlags, threshold int) (
 		return payload, flags, nil
 	}
 
-	return buf[:4+n], flags | core.FlagCompressed, nil
+	return buf[:4+n], flags | wire.FlagCompressed, nil
 }
 
 // DecompressPayload decompresses an LZ4-compressed payload if the compressed flag is set.
-func DecompressPayload(payload []byte, flags core.SFMessageFlags, maxSize int) ([]byte, error) {
-	if flags&core.FlagCompressed == 0 {
+func DecompressPayload(payload []byte, flags wire.SFMessageFlags, maxSize int) ([]byte, error) {
+	if flags&wire.FlagCompressed == 0 {
 		return payload, nil
 	}
 

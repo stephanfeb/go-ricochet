@@ -231,10 +231,10 @@ client-side reconciliation straightforward.
   `storage.max_messages_per_mailbox` (default 1000).
 - **Retention only on the public write path:** `public.go:60`
   (`EnforceRetentionPolicy`); not called from private/shared `StoreMessage`.
-- **Access modes:** `internal/core/mailbox.go:49-51`
+- **Access modes:** `pkg/wire/mailbox.go` (aliased in `internal/core`)
   (`AccessReadOnly` / `AccessWriteOnly` / `AccessReadWrite`).
 - **Delete / expunge (MAA):** message types `MsgTypeExpunge 0x3E`,
-  `MsgTypeDeleteMessages 0x40` (`internal/core/types.go:26,28`); owner-only expunge
+  `MsgTypeDeleteMessages 0x40` (`pkg/wire/types.go`); owner-only expunge
   guard at `internal/protocol/maa/handler.go:314`.
 - **Admin ops keyed by type:** `getMailboxInfo` / `deleteMailbox` / `createMailbox`
   / `grantAccess` (address carries `type`); server handler
