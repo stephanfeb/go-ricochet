@@ -5,7 +5,9 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"github.com/jackc/pgx/v5/pgconn"
 	"strings"
 	"time"
 
@@ -146,7 +148,7 @@ func (s *PostgresStorage) PutCollectionItem(ctx context.Context, collectionID in
 		).Scan(&r.ID, &r.CollectionID, &r.Key, &r.Content, &r.ContentHash,
 			&r.Version, &r.CreatedAt, &r.UpdatedAt, &r.UpdatedByPeerID)
 		if err != nil {
-			return nil, false, fmt.Errorf("insert collection item: %w", err)
+			return nil, false, fmt.Errorf("insert collection item: %w", contentError(err))
 		}
 
 		// Increment record_count
@@ -178,7 +180,7 @@ func (s *PostgresStorage) PutCollectionItem(ctx context.Context, collectionID in
 		).Scan(&r.ID, &r.CollectionID, &r.Key, &r.Content, &r.ContentHash,
 			&r.Version, &r.CreatedAt, &r.UpdatedAt, &r.UpdatedByPeerID)
 		if err != nil {
-			return nil, false, fmt.Errorf("update collection item: %w", err)
+			return nil, false, fmt.Errorf("update collection item: %w", contentError(err))
 		}
 
 		// Update last_modified_at (no count change)
@@ -456,3 +458,20 @@ func scanCollectionItemRecord(rows pgx.Rows) (*storage.CollectionItemRecord, err
 	return &r, nil
 }
 
+// contentError recognises the database refusing the content itself, as
+// opposed to failing. jsonb has no representation for a NUL character, so a
+// \u0000 escape in otherwise valid JSON fails at insert with SQLSTATE 22P05,
+// and text outside the database encoding fails with 22021; both are the
+// client's content and neither is a fault in the server, so they are wrapped
+// in ErrInvalidContent with the database's own words. Anything else passes
+// through unchanged.
+func contentError(err error) error {
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) {
+		switch pgErr.Code {
+		case "22P05", "22021":
+			return fmt.Errorf("%w: %s", storage.ErrInvalidContent, pgErr.Message)
+		}
+	}
+	return err
+}

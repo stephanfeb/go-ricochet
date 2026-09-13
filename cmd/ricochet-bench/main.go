@@ -28,6 +28,7 @@ import (
 	udxtransport "github.com/stephanfeb/go-libp2p-udx-transport"
 
 	client "github.com/twostack/go-ricochet/pkg/client"
+	"github.com/twostack/go-ricochet/pkg/wire"
 )
 
 // benchConfig holds CLI-parsed configuration.
@@ -89,6 +90,7 @@ var validProtocols = map[string]string{
 	"sda":   "SDA (Document Store)",
 	"sfa":   "SFA (Feed Store)",
 	"sca":   "SCA (Collection Store)",
+	"mma":   "MMA (Mailbox Management)",
 	"mixed": "Mixed (All Protocols)",
 
 	"sda-batch": "SDA BATCH_PUT (batched document writes)",
@@ -135,7 +137,7 @@ func unitsPerRequest(cfg *benchConfig) int {
 func main() {
 	n := flag.Int("n", 1000, "Total number of requests")
 	c := flag.Int("c", 10, "Number of concurrent workers")
-	proto := flag.String("protocol", "msa", "Protocol to benchmark: msa, maa, sda, sfa, sca, mixed")
+	proto := flag.String("protocol", "msa", "Protocol to benchmark: msa, maa, sda, sfa, sca, mma, mixed")
 	payloadSize := flag.Int("payload-size", 1024, "Payload size in bytes")
 	duration := flag.Duration("duration", 0, "Run for duration instead of fixed count (e.g. 30s, 1m)")
 	warmup := flag.Int("warmup", 10, "Warmup requests before measuring")
@@ -147,7 +149,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Stress test tool for Ricochet servers (like Apache Bench for libp2p).\n\n")
 		fmt.Fprintf(os.Stderr, "Example:\n")
 		fmt.Fprintf(os.Stderr, "  ricochet-bench -n 5000 -c 20 -protocol sda /ip4/127.0.0.1/udp/55223/udx 12D3KooW...\n\n")
-		fmt.Fprintf(os.Stderr, "Per-operation:  msa, maa, sda, sfa, sca, mixed\n")
+		fmt.Fprintf(os.Stderr, "Per-operation:  msa, maa, sda, sfa, sca, mma, mixed\n")
 		fmt.Fprintf(os.Stderr, "Batched:        sda-batch, msa-batch  (see -batch-size)\n")
 		fmt.Fprintf(os.Stderr, "Sync shapes:    sync-cold, sync-warm, sync-noop  (see -docs)\n\n")
 		fmt.Fprintf(os.Stderr, "  sync-cold  first upload of a vault, every document new\n")
@@ -481,6 +483,9 @@ func setupBench(ctx context.Context, cfg *benchConfig, workers []*workerState, p
 		fmt.Println(" done")
 		return benchSCA(payload), nil
 
+	case "mma":
+		return benchMMA(), nil
+
 	case "sda-batch":
 		return benchSDABatch(cfg, payload), nil
 
@@ -602,17 +607,50 @@ func benchSCA(payload []byte) benchFunc {
 	}
 }
 
-// benchMixed draws each request uniformly from the five per-operation
-// scenarios. The setup for "mixed" creates a collection per worker, and for
-// a long time this drew from four: the collections were created and never
-// touched, and a "mixed" run said nothing about the collection store.
+// benchMMA times the mailbox admin path: one request creates a mailbox and
+// deletes it again. Both halves are MMA writes that also invalidate the
+// server's mailbox cache, and the pair keeps the owner's mailbox count flat,
+// which matters because an owner may hold only max_mailboxes folders.
+func benchMMA() benchFunc {
+	return func(ctx context.Context, c *client.Client, workerID, reqID int) error {
+		folder := fmt.Sprintf("bench/mbox-w%d-%d", workerID, reqID)
+		if err := c.CreateMailbox(ctx, folder, wire.MailboxPrivate); err != nil {
+			return fmt.Errorf("create mailbox: %w", err)
+		}
+		if err := c.DeleteMailbox(ctx, folder); err != nil {
+			return fmt.Errorf("delete mailbox: %w", err)
+		}
+		return nil
+	}
+}
+
+// perOperationScenarios names every scenario in which one request is one
+// operation. "mixed" draws from all of them, and the test for that reads
+// this list, so a per-operation scenario cannot be added without joining the
+// mix or being deliberately left out here.
+var perOperationScenarios = []string{"msa", "maa", "sda", "sfa", "sca", "mma"}
+
+// mixedFuncs builds the per-operation functions "mixed" draws from.
+func mixedFuncs(workers []*workerState, payload []byte) map[string]benchFunc {
+	return map[string]benchFunc{
+		"msa": benchMSA(workers, payload),
+		"maa": benchMAA(),
+		"sda": benchSDA(payload),
+		"sfa": benchSFA(payload),
+		"sca": benchSCA(payload),
+		"mma": benchMMA(),
+	}
+}
+
+// benchMixed draws each request uniformly from the per-operation scenarios.
+// The setup for "mixed" creates a collection per worker, and for a long time
+// this drew from four: the collections were created and never touched, and a
+// "mixed" run said nothing about the collection store.
 func benchMixed(workers []*workerState, payload []byte) benchFunc {
-	fns := []benchFunc{
-		benchMSA(workers, payload),
-		benchMAA(),
-		benchSDA(payload),
-		benchSFA(payload),
-		benchSCA(payload),
+	byName := mixedFuncs(workers, payload)
+	fns := make([]benchFunc, 0, len(perOperationScenarios))
+	for _, name := range perOperationScenarios {
+		fns = append(fns, byName[name])
 	}
 
 	return func(ctx context.Context, c *client.Client, workerID, reqID int) error {

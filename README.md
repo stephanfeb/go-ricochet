@@ -529,7 +529,7 @@ schema.sql              PostgreSQL database schema
 
 ## Stress Testing
 
-`ricochet-bench` is an Apache Bench-style load testing tool for Ricochet servers. It measures throughput, latency percentiles, and error rates for the message, document, feed and collection protocols (MMA, the mailbox admin protocol, is not benchmarked).
+`ricochet-bench` is an Apache Bench-style load testing tool for Ricochet servers. It measures throughput, latency percentiles, and error rates for every protocol the server serves.
 
 ### Build
 
@@ -566,7 +566,8 @@ ricochet-bench [flags] <server-multiaddr> <server-peer-id>
 | `sda` | `PutDocument` + `GetDocument` | Document store round-trip |
 | `sfa` | `AppendFeedEntry` + `GetFeedEntry` | Feed append and read cycle |
 | `sca` | `PutCollectionItem` + `QueryCollection` | Collection write and query cycle |
-| `mixed` | Random mix of `msa`, `maa`, `sda`, `sfa`, `sca` | Combined workload |
+| `mma` | `CreateMailbox` + `DeleteMailbox` | Mailbox admin round-trip |
+| `mixed` | Random mix of `msa`, `maa`, `sda`, `sfa`, `sca`, `mma` | Combined workload |
 | `sda-batch` | `PutDocuments` | Batched document writes, `-batch-size` per request |
 | `msa-batch` | `SendMessages` | Batched message submission, `-batch-size` per request |
 | `sync-cold` | `PutDocument` × `-docs` | First upload of a vault, every document new |

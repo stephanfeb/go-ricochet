@@ -1,6 +1,8 @@
 package wire_test
 
 import (
+	"fmt"
+	"github.com/twostack/go-ricochet/internal/storage"
 	"strings"
 	"testing"
 
@@ -58,5 +60,18 @@ func TestAuthorizationRefusalsClassifyAsForbidden(t *testing.T) {
 		if err != nil {
 			t.Errorf("%s: refused the caller: %v", name, err)
 		}
+	}
+}
+
+// Content the database refuses is the client's request at fault, so it is a
+// 400 carrying the database's own words, the way an invalid filter is.
+func TestInvalidContentClassifiesAsBadRequest(t *testing.T) {
+	err := fmt.Errorf("insert collection item: %w", fmt.Errorf("%w: unsupported Unicode escape sequence", storage.ErrInvalidContent))
+	status, _ := wire.Classify(err)
+	if status != wire.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", status, wire.StatusBadRequest)
+	}
+	if msg := wire.ClientMessage(err); !strings.Contains(msg, "unsupported Unicode escape sequence") {
+		t.Fatalf("client message %q does not carry the database's reason", msg)
 	}
 }

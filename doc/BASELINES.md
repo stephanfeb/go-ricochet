@@ -29,7 +29,10 @@ long as every run does it.
 ## Reproducing
 
 ```bash
-# Fresh database, then start a server with config.example.yaml adjusted for it.
+# Fresh database, then start a server on the default or production preset
+# (--development logs at debug and costs throughput; it is not a benchmark
+# condition). Check the host is idle first: a loaded machine produces stalls
+# in the tail that have nothing to do with the server.
 psql -d postgres -c 'CREATE DATABASE ricochet_bench'
 psql -d ricochet_bench -f schema.sql
 ricochet --config bench.yaml
@@ -39,6 +42,7 @@ ADDR=/ip4/127.0.0.1/udp/55223/udx
 PEER=<server peer id from the startup log>
 
 ricochet-bench -n 500 -c 10 -protocol sda -payload-size 1024   $ADDR $PEER
+ricochet-bench -n 500 -c 10 -protocol mma                      $ADDR $PEER
 ricochet-bench -n 50  -c 10 -protocol sda-batch -batch-size 100 $ADDR $PEER
 ricochet-bench -protocol sync-cold -docs 500                    $ADDR $PEER
 ```
@@ -74,6 +78,12 @@ SFA and SCA which each do a write **and** a read.
 | `sca` put item + query | 1,076 | 8.8ms | 16.8ms | 19.1ms |
 | `mixed` | 5,966 | 1.7ms | 2.5ms | 2.8ms |
 
+> The `mixed` row was measured while the mix drew from `msa`, `maa`, `sda` and
+> `sfa` only: the setup created a collection per worker and the mix never
+> touched it. Since 2026-09-13 `mixed` draws uniformly from all six
+> per-operation scenarios, `sca` and `mma` included, so it is a heavier mix
+> than this row measured. Compare against the session table below, not this.
+
 **SCA is five times slower than the others and is the obvious next target.** Its
 request is a JSONB insert followed by an unfiltered collection query, so it is
 doing more work than the rest — but not five times more. Worth profiling before
@@ -84,6 +94,38 @@ than a property of MSA: whichever scenario runs first in a session shows an
 outlier of roughly that size, and MSA ran first here. In an earlier session
 where SDA ran first, SDA showed a p99 of 18.0ms and MSA 6.1ms. Worth isolating
 before reading anything into a single protocol's tail.
+
+## Session of 2026-09-13: every per-operation scenario, one session
+
+Taken to give `mma` a row and to measure `mixed` with `sca` and `mma` in it.
+1,000 requests, 10 workers, server at the D5 commit, default preset (not
+`--development`: that preset logs at debug, which cost this session a third
+of its throughput in a first pass and is not a benchmark condition).
+
+**These figures are not comparable to the table above.** The host was
+saturated for the whole session (load average 22 on 12 cores, 0% idle, five
+Docker containers and a 79-day uptime with 11 GB of compressed memory), and it
+shows: p50s are close to the earlier session's, p95 and p99 are stalls of
+100–400ms that the earlier session never saw, and a second `mixed` run in the
+same session came out at a quarter of the first. Read the rows against each
+other, not against the table above, and re-take them on an idle machine
+before concluding anything about the server (backlog N8).
+
+| Scenario | req/s | p50 | p95 | p99 |
+|---|---:|---:|---:|---:|
+| `msa` submit | 812 | 1.8ms | 37.5ms | 312.8ms |
+| `maa` retrieve | 1,143 | 4.4ms | 25.8ms | 44.6ms |
+| `sda` put + get | 1,390 | 4.5ms | 19.8ms | 29.5ms |
+| `sfa` append + get | 1,045 | 7.9ms | 19.4ms | 29.5ms |
+| `sca` put item + query | 208 | 35.5ms | 134.2ms | 345.1ms |
+| `mma` create + delete mailbox | 489 | 5.3ms | 120.3ms | 244.7ms |
+| `mixed` (all six) | 250 | 7.0ms | 258.1ms | 390.9ms |
+
+What survives the noise: `sca` is still five to six times slower than the
+other stores at the median, the same ratio the earlier session found, so that
+finding stands. `mma` is a create and a delete, two writes that each
+invalidate the mailbox cache, and lands at roughly half of `msa` at the
+median, which is the expected shape for two writes against one.
 
 ## Batched
 
@@ -142,11 +184,15 @@ were also pacing themselves under a rate limit that no longer exists.
 
 ## Known issues found while taking these
 
-- **A collection item whose JSON contains a NUL escape returns 500.** Postgres
-  rejects `\u0000` in `jsonb` (SQLSTATE 22P05) and the handler passes the
-  failure through as an internal error. It is a malformed request, so it
-  should be a 400: a 500 sends an operator looking for a server fault that is
-  not there. The benchmark hit this by putting raw random bytes in a JSON
-  string field, where any NUL byte marshals to `\u0000`; it now hex-encodes,
-  but the server behaviour is unchanged.
+- **A collection item whose JSON contains a NUL escape returned 500** (fixed
+  2026-09-13, D5). Postgres rejects `\u0000` in `jsonb` (SQLSTATE 22P05) and
+  the handler passed the failure through as an internal error. It is the
+  client's content, so it is now a 400 that carries the database's reason
+  (`storage.ErrInvalidContent`). The benchmark hit this by putting raw random
+  bytes in a JSON string field, where any NUL byte marshals to `\u0000`; it
+  hex-encodes now.
+- **The 2026-09-13 session is 5–10× below the earlier per-operation figures**
+  with p99 stalls of hundreds of milliseconds, on a host at load 22 with no
+  idle CPU. Whether any of that is the server is unknown until the rows are
+  re-taken on an idle machine; backlog N8 tracks it.
 - **`sca` throughput** as noted above.

@@ -275,6 +275,13 @@ var (
 	// fault and the sentinel makes it a 400 rather than a 500.
 	ErrInvalidFilter = fmt.Errorf("invalid collection filter")
 
+	// ErrInvalidContent wraps content that is well-formed JSON but that the
+	// database cannot hold: a \u0000 escape, which jsonb rejects, or text
+	// that is not valid in the database's encoding. It is the client's
+	// request that is at fault, so the sentinel makes it a 400; as a 500 it
+	// sent operators looking for a server fault that was not there.
+	ErrInvalidContent = fmt.Errorf("invalid collection content")
+
 	// ErrDirectoryQueryTooLong is a directory search longer than
 	// MaxDirectoryQueryLength.
 	ErrDirectoryQueryTooLong = fmt.Errorf("directory query too long")
