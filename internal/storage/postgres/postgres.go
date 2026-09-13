@@ -108,36 +108,43 @@ func (s *PostgresStorage) Pool() *pgxpool.Pool {
 // Mailbox Operations
 // =============================================================================
 
+// GetOrCreateMailbox returns the mailbox at addr, creating it if absent.
+//
+// It is one statement. A find-then-insert let two first deliveries to the
+// same new mailbox race: both found nothing, both inserted, and the loser's
+// submission failed on the unique constraint. The upsert makes the second
+// arrival a no-op update that returns the row the first one created. The
+// settings passed in apply only on creation; an existing mailbox keeps its
+// own, which the previous code also guaranteed by returning it untouched.
 func (s *PostgresStorage) GetOrCreateMailbox(ctx context.Context, addr *core.MailboxAddress, maxMessages, retentionDays int, retentionCount *int) (*storage.MailboxRecord, error) {
-	// Try to find existing
-	mailbox, err := s.FindMailbox(ctx, addr.OwnerID, addr.FolderPath)
-	if err != nil {
-		return nil, err
-	}
-	if mailbox != nil {
-		return mailbox, nil
-	}
-
-	// Create new
 	row := s.pool.QueryRow(ctx, `
 		INSERT INTO mailboxes (
 			owner_peer_id, folder_path, mailbox_type, max_messages,
 			retention_days, retention_count
 		) VALUES ($1, $2, $3, $4, $5, $6)
+		ON CONFLICT ON CONSTRAINT uq_mailbox_owner_folder
+			DO UPDATE SET last_access_at = mailboxes.last_access_at
 		RETURNING id, owner_peer_id, folder_path, mailbox_type,
 				  created_at, last_access_at, max_messages,
-				  retention_days, retention_count`,
+				  retention_days, retention_count, (xmax = 0) AS created`,
 		addr.OwnerID.String(), addr.FolderPath, int(addr.Type),
 		maxMessages, retentionDays, retentionCount,
 	)
 
-	record, err := scanMailboxRecord(row)
-	if err != nil {
-		return nil, fmt.Errorf("create mailbox: %w", err)
+	var r storage.MailboxRecord
+	var typ int
+	var created bool
+	if err := row.Scan(&r.ID, &r.OwnerPeerID, &r.FolderPath, &typ,
+		&r.CreatedAt, &r.LastAccessAt, &r.MaxMessages,
+		&r.RetentionDays, &r.RetentionCount, &created); err != nil {
+		return nil, fmt.Errorf("get or create mailbox: %w", err)
 	}
+	r.Type = core.MailboxType(typ)
 
-	s.logger.Info("Created mailbox", "path", addr.FullPath(), "type", addr.Type)
-	return record, nil
+	if created {
+		s.logger.Info("Created mailbox", "path", addr.FullPath(), "type", addr.Type)
+	}
+	return &r, nil
 }
 
 func (s *PostgresStorage) FindMailbox(ctx context.Context, ownerID peer.ID, folderPath string) (*storage.MailboxRecord, error) {
