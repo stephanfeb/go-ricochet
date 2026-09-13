@@ -146,16 +146,9 @@ func (s *MailboxServer) getMailbox(ctx context.Context, addr *core.MailboxAddres
 	}
 
 	// Instantiate correct type based on stored record type
-	var mb mailboxes.Mailbox
-	switch record.Type {
-	case core.MailboxPrivate:
-		mb = mailboxes.NewPrivateMailbox(record, s.Storage, s.logger)
-	case core.MailboxShared:
-		mb = mailboxes.NewSharedMailbox(record, s.Storage, s.logger)
-	case core.MailboxPublic:
-		mb = mailboxes.NewPublicMailbox(record, s.Storage, s.logger)
-	default:
-		return nil, fmt.Errorf("unknown mailbox type: %d", record.Type)
+	mb, err := s.wrapRecord(record)
+	if err != nil {
+		return nil, err
 	}
 
 	s.mu.Lock()
@@ -217,16 +210,81 @@ func (s *MailboxServer) DeliverLocal(ctx context.Context, msg *core.Message) (in
 	return int(msg.SequenceNumber), nil
 }
 
+// findMailbox loads a mailbox that already exists, or returns nil when it does
+// not. Unlike getMailbox it never creates one.
+//
+// The distinction matters on the read path. Retrieval used to go through
+// getMailbox with a type inferred from "caller is not the owner", which meant
+// any peer could bring victim/inbox into existence as a public mailbox before
+// the victim ever connected — after which the victim's own senders were
+// refused for lacking an ACL grant, and anything that did land was readable
+// by everyone. Only delivery and an explicit create may bring a mailbox into
+// existence; a read of one that is absent is simply a miss.
+func (s *MailboxServer) findMailbox(ctx context.Context, addr *core.MailboxAddress) (mailboxes.Mailbox, error) {
+	key := addr.FullPath()
+
+	s.mu.RLock()
+	if mb, ok := s.mailboxCache[key]; ok {
+		s.mu.RUnlock()
+		return mb, nil
+	}
+	s.mu.RUnlock()
+
+	record, err := s.Storage.FindMailbox(ctx, addr.OwnerID, addr.FolderPath)
+	if err != nil {
+		return nil, fmt.Errorf("find mailbox: %w", err)
+	}
+	if record == nil {
+		return nil, nil
+	}
+
+	mb, err := s.wrapRecord(record)
+	if err != nil {
+		return nil, err
+	}
+
+	s.mu.Lock()
+	s.mailboxCache[key] = mb
+	s.mu.Unlock()
+
+	return mb, nil
+}
+
+// wrapRecord instantiates the mailbox type the stored record says it is.
+func (s *MailboxServer) wrapRecord(record *storage.MailboxRecord) (mailboxes.Mailbox, error) {
+	switch record.Type {
+	case core.MailboxPrivate:
+		return mailboxes.NewPrivateMailbox(record, s.Storage, s.logger), nil
+	case core.MailboxShared:
+		return mailboxes.NewSharedMailbox(record, s.Storage, s.logger), nil
+	case core.MailboxPublic:
+		return mailboxes.NewPublicMailbox(record, s.Storage, s.logger), nil
+	default:
+		return nil, fmt.Errorf("unknown mailbox type: %d", record.Type)
+	}
+}
+
 // Retrieve retrieves messages from a mailbox.
+//
+// The mailbox's stored type decides who may read it; addr.Type is ignored.
+// A mailbox that does not exist is an empty result for its owner — a fresh
+// identity reading its own inbox before anything was delivered is not an
+// error — and a NotFoundError for anyone else.
 func (s *MailboxServer) Retrieve(ctx context.Context, addr *core.MailboxAddress, callerID peer.ID, opts RetrieveOpts) ([]*core.Message, error) {
 	s.logger.Info("retrieving messages",
 		"mailbox", addr.FullPath(),
 		"caller", callerID.String(),
 	)
 
-	mb, err := s.getMailbox(ctx, addr)
+	mb, err := s.findMailbox(ctx, addr)
 	if err != nil {
 		return nil, err
+	}
+	if mb == nil {
+		if callerID == addr.OwnerID {
+			return []*core.Message{}, nil
+		}
+		return nil, &mailboxes.NotFoundError{Path: addr.FullPath()}
 	}
 
 	messages, err := mb.RetrieveMessages(ctx, &callerID, mailboxes.RetrieveOpts{

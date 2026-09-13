@@ -38,6 +38,19 @@ func (e *UnauthorizedError) Error() string {
 	return fmt.Sprintf("unauthorized: %s", e.Message)
 }
 
+// NotFoundError indicates the addressed mailbox does not exist.
+//
+// It is distinct from UnauthorizedError on purpose: a reader who is refused
+// an existing mailbox and a reader who names one that was never created get
+// different codes, but neither learns anything about the other's contents.
+type NotFoundError struct {
+	Path string
+}
+
+func (e *NotFoundError) Error() string {
+	return fmt.Sprintf("mailbox not found: %s", e.Path)
+}
+
 // MailboxFullError indicates a mailbox has reached capacity.
 type MailboxFullError struct {
 	Current int

@@ -201,13 +201,6 @@ func handleRetrieve(sc *forge.StreamContext, next func()) {
 	mailbox, _ := forge.ServiceFrom[*mda.MailboxServer](sc, "mda")
 	callerID := sc.PeerID
 
-	// Check if requesting own mailbox or cross-peer read
-	isOwnMailbox := req.PeerID == callerID.String()
-	mailboxType := core.MailboxPrivate
-	if !isOwnMailbox {
-		mailboxType = core.MailboxPublic
-	}
-
 	folderPath := "inbox"
 	if req.FolderPath != "" {
 		folderPath = req.FolderPath
@@ -219,10 +212,13 @@ func handleRetrieve(sc *forge.StreamContext, next func()) {
 		return
 	}
 
+	// The type is whatever the stored record says. It is deliberately not
+	// inferred from the caller: an earlier version guessed "public" for any
+	// cross-peer read and then auto-created the mailbox with that guess,
+	// which let any peer squat another peer's inbox as world-readable.
 	addr := &core.MailboxAddress{
 		OwnerID:    ownerPeerID,
 		FolderPath: folderPath,
-		Type:       mailboxType,
 	}
 
 	// Convert FromSequence from *uint64 to *int
@@ -239,8 +235,12 @@ func handleRetrieve(sc *forge.StreamContext, next func()) {
 		MinPriority:  req.MinPriority,
 	})
 	if err != nil {
+		// Surface the refusal as a classified error envelope rather than an
+		// empty inbox. An empty list told a refused reader nothing, and told
+		// an owner whose retrieve hit a storage fault that they had no mail.
 		sc.Logger.Warn("retrieve failed", "error", err)
-		messages = nil
+		sc.Err = err
+		return
 	}
 
 	compoundBytes, err := encodeCompoundRetrieveResponse(messages, false)

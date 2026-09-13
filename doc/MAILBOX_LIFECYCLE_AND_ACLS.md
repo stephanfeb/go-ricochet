@@ -41,6 +41,11 @@ facts, each of which bit us:
      with `"no write access to shared mailbox"` (`shared.go:35-49`, `public.go:35-49`).
    - Delivery **auto-creates a missing mailbox as PRIVATE** (open). So the *default*
      for a folder nobody set up is open-to-anyone.
+   - Retrieval **never creates**. An owner reading a folder that does not exist
+     gets an empty result; anyone else gets a `404` (`ErrNotFound` in the client),
+     and a read of an existing mailbox they may not see gets a `403`
+     (`ErrForbidden`). Before 2026-09 a cross-peer read auto-created the folder as
+     *public*, which let any peer squat another peer's inbox.
 3. **The relay never drains a mailbox for you.** Retrieving messages does **not**
    remove them. On the private/shared write path there is no age-based pruning
    either (only `public.go:60` calls `EnforceRetentionPolicy`). Messages sit until

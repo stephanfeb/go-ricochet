@@ -49,6 +49,14 @@ var (
 	// backpressure: only the recipient can clear it, so retrying is futile
 	// until they do.
 	ErrMailboxFull = errors.New("mailbox full")
+
+	// ErrForbidden means the server refused the caller access to something
+	// that exists. Retrying as the same identity will not change the answer.
+	ErrForbidden = errors.New("forbidden")
+
+	// ErrNotFound means the addressed mailbox, document or other resource
+	// does not exist on this server.
+	ErrNotFound = errors.New("not found")
 )
 
 // ProtocolError is a failure the server classified with a status code.
@@ -122,6 +130,16 @@ type MailboxFullError struct{ ProtocolError }
 
 func (e *MailboxFullError) Is(target error) bool { return target == ErrMailboxFull }
 
+// ForbiddenError reports an access-control refusal (403).
+type ForbiddenError struct{ ProtocolError }
+
+func (e *ForbiddenError) Is(target error) bool { return target == ErrForbidden }
+
+// NotFoundError reports that the addressed resource does not exist (404).
+type NotFoundError struct{ ProtocolError }
+
+func (e *NotFoundError) Is(target error) bool { return target == ErrNotFound }
+
 // RetryAfter reports how long the server asked the caller to wait, and whether
 // it said anything at all. A caller that gets false should back off on its own
 // terms rather than treating zero as "immediately".
@@ -163,6 +181,8 @@ func asProtocolError(err error, out **ProtocolError) bool {
 		ov   *OverloadedError
 		cf   *ConflictError
 		full *MailboxFullError
+		fb   *ForbiddenError
+		nf   *NotFoundError
 		pe   *ProtocolError
 	)
 	switch {
@@ -174,6 +194,10 @@ func asProtocolError(err error, out **ProtocolError) bool {
 		*out = &cf.ProtocolError
 	case errors.As(err, &full):
 		*out = &full.ProtocolError
+	case errors.As(err, &fb):
+		*out = &fb.ProtocolError
+	case errors.As(err, &nf):
+		*out = &nf.ProtocolError
 	case errors.As(err, &pe):
 		*out = pe
 	default:
@@ -216,6 +240,10 @@ func statusError(op string, status int, message string, retryAfterMs int64) erro
 		// that never terminates.
 		base.RetryAfter = 0
 		return &MailboxFullError{base}
+	case wire.StatusForbidden:
+		return &ForbiddenError{base}
+	case wire.StatusNotFound:
+		return &NotFoundError{base}
 	default:
 		return &ProtocolError{Op: base.Op, Status: base.Status, Message: base.Message, RetryAfter: base.RetryAfter}
 	}

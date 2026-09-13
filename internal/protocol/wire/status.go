@@ -81,6 +81,19 @@ func Classify(err error) (status int, retryAfter time.Duration) {
 		return StatusInsufficientStorage, 0
 	}
 
+	// Access-control refusals from the mailbox types. Before these were
+	// classified they fell through to 500, and a client reading another
+	// peer's private inbox saw "internal error" for what was a correct
+	// refusal.
+	var unauthorized *mailboxes.UnauthorizedError
+	if errors.As(err, &unauthorized) {
+		return StatusForbidden, 0
+	}
+	var notFound *mailboxes.NotFoundError
+	if errors.As(err, &notFound) {
+		return StatusNotFound, 0
+	}
+
 	// A request naming an operation the server does not route is the client's
 	// mistake, not the server's. Reporting it as a 500 sends an operator
 	// looking for a fault that is not there.
