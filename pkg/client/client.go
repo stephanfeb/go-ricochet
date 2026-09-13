@@ -192,7 +192,7 @@ func (c *Client) prepareMessage(recipient peer.ID, payload []byte, opts []SendOp
 		if c.privKey == nil {
 			return nil, fmt.Errorf("encryption requires an Ed25519 private key in the host peerstore")
 		}
-		encrypted, encFlags, err := EncryptPayload(msg.Payload, recipient, c.privKey)
+		encrypted, encFlags, err := EncryptBoundPayload(msg.Payload, BindingFor(msg), recipient, c.privKey)
 		if err != nil {
 			return nil, fmt.Errorf("encrypt payload: %w", err)
 		}
@@ -484,7 +484,9 @@ func (c *Client) RetrievePage(ctx context.Context, opts ...RetrieveOption) (*Ret
 			if err != nil {
 				return nil, fmt.Errorf("parse sender peer ID for decryption: %w", err)
 			}
-			decrypted, err := DecryptPayload(msg.Payload, senderPeerID, c.privKey)
+			// The binding is checked against the envelope the message arrived
+			// in, so a ciphertext the server moved or relabelled is refused.
+			decrypted, _, err := DecryptBoundPayload(msg.Payload, BindingFor(msg), senderPeerID, c.privKey)
 			if err != nil {
 				return nil, fmt.Errorf("decrypt message %s: %w", msg.MessageID, err)
 			}

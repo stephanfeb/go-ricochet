@@ -73,7 +73,10 @@ func WithCompression(threshold ...int) SendOption {
 
 // WithEncryption enables end-to-end encryption for the message using NaCl box
 // (X25519 key agreement + XSalsa20-Poly1305). The sender's Ed25519 private key
-// and the recipient's public key (derived from their peer ID) are used.
+// and the recipient's public key (derived from their peer ID) are used, and
+// the ciphertext is bound to the recipient, folder path and message id so it
+// cannot be replayed as a different message. See the README's security
+// section for what this does and does not protect.
 func WithEncryption() SendOption {
 	return func(c *sendConfig) {
 		c.Encrypt = true

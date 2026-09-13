@@ -112,3 +112,33 @@ func truncate(b []byte) []byte {
 	}
 	return b
 }
+
+// The ciphertext is bound to the folder the message was sent to, and the
+// server returns the message in that folder, so the binding checks out
+// through a real delivery rather than only in the client's own tests.
+func TestEncryptedMessageBoundToItsFolderRoundTrips(t *testing.T) {
+	server := newTestServer(t)
+	sender := newTestClient(t, server)
+	recipient := newTestClient(t, server)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	plaintext := []byte("filed under work")
+	if _, err := sender.SendMessage(ctx, recipient.PeerID(), plaintext,
+		client.WithEncryption(), client.WithFolderPath("work")); err != nil {
+		t.Fatalf("send encrypted to folder: %v", err)
+	}
+	time.Sleep(100 * time.Millisecond)
+
+	msgs, err := recipient.RetrieveMessages(ctx, client.WithRetrieveFolderPath("work"))
+	if err != nil {
+		t.Fatalf("retrieve from folder: %v", err)
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("got %d messages in work, want 1", len(msgs))
+	}
+	if !bytes.Equal(msgs[0].Payload, plaintext) {
+		t.Fatalf("payload did not decrypt: got %q, want %q", truncate(msgs[0].Payload), plaintext)
+	}
+}

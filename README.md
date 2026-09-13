@@ -323,9 +323,41 @@ Messages can be encrypted client-side using NaCl box:
 
 - **Key Agreement**: X25519 (derived from Ed25519 identity keys)
 - **Cipher**: XSalsa20-Poly1305 (authenticated encryption)
-- **Wire Format**: `[24-byte nonce][ciphertext + Poly1305 tag]`
+- **Wire Format**: `"RCE2" [24-byte nonce] [box(header || payload)]`, where the
+  header binds the ciphertext to the recipient peer ID, the folder path and
+  the message ID. The client still reads the earlier unbound format,
+  `[24-byte nonce][ciphertext + Poly1305 tag]`, for messages sealed before
+  the binding existed.
 
-The server never sees plaintext when encryption is enabled. Keys are derived from the libp2p peer identity, so no additional key exchange is needed.
+The server never sees plaintext when encryption is enabled. Keys are derived
+from the libp2p peer identity, so no additional key exchange is needed.
+
+What this protects, and what it does not:
+
+- **Confidentiality and integrity of the payload** against the server and
+  the network. Only the recipient's identity key opens the box.
+- **Placement.** Because the binding is sealed inside the box, a ciphertext
+  copied from one message cannot be presented as another: not in a different
+  folder, not under a different message ID, not to a different recipient.
+  A verbatim replay of the same message into the same folder, for instance
+  after the recipient deleted it, is not detected; a client that needs that
+  keeps a record of message IDs it has seen.
+- **No forward secrecy.** The keys are the long-term identity keys, so a
+  later compromise of either party's key decrypts everything they exchanged.
+  This is out of scope for this layer by design: an application that needs
+  forward secrecy runs a ratcheting protocol such as Signal over these
+  messages, as the OverNode client does, and uses this layer, if at all, as
+  a second envelope.
+- **Deniable, not signed.** NaCl box authenticates the sender to the
+  recipient only; a recipient cannot prove to a third party who wrote a
+  message.
+- **The envelope is not encrypted.** Sender, recipient, folder path,
+  timestamps, priority and flags are visible to the server, and the
+  `encrypted` flag itself is not authenticated: stripping it makes the
+  recipient fail to decrypt, which is a denial of service and nothing more.
+- **One key, several uses.** The same Ed25519 identity signs the Noise
+  handshake and GossipSub messages and, converted to X25519, does the key
+  agreement here.
 
 ### Trusted Peers
 

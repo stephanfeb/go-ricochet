@@ -208,3 +208,89 @@ func TestEncryptDecryptDeterministicKeys(t *testing.T) {
 		t.Error("both decryptions should match the original payload")
 	}
 }
+
+func boundKeys(t *testing.T) (senderPriv libp2pcrypto.PrivKey, senderID peer.ID, recipientPriv libp2pcrypto.PrivKey, recipientID peer.ID, b Binding) {
+	t.Helper()
+	senderPriv, senderID = generateTestKeyPair(t)
+	recipientPriv, recipientID = generateTestKeyPair(t)
+	b = Binding{RecipientPeerID: recipientID.String(), FolderPath: "work", MessageID: "msg-1"}
+	return
+}
+
+// A bound ciphertext opens only as the message it was sealed for.
+func TestBoundPayloadRefusesRelabelling(t *testing.T) {
+	senderPriv, senderID, recipientPriv, _, b := boundKeys(t)
+	payload := []byte("meet at noon")
+
+	sealed, flags, err := EncryptBoundPayload(payload, b, peer.ID(mustDecode(t, b.RecipientPeerID)), senderPriv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if flags != wire.FlagEncrypted {
+		t.Fatalf("flags = %v, want encrypted", flags)
+	}
+	if string(sealed[:4]) != boundMagic {
+		t.Fatalf("bound ciphertext does not start with the magic: %q", sealed[:4])
+	}
+
+	got, bound, err := DecryptBoundPayload(sealed, b, senderID, recipientPriv)
+	if err != nil || !bound || !bytes.Equal(got, payload) {
+		t.Fatalf("round trip: payload %q bound %v err %v", got, bound, err)
+	}
+
+	for name, other := range map[string]Binding{
+		"folder":    {RecipientPeerID: b.RecipientPeerID, FolderPath: "inbox", MessageID: b.MessageID},
+		"id":        {RecipientPeerID: b.RecipientPeerID, FolderPath: b.FolderPath, MessageID: "msg-2"},
+		"recipient": {RecipientPeerID: senderID.String(), FolderPath: b.FolderPath, MessageID: b.MessageID},
+	} {
+		if _, _, err := DecryptBoundPayload(sealed, other, senderID, recipientPriv); err == nil {
+			t.Errorf("ciphertext replayed with a different %s was accepted", name)
+		}
+	}
+}
+
+// A message sealed before bindings existed still opens, and reports that
+// it carried no binding.
+func TestLegacyPayloadStillOpens(t *testing.T) {
+	senderPriv, senderID, recipientPriv, recipientID, b := boundKeys(t)
+	payload := []byte("from before")
+
+	legacy, _, err := EncryptPayload(payload, recipientID, senderPriv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, bound, err := DecryptBoundPayload(legacy, b, senderID, recipientPriv)
+	if err != nil || bound || !bytes.Equal(got, payload) {
+		t.Fatalf("legacy round trip: payload %q bound %v err %v", got, bound, err)
+	}
+
+	// A legacy nonce that happens to start with the magic is not mistaken
+	// for a bound ciphertext.
+	forged := append([]byte(boundMagic), legacy[4:]...)
+	if _, _, err := DecryptBoundPayload(forged, b, senderID, recipientPriv); err == nil {
+		t.Fatal("a corrupted legacy ciphertext opened")
+	}
+}
+
+// The binding of a message is what the server will deliver it as: an
+// empty folder is the inbox.
+func TestBindingForNormalisesFolder(t *testing.T) {
+	_, senderID, _, recipientID, _ := boundKeys(t)
+	msg := wire.NewMessage(senderID, recipientID, []byte("x"))
+	if got := BindingFor(msg); got.FolderPath != "inbox" || got.MessageID != msg.MessageID || got.RecipientPeerID != recipientID.String() {
+		t.Fatalf("BindingFor = %+v", got)
+	}
+	msg.FolderPath = "work"
+	if got := BindingFor(msg); got.FolderPath != "work" {
+		t.Fatalf("BindingFor with folder = %+v", got)
+	}
+}
+
+func mustDecode(t *testing.T, id string) peer.ID {
+	t.Helper()
+	p, err := peer.Decode(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
