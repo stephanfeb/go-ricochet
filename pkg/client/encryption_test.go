@@ -4,7 +4,10 @@ import (
 	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/hex"
 	"testing"
+
+	"golang.org/x/crypto/nacl/box"
 
 	libp2pcrypto "github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -293,4 +296,74 @@ func mustDecode(t *testing.T, id string) peer.ID {
 		t.Fatal(err)
 	}
 	return p
+}
+
+// The Dart client (ricochet-dart-client test/payload_encryption_test.dart)
+// checks the same seeds, nonce and ciphertexts. Both sides sealing to the
+// same bytes is what makes a Go-sent message readable by a Dart client and
+// the other way round; change one side and the other must change with it.
+func TestCrossLanguageVectors(t *testing.T) {
+	seedS := bytes.Repeat([]byte{0x01}, 32)
+	seedR := bytes.Repeat([]byte{0x02}, 32)
+	edS := ed25519.NewKeyFromSeed(seedS)
+	edR := ed25519.NewKeyFromSeed(seedR)
+	privS, err := libp2pcrypto.UnmarshalEd25519PrivateKey(edS)
+	if err != nil {
+		t.Fatal(err)
+	}
+	privR, err := libp2pcrypto.UnmarshalEd25519PrivateKey(edR)
+	if err != nil {
+		t.Fatal(err)
+	}
+	idS, _ := peer.IDFromPrivateKey(privS)
+	idR, _ := peer.IDFromPrivateKey(privR)
+	if idS.String() != "12D3KooWK99VoVxNE7XzyBwXEzW7xhK7Gpv85r9F3V3fyKSUKPH5" ||
+		idR.String() != "12D3KooWJWoaqZhDaoEFshF7Rh1bpY9ohihFhzcW6d69Lr2NASuq" {
+		t.Fatalf("peer ids %s / %s do not match the vectors", idS, idR)
+	}
+
+	xS := Ed25519PrivateKeyToX25519(edS)
+	xPubS, _ := PeerIDToX25519PublicKey(idS)
+	xPubR, _ := PeerIDToX25519PublicKey(idR)
+	for name, got := range map[string]string{
+		"sender x25519 private":   hex.EncodeToString(xS[:]),
+		"sender x25519 public":    hex.EncodeToString(xPubS[:]),
+		"recipient x25519 public": hex.EncodeToString(xPubR[:]),
+	} {
+		want := map[string]string{
+			"sender x25519 private":   "58e86efb75fa4e2c410f46e16de9f6acae1a1703528651b69bc176c088bef36e",
+			"sender x25519 public":    "1b1b58dd50ea14b60da17b790cd02754d970c9bab864ebb3c0f3016fe51d3f57",
+			"recipient x25519 public": "60346e7c911a5f6ba154129174cafe75b294ac3bbd5549632f48cec6266f8410",
+		}[name]
+		if got != want {
+			t.Errorf("%s = %s, want %s", name, got, want)
+		}
+	}
+
+	var nonce [nonceSize]byte
+	for i := range nonce {
+		nonce[i] = byte(i)
+	}
+	b := Binding{RecipientPeerID: idR.String(), FolderPath: "inbox", MessageID: "msg-0001"}
+	payload := []byte("hello, ricochet")
+	plain := append(b.header(), payload...)
+	bound := append([]byte(boundMagic), box.Seal(nonce[:], plain, &nonce, &xPubR, &xS)...)
+	const wantBound = "52434532000102030405060708090a0b0c0d0e0f1011121314151617ad5b0b77e4fab9d141c726d795e7d5e1c34cec901852e78daff0992911dd6d9572ff54a3060d404fde16c276f12f2c5ee365806eb4b0b188d1af9784bc21670864cfaf883cd5948da726bed74461f8afee37590c852eb9e0bd7128c220a61df5a036436f5961"
+	if got := hex.EncodeToString(bound); got != wantBound {
+		t.Fatalf("bound ciphertext = %s, want %s", got, wantBound)
+	}
+	legacy := box.Seal(nonce[:], payload, &nonce, &xPubR, &xS)
+	const wantLegacy = "000102030405060708090a0b0c0d0e0f10111213141516177141d087ac9990c11975e82fa8c06a05ab1db1ce334d8c90a9c4bc1d16d968"
+	if got := hex.EncodeToString(legacy); got != wantLegacy {
+		t.Fatalf("legacy ciphertext = %s, want %s", got, wantLegacy)
+	}
+
+	got, isBound, err := DecryptBoundPayload(bound, b, idS, privR)
+	if err != nil || !isBound || string(got) != "hello, ricochet" {
+		t.Fatalf("bound vector: payload %q bound %v err %v", got, isBound, err)
+	}
+	got, isBound, err = DecryptBoundPayload(legacy, b, idS, privR)
+	if err != nil || isBound || string(got) != "hello, ricochet" {
+		t.Fatalf("legacy vector: payload %q bound %v err %v", got, isBound, err)
+	}
 }

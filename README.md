@@ -360,6 +360,13 @@ The server never sees the payload in plaintext when encryption is enabled; the
 envelope around it stays visible, as listed below. Keys are derived
 from the libp2p peer identity, so no additional key exchange is needed.
 
+The Dart client (`ricochet-dart-client`, `lib/crypto/payload_encryption.dart`)
+implements the same format, and both repositories carry the same test vectors
+(fixed seeds, fixed nonce, the resulting ciphertext byte for byte: `pkg/client`
+`TestCrossLanguageVectors` here, `test/payload_encryption_test.dart` there), so
+a message sealed by either client opens in the other. Change the format on one
+side and that side's vector test is the one that fails first.
+
 What this protects, and what it does not:
 
 - **Confidentiality and integrity of the payload** against the server and
