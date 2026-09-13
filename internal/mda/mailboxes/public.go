@@ -48,18 +48,10 @@ func (m *PublicMailbox) StoreMessage(ctx context.Context, msg *core.Message) err
 		}
 	}
 
-	// The cap applies here as it does to the other types. It used to be
-	// missing, so a public mailbox was the one place an owner could store
-	// without limit.
-	count, err := m.storage.GetMessageCount(ctx, m.record.ID)
-	if err != nil {
-		return err
-	}
-	if count >= m.record.MaxMessages {
-		return &MailboxFullError{Current: count, Max: m.record.MaxMessages}
-	}
-
-	if _, err := m.storage.StoreMessage(ctx, m.record, msg); err != nil {
+	// The cap applies here as it does to the other types, checked by
+	// storage under the mailbox row lock. It used to be missing, so a public
+	// mailbox was the one place an owner could store without limit.
+	if err := storeMessage(ctx, m.storage, m.record, msg); err != nil {
 		return err
 	}
 
@@ -67,10 +59,6 @@ func (m *PublicMailbox) StoreMessage(ctx context.Context, msg *core.Message) err
 		"message_id", msg.MessageID,
 		"mailbox", m.record.FullPath(),
 	)
-
-	if err := m.storage.EnforceRetentionPolicy(ctx, m.record); err != nil {
-		m.logger.Warn("failed to enforce retention policy", "error", err)
-	}
 
 	return nil
 }

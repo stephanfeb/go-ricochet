@@ -2,6 +2,7 @@ package mailboxes
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -68,14 +69,29 @@ func (e *NotFoundError) Error() string {
 	return fmt.Sprintf("mailbox not found: %s", e.Path)
 }
 
-// MailboxFullError indicates a mailbox has reached capacity.
-type MailboxFullError struct {
-	Current int
-	Max     int
-}
+// MailboxFullError indicates a mailbox has reached capacity. Storage raises
+// it, under the mailbox row lock, so it is the storage type by another name.
+type MailboxFullError = storage.MailboxFullError
 
-func (e *MailboxFullError) Error() string {
-	return fmt.Sprintf("mailbox full: %d/%d messages", e.Current, e.Max)
+// storeMessage writes msg into the mailbox, letting storage enforce the cap.
+//
+// A mailbox with a retention_count is a rolling window: the sweep keeps only
+// its newest retention_count messages. Pruning used to run after every store
+// into a public mailbox, two DELETEs with a sort per message, so the window
+// never touched the cap. It now runs in maintenance, and a window that fills
+// the cap between sweeps is pruned here, on the full path only, and the store
+// tried once more. The hot path pays nothing for it.
+func storeMessage(ctx context.Context, store storage.Storage, record *storage.MailboxRecord, msg *core.Message) error {
+	_, err := store.StoreMessage(ctx, record, msg)
+	var full *MailboxFullError
+	if !errors.As(err, &full) || record.RetentionCount == nil {
+		return err
+	}
+	if perr := store.EnforceRetentionPolicy(ctx, record); perr != nil {
+		return fmt.Errorf("prune full mailbox: %w", perr)
+	}
+	_, err = store.StoreMessage(ctx, record, msg)
+	return err
 }
 
 // fetchPage reads one page from storage and reports whether more follow.

@@ -462,6 +462,15 @@ func (s *MailboxServer) PerformMaintenance(ctx context.Context) error {
 		s.logger.Info("retention removed messages", "count", retained)
 	}
 
+	// The counters the cap check reads are maintained by the store and
+	// delete paths; this is the safety net, and drift means a bug.
+	drifted, err := s.Storage.ReconcileMessageCounts(ctx)
+	if err != nil {
+		s.logger.Warn("failed to reconcile message counts", "error", err)
+	} else if drifted > 0 {
+		s.logger.Warn("message counts had drifted", "mailboxes", drifted)
+	}
+
 	feedRetained, err := s.Storage.EnforceAllFeedRetention(ctx)
 	if err != nil {
 		s.logger.Warn("failed to enforce feed retention", "error", err)

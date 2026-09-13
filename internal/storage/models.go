@@ -19,6 +19,10 @@ type MailboxRecord struct {
 	MaxMessages    int            `json:"maxMessages"`
 	RetentionDays  int            `json:"retentionDays"`
 	RetentionCount *int           `json:"retentionCount,omitempty"`
+	// MessageCount is the number of stored messages at the time the record
+	// was read. The database maintains it (see mailboxes.message_count in
+	// schema.sql); it is a snapshot, not a live figure.
+	MessageCount   int            `json:"messageCount"`
 }
 
 // FullPath returns "ownerPeerId/folderPath".
@@ -258,6 +262,18 @@ var (
 	// MaxDirectoryQueryLength.
 	ErrDirectoryQueryTooLong = fmt.Errorf("directory query too long")
 )
+
+// MailboxFullError is a store refused because the mailbox holds max_messages
+// already. It is raised by StoreMessage under the mailbox row lock, so two
+// concurrent deliveries into the last slot cannot both be admitted.
+type MailboxFullError struct {
+	Current int
+	Max     int
+}
+
+func (e *MailboxFullError) Error() string {
+	return fmt.Sprintf("mailbox full: %d/%d messages", e.Current, e.Max)
+}
 
 // DocumentSizeExceededError indicates a document exceeds the size limit.
 type DocumentSizeExceededError struct {

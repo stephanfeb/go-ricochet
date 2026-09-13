@@ -227,8 +227,9 @@ table under "What Any Peer Can Read".
    `no write access to shared mailbox` = missing grant (owner must grant). They can
    mask each other; fixing one can reveal the other.
 4. **Don't delete-and-recreate to change a type.** Get it right at creation.
-5. **Don't assume retrieve prunes, or that age-retention will save you** on
-   private/shared mailboxes — it won't; deletion is your job.
+5. **Don't assume retrieve prunes, or that retention will save you in time.**
+   Retention runs once per `cleanup_interval`; between sweeps a mailbox
+   without a `retentionCount` fills to its cap, and deletion is your job.
 6. **Persist your send-dedupe state.** (Client-side, but it interacts badly here: an
    in-memory "what have I already sent" ledger that resets on restart re-sends the
    whole vault, which is what filled our mailboxes to the cap so fast. Persist it.)
@@ -243,10 +244,16 @@ table under "What Any Peer Can Read".
   (recipient-is-owner check only).
 - **Shared/Public = ACL (write-grant required), checked BEFORE capacity:**
   `internal/mda/mailboxes/shared.go:34-58`, `public.go:34-49`.
-- **Capacity cap → `MailboxFullError`:** `private.go:45`, `shared.go:55`;
-  `storage.max_messages_per_mailbox` (default 1000).
-- **Retention only on the public write path:** `public.go:60`
-  (`EnforceRetentionPolicy`); not called from private/shared `StoreMessage`.
+- **Capacity cap → `MailboxFullError`:** enforced in storage,
+  `internal/storage/postgres/postgres.go` `StoreMessage`, by the same `UPDATE`
+  that claims the sequence number, so it holds under concurrent delivery;
+  `storage.max_messages_per_mailbox` (default 1000). `mailboxes.storeMessage`
+  (`mailbox.go`) is the shared call site for all three types.
+- **Retention runs in maintenance for every type** (`EnforceAllRetention`,
+  `cleanup_interval`). A mailbox with a `retentionCount` below its cap is a
+  rolling window: if it reaches the cap between sweeps, the full path prunes
+  it to `retentionCount` and retries the store once (`mailbox.go`
+  `storeMessage`). A `retentionCount` at or above the cap gives no window.
 - **Access modes:** `pkg/wire/mailbox.go` (aliased in `internal/core`)
   (`AccessReadOnly` / `AccessWriteOnly` / `AccessReadWrite`).
 - **Delete / expunge (MAA):** message types `MsgTypeExpunge 0x3E`,

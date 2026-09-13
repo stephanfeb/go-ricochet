@@ -19,7 +19,13 @@ CREATE TABLE IF NOT EXISTS mailboxes (
     -- inside the same transaction as the message insert, so concurrent deliveries
     -- to one mailbox cannot be handed the same sequence number.
     current_sequence INTEGER NOT NULL DEFAULT 0,
-    
+    -- Live count of rows in stored_messages for this mailbox. Raised by the
+    -- same UPDATE that hands out a sequence number, which also checks it
+    -- against max_messages under the row lock; lowered by the statement-level
+    -- delete trigger on stored_messages. Delivery used to run COUNT(*) per
+    -- message and check the cap outside any lock.
+    message_count INTEGER NOT NULL DEFAULT 0,
+
     CONSTRAINT uq_mailbox_owner_folder UNIQUE(owner_peer_id, folder_path)
 );
 
@@ -283,21 +289,36 @@ CREATE INDEX IF NOT EXISTS idx_collection_items_updated
 -- MAINTENANCE FUNCTIONS AND TRIGGERS
 -- =============================================================================
 
--- Function to update last_access_at on mailbox access
-CREATE OR REPLACE FUNCTION update_mailbox_access()
+-- The per-row insert trigger that bumped last_access_at is gone (2026-09):
+-- it updated the mailbox row a second time inside every delivery
+-- transaction, and the sequence UPDATE in StoreMessage now sets
+-- last_access_at itself. Dropped explicitly so upgraded databases lose it.
+DROP TRIGGER IF EXISTS trg_message_access ON stored_messages;
+DROP FUNCTION IF EXISTS update_mailbox_access();
+
+-- Keeps mailboxes.message_count in step with deletes, whichever path issues
+-- them: acknowledgement, expunge, expiry, retention, an operator purge, or the
+-- cascade from a dropped mailbox. Statement-level with a transition table, so
+-- a sweep that removes ten thousand rows costs one grouped UPDATE, not ten
+-- thousand. The increment side has exactly one path, StoreMessage, and lives
+-- in its sequence UPDATE.
+CREATE OR REPLACE FUNCTION stored_messages_deleted()
 RETURNS TRIGGER AS $$
 BEGIN
-    UPDATE mailboxes SET last_access_at = NOW() WHERE id = NEW.mailbox_id;
-    RETURN NEW;
+    UPDATE mailboxes m
+    SET message_count = GREATEST(m.message_count - d.n, 0)
+    FROM (SELECT mailbox_id, COUNT(*) AS n FROM deleted GROUP BY mailbox_id) d
+    WHERE m.id = d.mailbox_id;
+    RETURN NULL;
 END;
 $$ LANGUAGE plpgsql;
 
--- Trigger on message insert
-DROP TRIGGER IF EXISTS trg_message_access ON stored_messages;
-CREATE TRIGGER trg_message_access
-    AFTER INSERT ON stored_messages
-    FOR EACH ROW
-    EXECUTE FUNCTION update_mailbox_access();
+DROP TRIGGER IF EXISTS trg_stored_messages_deleted ON stored_messages;
+CREATE TRIGGER trg_stored_messages_deleted
+    AFTER DELETE ON stored_messages
+    REFERENCING OLD TABLE AS deleted
+    FOR EACH STATEMENT
+    EXECUTE FUNCTION stored_messages_deleted();
 
 -- =============================================================================
 -- USEFUL QUERIES FOR MONITORING
@@ -370,6 +391,23 @@ WHERE m.current_sequence < COALESCE(
 -- deliberately not added: databases predating this change may already hold
 -- duplicates, and the constraint would fail to build against them. Add it once
 -- a deployment has verified it is clean.
+
+-- mailboxes.message_count (added 2026-09): the live row count the delivery
+-- path checks against max_messages under the mailbox row lock. Backfilled
+-- from stored_messages; idempotent, and the same statement is what the
+-- maintenance sweep runs to repair any drift.
+ALTER TABLE mailboxes
+    ADD COLUMN IF NOT EXISTS message_count INTEGER NOT NULL DEFAULT 0;
+
+UPDATE mailboxes m
+SET message_count = c.n
+FROM (SELECT mailbox_id, COUNT(*) AS n FROM stored_messages GROUP BY mailbox_id) c
+WHERE m.id = c.mailbox_id AND m.message_count <> c.n;
+
+UPDATE mailboxes m
+SET message_count = 0
+WHERE m.message_count <> 0
+  AND NOT EXISTS (SELECT 1 FROM stored_messages sm WHERE sm.mailbox_id = m.id);
 
 -- stored_messages.sf_flags (added 2026-09): the protocol-level flags a sender
 -- sets (encrypted, compressed) were never stored -- only the IMAP flags were --

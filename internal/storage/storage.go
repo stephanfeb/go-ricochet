@@ -126,6 +126,11 @@ type Storage interface {
 	// retention_count in one pass, private mailboxes included, and reports
 	// messages removed.
 	EnforceAllRetention(ctx context.Context) (int, error)
+	// ReconcileMessageCounts recomputes every mailbox's message_count from
+	// stored_messages and reports how many were wrong. The counter is
+	// maintained by StoreMessage and the delete trigger, so a non-zero
+	// result is a bug to look into, not routine housekeeping.
+	ReconcileMessageCounts(ctx context.Context) (int, error)
 
 	// Operator views
 	//

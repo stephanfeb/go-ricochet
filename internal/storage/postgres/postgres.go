@@ -127,7 +127,8 @@ func (s *PostgresStorage) GetOrCreateMailbox(ctx context.Context, addr *core.Mai
 			DO UPDATE SET last_access_at = mailboxes.last_access_at
 		RETURNING id, owner_peer_id, folder_path, mailbox_type,
 				  created_at, last_access_at, max_messages,
-				  retention_days, retention_count, (xmax = 0) AS created`,
+				  retention_days, retention_count, message_count,
+				  (xmax = 0) AS created`,
 		addr.OwnerID.String(), addr.FolderPath, int(addr.Type),
 		maxMessages, retentionDays, retentionCount,
 	)
@@ -137,7 +138,7 @@ func (s *PostgresStorage) GetOrCreateMailbox(ctx context.Context, addr *core.Mai
 	var created bool
 	if err := row.Scan(&r.ID, &r.OwnerPeerID, &r.FolderPath, &typ,
 		&r.CreatedAt, &r.LastAccessAt, &r.MaxMessages,
-		&r.RetentionDays, &r.RetentionCount, &created); err != nil {
+		&r.RetentionDays, &r.RetentionCount, &r.MessageCount, &created); err != nil {
 		return nil, fmt.Errorf("get or create mailbox: %w", err)
 	}
 	r.Type = core.MailboxType(typ)
@@ -152,7 +153,7 @@ func (s *PostgresStorage) FindMailbox(ctx context.Context, ownerID peer.ID, fold
 	row := s.pool.QueryRow(ctx, `
 		SELECT id, owner_peer_id, folder_path, mailbox_type,
 			   created_at, last_access_at, max_messages,
-			   retention_days, retention_count
+			   retention_days, retention_count, message_count
 		FROM mailboxes
 		WHERE owner_peer_id = $1 AND folder_path = $2`,
 		ownerID.String(), folderPath,
@@ -186,7 +187,7 @@ func (s *PostgresStorage) ListMailboxes(ctx context.Context, ownerID peer.ID) ([
 	rows, err := s.pool.Query(ctx, `
 		SELECT id, owner_peer_id, folder_path, mailbox_type,
 			   created_at, last_access_at, max_messages,
-			   retention_days, retention_count
+			   retention_days, retention_count, message_count
 		FROM mailboxes
 		WHERE owner_peer_id = $1`,
 		ownerID.String(),
@@ -248,17 +249,26 @@ func (s *PostgresStorage) StoreMessage(ctx context.Context, mailbox *storage.Mai
 	}
 	defer tx.Rollback(ctx)
 
+	// One statement claims the sequence number, counts the message in,
+	// enforces the cap and records the access, all under the row lock the
+	// UPDATE takes. The cap used to be a COUNT(*) issued before the store,
+	// outside any lock, so N deliveries racing into the last slot were all
+	// admitted; and last_access_at used to be set by a per-row trigger that
+	// updated this same row a second time in the same transaction.
 	var seq int
 	err = tx.QueryRow(ctx, `
 		UPDATE mailboxes
-		SET current_sequence = current_sequence + 1
+		SET current_sequence = current_sequence + 1,
+		    message_count = message_count + 1,
+		    last_access_at = NOW()
 		WHERE id = $1
+		  AND (max_messages <= 0 OR message_count < max_messages)
 		RETURNING current_sequence`,
 		mailbox.ID,
 	).Scan(&seq)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return 0, storage.ErrMailboxNotFound
+			return 0, s.storeRefused(ctx, tx, mailbox.ID)
 		}
 		return 0, fmt.Errorf("increment mailbox sequence: %w", err)
 	}
@@ -285,6 +295,22 @@ func (s *PostgresStorage) StoreMessage(ctx context.Context, mailbox *storage.Mai
 
 	s.logger.Debug("Stored message", "messageId", msg.MessageID, "sequence", seq)
 	return seq, nil
+}
+
+// storeRefused explains a sequence UPDATE that matched no row: the mailbox is
+// gone, or it is full. Only the failure path pays for the second query.
+func (s *PostgresStorage) storeRefused(ctx context.Context, tx pgx.Tx, mailboxID int64) error {
+	var count, max int
+	err := tx.QueryRow(ctx,
+		`SELECT message_count, max_messages FROM mailboxes WHERE id = $1`, mailboxID,
+	).Scan(&count, &max)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return storage.ErrMailboxNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("inspect refused store: %w", err)
+	}
+	return &storage.MailboxFullError{Current: count, Max: max}
 }
 
 func (s *PostgresStorage) RetrieveMessages(ctx context.Context, mailbox *storage.MailboxRecord, fromSequence *int, maxMessages *int, minPriority *core.MessagePriority) ([]*core.Message, error) {
@@ -365,9 +391,14 @@ func (s *PostgresStorage) DeleteOwnedMessages(ctx context.Context, ownerID peer.
 	return int(tag.RowsAffected()), nil
 }
 
+// GetMessageCount reads the maintained counter, the same figure the cap check
+// uses, rather than counting rows.
 func (s *PostgresStorage) GetMessageCount(ctx context.Context, mailboxID int64) (int, error) {
 	var count int
-	err := s.pool.QueryRow(ctx, `SELECT COUNT(*) FROM stored_messages WHERE mailbox_id = $1`, mailboxID).Scan(&count)
+	err := s.pool.QueryRow(ctx, `SELECT message_count FROM mailboxes WHERE id = $1`, mailboxID).Scan(&count)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, storage.ErrMailboxNotFound
+	}
 	return count, err
 }
 
@@ -1220,12 +1251,34 @@ func (s *PostgresStorage) EnforceAllRetention(ctx context.Context) (int, error) 
 // Helpers
 // =============================================================================
 
+// ReconcileMessageCounts is the backfill statement from schema.sql, re-run.
+func (s *PostgresStorage) ReconcileMessageCounts(ctx context.Context) (int, error) {
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE mailboxes m
+		SET message_count = c.n
+		FROM (SELECT mailbox_id, COUNT(*) AS n FROM stored_messages GROUP BY mailbox_id) c
+		WHERE m.id = c.mailbox_id AND m.message_count <> c.n`)
+	if err != nil {
+		return 0, fmt.Errorf("reconcile message counts: %w", err)
+	}
+	drifted := int(tag.RowsAffected())
+	tag, err = s.pool.Exec(ctx, `
+		UPDATE mailboxes m
+		SET message_count = 0
+		WHERE m.message_count <> 0
+		  AND NOT EXISTS (SELECT 1 FROM stored_messages sm WHERE sm.mailbox_id = m.id)`)
+	if err != nil {
+		return drifted, fmt.Errorf("reconcile empty mailboxes: %w", err)
+	}
+	return drifted + int(tag.RowsAffected()), nil
+}
+
 func scanMailboxRecord(row pgx.Row) (*storage.MailboxRecord, error) {
 	var r storage.MailboxRecord
 	var typ int
 	err := row.Scan(&r.ID, &r.OwnerPeerID, &r.FolderPath, &typ,
 		&r.CreatedAt, &r.LastAccessAt, &r.MaxMessages,
-		&r.RetentionDays, &r.RetentionCount)
+		&r.RetentionDays, &r.RetentionCount, &r.MessageCount)
 	if err != nil {
 		return nil, err
 	}
@@ -1238,7 +1291,7 @@ func scanMailboxRecordFromRows(rows pgx.Rows) (*storage.MailboxRecord, error) {
 	var typ int
 	err := rows.Scan(&r.ID, &r.OwnerPeerID, &r.FolderPath, &typ,
 		&r.CreatedAt, &r.LastAccessAt, &r.MaxMessages,
-		&r.RetentionDays, &r.RetentionCount)
+		&r.RetentionDays, &r.RetentionCount, &r.MessageCount)
 	if err != nil {
 		return nil, err
 	}

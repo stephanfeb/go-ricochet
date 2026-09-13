@@ -42,16 +42,8 @@ func (m *PrivateMailbox) StoreMessage(ctx context.Context, msg *core.Message) er
 		return &UnauthorizedError{Message: "not mailbox owner"}
 	}
 
-	// Check capacity
-	count, err := m.storage.GetMessageCount(ctx, m.record.ID)
-	if err != nil {
-		return err
-	}
-	if count >= m.record.MaxMessages {
-		return &MailboxFullError{Current: count, Max: m.record.MaxMessages}
-	}
-
-	if _, err := m.storage.StoreMessage(ctx, m.record, msg); err != nil {
+	// Capacity is checked by storage, under the mailbox row lock.
+	if err := storeMessage(ctx, m.storage, m.record, msg); err != nil {
 		return err
 	}
 

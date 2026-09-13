@@ -498,5 +498,6 @@ func (m *mockStorage) CountMailboxes(_ context.Context, ownerID peer.ID) (int, i
 	return owner, len(m.mailboxes), nil
 }
 func (m *mockStorage) EnforceAllRetention(_ context.Context) (int, error)       { return 0, nil }
+func (m *mockStorage) ReconcileMessageCounts(_ context.Context) (int, error)    { return 0, nil }
 func (m *mockStorage) EnforceAllFeedRetention(_ context.Context) (int, error)   { return 0, nil }
 func (m *mockStorage) CountFeedEntries(_ context.Context, _ int64) (int, error) { return 0, nil }

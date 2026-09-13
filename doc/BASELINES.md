@@ -55,7 +55,17 @@ SFA and SCA which each do a write **and** a read.
 | Scenario | req/s | p50 | p95 | p99 |
 |---|---:|---:|---:|---:|
 | `msa` submit | 5,428 | 1.3ms | 3.6ms | 18.8ms |
+| `msa` submit, after P1 (2026-09-13) | 6,288 | 1.3ms | 2.4ms | 12.3ms |
 | `maa` retrieve | 7,886 | 0.97ms | 2.6ms | 3.8ms |
+
+> P1 (backlog) took a submission from five round-trips plus a `COUNT(*)` and a
+> trigger to three: the sequence `UPDATE` now also counts the message in,
+> checks the cap and records the access. Measured before and after in one
+> session on the same machine, 5,000 requests so the tail is not one outlier:
+> before 6,020–6,070 req/s, p50 1.6ms, p95 2.4–2.5ms, p99 2.9–3.5ms; after
+> 6,750–7,070 req/s, p50 1.3ms, p95 2.1–2.3ms, p99 3.0–5.1ms. The 500-request
+> row above is the shape the table uses; its p99 is the startup effect noted
+> below.
 
 > The `maa` row predates the change that made retrieval non-destructive (2026-09). It was measured while a private mailbox deleted what it returned, so after ten requests per worker most retrieves were of an empty mailbox. Re-run before comparing: each retrieve now returns ten real messages.
 
