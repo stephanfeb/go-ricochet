@@ -127,6 +127,59 @@ finding stands. `mma` is a create and a delete, two writes that each
 invalidate the mailbox cache, and lands at roughly half of `msa` at the
 median, which is the expected shape for two writes against one.
 
+## Session of 2026-09-14: HEAD against `ca32f10`, side by side, idle host
+
+The session above left a question: were its figures the server or the
+host? This session answers it. Two servers ran at once on one machine, each
+on its own fresh database and port: `ca32f10` (the server the top table was
+taken on, built in a worktree with its sibling repositories checked out at
+the commits of that day) and HEAD (`8ce3df7`, every backlog row but this one
+done). One bench binary (HEAD's) drove both, so the client side is identical.
+Host: 12 cores, load average 4–6 with over 80% idle CPU, no other CPU-bound
+work. Both servers warmed with 300 `msa` requests first, then every scenario
+ran 1,000 requests at 10 workers on the old server and then the new one
+(pass 1), then the other way round (pass 2), so drift in the host lands on
+both sides equally.
+
+| Scenario | `ca32f10` req/s (pass 1 / 2) | HEAD req/s (pass 1 / 2) | `ca32f10` p50 / p99 | HEAD p50 / p99 |
+|---|---:|---:|---:|---:|
+| `msa` submit | 7,438 / 8,069 | 9,034 / 6,237 | 1.1ms / 5.4ms | 1.5ms / 3.2ms |
+| `maa` retrieve | 8,601 / 8,758 | 4,070 / 4,018 | 1.0ms / 2.8ms | 2.4ms / 4.5ms |
+| `sda` put + get | 4,901 / 5,113 | 4,879 / 4,850 | 1.9ms / 3.2ms | 2.0ms / 4.7ms |
+| `sfa` append + get | 4,886 / 4,920 | 4,713 / 4,421 | 2.0ms / 3.5ms | 2.1ms / 4.2ms |
+| `sca` put item + query | 778 / 777 | 822 / 806 | 13.3ms / 23.2ms | 13.0ms / 22.5ms |
+| `mma` create + delete mailbox | 5,099 / 6,236 | 5,495 / 5,765 | 1.6ms / 2.5ms | 1.7ms / 3.0ms |
+| `mixed` (all six) | 3,825 / 3,960 | 3,257 / 3,629 | 2.2ms / 7.3ms | 2.6ms / 6.5ms |
+
+Latencies are pass 2. `msa` and `maa` were then re-taken at 5,000 requests,
+alternating servers, to shrink the noise: `msa` 6,507 and 6,936 req/s on
+`ca32f10` against 7,904 and 6,472 on HEAD; `maa` 9,060 and 9,346 against
+3,966 and 4,056.
+
+What this says:
+
+**The 2026-09-13 session was the host.** On an idle machine HEAD is within
+about 10% of `ca32f10` on `msa`, `sda`, `sfa`, `sca`, `mma` and `mixed`,
+with the differences inside the pass-to-pass swing of either server, and
+the 100–400ms tails are gone on both. Nothing added since Phase B (the
+per-request deadlines, admission, the access log, the write gate, the read
+authorization predicate of N6) costs throughput that this benchmark can see.
+The suspects the backlog named are cleared.
+
+**`maa` at half the rate is the retrieve that stopped deleting.** The bench
+seeds 100 messages per worker and retrieves ten at a time. `ca32f10` deleted
+what it returned, so after ten requests per worker every retrieve was of an
+empty mailbox: at the end of this session its database held 5,015 fewer
+messages than HEAD's, which were the seeds it had drained. HEAD returns ten
+real 1 KB messages on every request. The two rows measure different work,
+which the note under the top table already warned about. HEAD's figure,
+about 4,000 requests and 40,000 messages a second at 10 workers, is the
+retrieve baseline from here on.
+
+**`sca` is unchanged, and still five to six times slower than the other
+stores** on both servers, so that finding is a property of the operation
+(a JSONB insert then an unfiltered query) and not of anything since.
+
 ## Batched
 
 One request carries 100 items. Requests per second is not the interesting
@@ -191,8 +244,11 @@ were also pacing themselves under a rate limit that no longer exists.
   (`storage.ErrInvalidContent`). The benchmark hit this by putting raw random
   bytes in a JSON string field, where any NUL byte marshals to `\u0000`; it
   hex-encodes now.
-- **The 2026-09-13 session is 5–10× below the earlier per-operation figures**
+- **The 2026-09-13 session was 5–10× below the earlier per-operation figures**
   with p99 stalls of hundreds of milliseconds, on a host at load 22 with no
-  idle CPU. Whether any of that is the server is unknown until the rows are
-  re-taken on an idle machine; backlog N8 tracks it.
+  idle CPU. Resolved 2026-09-14 (backlog N8): side by side on an idle host,
+  HEAD and `ca32f10` are within about 10% of each other on every row but
+  `maa`, whose gap is the non-destructive retrieve doing ten times the work.
+  The session table for 2026-09-13 stays as a record of what a saturated
+  host does to these numbers.
 - **`sca` throughput** as noted above.
