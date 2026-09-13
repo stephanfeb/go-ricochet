@@ -177,7 +177,11 @@ and it was unsafe on two counts:
 - **It's unreliable.** The delivery layer caches mailboxes (`delivery.go` mailbox
   cache), so a delete-then-recreate raced with the cache and left a "converted"
   mailbox that *still accepted a stranger* in our test. A security control that is
-  only sometimes in force is worse than an honestly-open one.
+  only sometimes in force is worse than an honestly-open one. (Since P8 the cache
+  is bounded by `storage.mailbox_cache_size` and every settings write or delete
+  evicts the entry, so an `updateConfig` takes effect on the next delivery; the
+  delete-then-recreate race above is still real, because a concurrent load
+  can re-insert the record it read just before the delete.)
 
 **Fix:** get the type right at **creation** (Gotcha 3). If you lost the race, prefer
 leaving the inbox as-is (open, but functional and sealed) over a flaky convert.

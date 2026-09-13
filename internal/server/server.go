@@ -461,7 +461,8 @@ func (s *Server) initializeServices(ctx context.Context) {
 	s.registerCollectors()
 
 	// Create MDA
-	s.mdaSrv = mda.NewMailboxServer(s.storage, s.mailboxDefaults(), s.logger)
+	s.mdaSrv = mda.NewMailboxServer(s.storage, s.mailboxDefaults(), s.logger).
+		WithCacheSize(s.config.MailboxCacheSize)
 	s.logger.Info("MDA initialized")
 
 	// Create MTA

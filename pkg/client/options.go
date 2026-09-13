@@ -213,7 +213,7 @@ func WithDirectoryServer(id peer.ID) DirectoryBrowseOption {
 	return func(c *directoryBrowseConfig) { c.ServerPeerID = &id }
 }
 
-// MailboxOption configures CreateMailbox behavior.
+// MailboxOption configures CreateMailbox and UpdateMailboxConfig.
 type MailboxOption func(*mailboxConfig)
 
 type mailboxConfig struct {

@@ -576,7 +576,7 @@ func handleUpdateConfig(sc *forge.StreamContext, next func()) {
 		return
 	}
 
-	if err := mailboxServer.Storage.UpdateMailbox(ctx, record); err != nil {
+	if err := mailboxServer.UpdateMailbox(ctx, record); err != nil {
 		sc.Response = failed(sc, "failed to update mailbox", err)
 		return
 	}

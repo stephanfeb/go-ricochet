@@ -127,6 +127,9 @@ func (s *Server) opsDetails() map[string]any {
 		"uptimeSeconds": time.Since(s.startTime).Seconds(),
 		"admission":     s.admission.Stats(),
 	}
+	if s.mdaSrv != nil {
+		details["mailboxCache"] = s.mdaSrv.CacheStats()
+	}
 
 	if provider, ok := s.storage.(poolProvider); ok {
 		if pool := provider.Pool(); pool != nil {

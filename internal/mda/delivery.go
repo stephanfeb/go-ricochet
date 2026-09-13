@@ -4,9 +4,9 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"sync"
 	"time"
 
+	lru "github.com/hashicorp/golang-lru/v2"
 	"github.com/libp2p/go-libp2p/core/peer"
 
 	"github.com/twostack/go-ricochet/internal/core"
@@ -100,14 +100,22 @@ func (d MailboxDefaults) orFallbacks() MailboxDefaults {
 	return d
 }
 
+// DefaultMailboxCacheSize bounds the mailbox cache when no size is configured.
+const DefaultMailboxCacheSize = 10000
+
 // MailboxServer is the Mail Delivery Agent — handles local message storage and retrieval.
 type MailboxServer struct {
-	Storage      storage.Storage
-	mailboxCache map[string]mailboxes.Mailbox
-	mu           sync.RWMutex
-	logger       *slog.Logger
-	notifier     *Notifier
-	defaults     MailboxDefaults
+	Storage storage.Storage
+	// mailboxCache holds loaded mailboxes by full path. It is bounded, and
+	// every write to a mailbox's settings goes through UpdateMailbox or
+	// DeleteMailbox so the entry is dropped: the cached record is what
+	// clamps a delivery's expiry and drives the rolling-window prune, and
+	// it used to keep the old settings for the life of the process.
+	mailboxCache  *lru.Cache[string, mailboxes.Mailbox]
+	cacheCapacity int
+	logger        *slog.Logger
+	notifier      *Notifier
+	defaults      MailboxDefaults
 }
 
 // SetNotifier sets the push notification sender for the MDA.
@@ -122,11 +130,42 @@ func (s *MailboxServer) SetNotifier(n *Notifier) {
 // and it failed silently.
 func NewMailboxServer(store storage.Storage, defaults MailboxDefaults, logger *slog.Logger) *MailboxServer {
 	return &MailboxServer{
-		Storage:      store,
-		mailboxCache: make(map[string]mailboxes.Mailbox),
-		logger:       logger,
-		defaults:     defaults.orFallbacks(),
+		Storage:       store,
+		mailboxCache:  newMailboxCache(DefaultMailboxCacheSize),
+		cacheCapacity: DefaultMailboxCacheSize,
+		logger:        logger,
+		defaults:      defaults.orFallbacks(),
 	}
+}
+
+// WithCacheSize bounds the mailbox cache at n entries; n <= 0 keeps the
+// default. Call it before the server starts taking requests.
+func (s *MailboxServer) WithCacheSize(n int) *MailboxServer {
+	if n > 0 {
+		s.mailboxCache = newMailboxCache(n)
+		s.cacheCapacity = n
+	}
+	return s
+}
+
+func newMailboxCache(n int) *lru.Cache[string, mailboxes.Mailbox] {
+	c, err := lru.New[string, mailboxes.Mailbox](n)
+	if err != nil {
+		// Only a non-positive size errors, and callers never pass one.
+		panic(fmt.Sprintf("mailbox cache size %d: %v", n, err))
+	}
+	return c
+}
+
+// CacheStats reports how full the mailbox cache is.
+type CacheStats struct {
+	Size     int `json:"size"`
+	Capacity int `json:"capacity"`
+}
+
+// CacheStats returns the mailbox cache's current fill and bound.
+func (s *MailboxServer) CacheStats() CacheStats {
+	return CacheStats{Size: s.mailboxCache.Len(), Capacity: s.cacheCapacity}
 }
 
 // MailboxDefaults reports the settings applied to mailboxes created on the
@@ -150,12 +189,9 @@ func (s *MailboxServer) getMailbox(ctx context.Context, addr *core.MailboxAddres
 func (s *MailboxServer) getOrCreateMailbox(ctx context.Context, addr *core.MailboxAddress, maxMessages, retentionDays int, retentionCount *int) (mailboxes.Mailbox, error) {
 	key := addr.FullPath()
 
-	s.mu.RLock()
-	if mb, ok := s.mailboxCache[key]; ok {
-		s.mu.RUnlock()
+	if mb, ok := s.mailboxCache.Get(key); ok {
 		return mb, nil
 	}
-	s.mu.RUnlock()
 
 	existing, err := s.Storage.FindMailbox(ctx, addr.OwnerID, addr.FolderPath)
 	if err != nil {
@@ -180,9 +216,7 @@ func (s *MailboxServer) getOrCreateMailbox(ctx context.Context, addr *core.Mailb
 		return nil, err
 	}
 
-	s.mu.Lock()
-	s.mailboxCache[key] = mb
-	s.mu.Unlock()
+	s.mailboxCache.Add(key, mb)
 
 	s.logger.Debug("loaded mailbox",
 		"type", record.Type,
@@ -290,12 +324,9 @@ func (s *MailboxServer) DeliverLocal(ctx context.Context, msg *core.Message) (in
 func (s *MailboxServer) findMailbox(ctx context.Context, addr *core.MailboxAddress) (mailboxes.Mailbox, error) {
 	key := addr.FullPath()
 
-	s.mu.RLock()
-	if mb, ok := s.mailboxCache[key]; ok {
-		s.mu.RUnlock()
+	if mb, ok := s.mailboxCache.Get(key); ok {
 		return mb, nil
 	}
-	s.mu.RUnlock()
 
 	record, err := s.Storage.FindMailbox(ctx, addr.OwnerID, addr.FolderPath)
 	if err != nil {
@@ -310,9 +341,7 @@ func (s *MailboxServer) findMailbox(ctx context.Context, addr *core.MailboxAddre
 		return nil, err
 	}
 
-	s.mu.Lock()
-	s.mailboxCache[key] = mb
-	s.mu.Unlock()
+	s.mailboxCache.Add(key, mb)
 
 	return mb, nil
 }
@@ -423,15 +452,27 @@ func (s *MailboxServer) DeleteMailbox(ctx context.Context, addr *core.MailboxAdd
 		return err
 	}
 
-	s.mu.Lock()
-	delete(s.mailboxCache, addr.FullPath())
-	s.mu.Unlock()
+	s.mailboxCache.Remove(addr.FullPath())
 
 	if s.notifier != nil {
 		s.notifier.MailboxDeleted(addr)
 	}
 
 	s.logger.Debug("deleted mailbox", "path", addr.FullPath())
+	return nil
+}
+
+// UpdateMailbox writes a mailbox's settings and drops it from the cache, so
+// the next delivery loads the record it will actually be judged by.
+//
+// Callers must not write mailbox settings to storage directly: the cached
+// wrapper holds its own copy of the record, and a write that bypasses this
+// method leaves that copy stale for as long as the entry stays hot.
+func (s *MailboxServer) UpdateMailbox(ctx context.Context, record *storage.MailboxRecord) error {
+	if err := s.Storage.UpdateMailbox(ctx, record); err != nil {
+		return err
+	}
+	s.mailboxCache.Remove(record.FullPath())
 	return nil
 }
 
@@ -485,8 +526,6 @@ func (s *MailboxServer) PerformMaintenance(ctx context.Context) error {
 // Close closes the MDA.
 func (s *MailboxServer) Close() error {
 	s.logger.Info("closing MDA")
-	s.mu.Lock()
-	s.mailboxCache = make(map[string]mailboxes.Mailbox)
-	s.mu.Unlock()
+	s.mailboxCache.Purge()
 	return s.Storage.Close()
 }

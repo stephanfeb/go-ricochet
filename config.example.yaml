@@ -69,6 +69,11 @@ storage:
   max_mailboxes: 100000              # default: 100000, server-wide
   max_mailboxes_per_owner: 100       # default: 100
 
+  # Loaded mailboxes the delivery path keeps in memory. A memory bound, not
+  # a rate: a miss costs one indexed SELECT and the least recently used
+  # entry makes room. Size it to the working set of active mailboxes.
+  mailbox_cache_size: 10000          # default: 10000
+
   # Entries one feed may hold. A feed's own max_entries is a rolling window
   # its owner chooses; this is the ceiling under it, and it is what bounds a
   # collaborative feed that anyone may append to.

@@ -157,7 +157,8 @@ func newTestServer(t *testing.T, configure ...func(*core.ServerConfig)) *testSer
 
 	// Wired as server.go wires it, so the configured mailbox cap reaches the
 	// delivery path in tests too.
-	mdaSrv := mda.NewMailboxServer(store, mda.DefaultsFromConfig(cfg), logger)
+	mdaSrv := mda.NewMailboxServer(store, mda.DefaultsFromConfig(cfg), logger).
+		WithCacheSize(cfg.MailboxCacheSize)
 	trusted, err := trust.Parse(cfg.TrustedPeers)
 	if err != nil {
 		t.Fatalf("trusted peers: %v", err)

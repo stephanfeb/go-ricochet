@@ -769,6 +769,27 @@ func (c *Client) CreateMailbox(ctx context.Context, folderPath string, mailboxTy
 	return err
 }
 
+// UpdateMailboxConfig changes the settings of a mailbox the caller owns.
+// Settings not given keep their current values.
+func (c *Client) UpdateMailboxConfig(ctx context.Context, folderPath string, opts ...MailboxOption) error {
+	cfg := mailboxConfig{}
+	for _, o := range opts {
+		o(&cfg)
+	}
+
+	req := &mma.AdminRequest{
+		OperationType:  mma.OpUpdateConfig,
+		OwnerPeerID:    c.host.ID().String(),
+		FolderPath:     folderPath,
+		MaxMessages:    cfg.MaxMessages,
+		RetentionDays:  cfg.RetentionDays,
+		RetentionCount: cfg.RetentionCount,
+	}
+
+	_, err := c.doAdmin(ctx, req)
+	return err
+}
+
 // DeleteMailbox deletes a mailbox on the server.
 func (c *Client) DeleteMailbox(ctx context.Context, folderPath string) error {
 	req := &mma.AdminRequest{

@@ -39,6 +39,10 @@ type ServerConfig struct {
 	// MaxEntriesPerFeed caps entries in one feed. A feed's own max_entries
 	// is a rolling window the owner chooses; this is the ceiling under it.
 	MaxEntriesPerFeed int `yaml:"max_entries_per_feed" json:"maxEntriesPerFeed"`
+	// MailboxCacheSize bounds the delivery path's cache of loaded mailboxes.
+	// It is a memory bound, not a throughput one: a miss costs one indexed
+	// SELECT, and the least recently used entry is what makes room.
+	MailboxCacheSize int `yaml:"mailbox_cache_size" json:"mailboxCacheSize"`
 
 	// NearCapacityRatio is the fill fraction at which a mailbox counts as
 	// near capacity, driving ricochet_mailboxes_near_capacity and the figure
@@ -452,6 +456,7 @@ func DefaultConfig() *ServerConfig {
 		MaxMailboxes:          100000,
 		MaxMailboxesPerOwner:  100,
 		MaxEntriesPerFeed:     10000,
+		MailboxCacheSize:      10000,
 		NearCapacityRatio:     0.9,
 
 		Storage: StorageBackendConfig{
@@ -550,6 +555,9 @@ func (c *ServerConfig) Validate() error {
 	}
 	if c.MaxEntriesPerFeed <= 0 {
 		return fmt.Errorf("max_entries_per_feed must be positive")
+	}
+	if c.MailboxCacheSize <= 0 {
+		return fmt.Errorf("mailbox_cache_size must be positive")
 	}
 	// Authentication is an allow-list: on with nobody listed would refuse
 	// every connection, which no operator has ever meant. Presets therefore
@@ -654,6 +662,7 @@ type yamlFileConfig struct {
 
 		MaxMailboxesPerOwner int `yaml:"max_mailboxes_per_owner"`
 		MaxEntriesPerFeed    int `yaml:"max_entries_per_feed"`
+		MailboxCacheSize     int `yaml:"mailbox_cache_size"`
 
 		NearCapacityRatio float64 `yaml:"near_capacity_ratio"`
 	} `yaml:"storage"`
@@ -806,6 +815,9 @@ func LoadConfigFromFile(path string, base *ServerConfig) error {
 	}
 	if yc.Storage.MaxEntriesPerFeed > 0 {
 		base.MaxEntriesPerFeed = yc.Storage.MaxEntriesPerFeed
+	}
+	if yc.Storage.MailboxCacheSize > 0 {
+		base.MailboxCacheSize = yc.Storage.MailboxCacheSize
 	}
 	if yc.Storage.NearCapacityRatio != 0 {
 		base.NearCapacityRatio = yc.Storage.NearCapacityRatio
