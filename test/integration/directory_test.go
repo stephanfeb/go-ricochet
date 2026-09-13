@@ -69,6 +69,9 @@ func TestBrowseDirectory(t *testing.T) {
 	}
 }
 
+// The directory is shared by every test that ever ran against the database
+// and listings outlive their peers, so the search term is minted per run:
+// searching for a fixed word found the previous run's Alice as well.
 func TestSearchDirectory(t *testing.T) {
 	server := newTestServer(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -76,10 +79,11 @@ func TestSearchDirectory(t *testing.T) {
 
 	c1 := newTestClient(t, server)
 	c2 := newTestClient(t, server)
+	word := fmt.Sprintf("zq%x", time.Now().UnixNano())
 
 	if err := c1.JoinDirectory(ctx, client.DirectoryListing{
 		DisplayName: "Alice Cryptographer",
-		Bio:         "Loves encryption",
+		Bio:         "Loves " + word,
 	}); err != nil {
 		t.Fatalf("join: %v", err)
 	}
@@ -90,16 +94,15 @@ func TestSearchDirectory(t *testing.T) {
 		t.Fatalf("join: %v", err)
 	}
 
-	// Search for "encryption"
-	result, err := c1.BrowseDirectory(ctx, client.WithDirectoryQuery("encryption"))
+	result, err := c1.BrowseDirectory(ctx, client.WithDirectoryQuery(word))
 	if err != nil {
 		t.Fatalf("browse with search: %v", err)
 	}
 	if len(result.Entries) != 1 {
-		t.Errorf("expected 1 entry matching 'encryption', got %d", len(result.Entries))
+		t.Fatalf("expected 1 entry matching %q, got %d", word, len(result.Entries))
 	}
-	if len(result.Entries) > 0 && result.Entries[0].DisplayName != "Alice Cryptographer" {
-		t.Errorf("expected Alice, got %q", result.Entries[0].DisplayName)
+	if got := result.Entries[0]; got.OwnerPeerID != c1.PeerID().String() || got.DisplayName != "Alice Cryptographer" {
+		t.Errorf("expected Alice (%s), got %q (%s)", c1.PeerID(), got.DisplayName, got.OwnerPeerID)
 	}
 }
 
