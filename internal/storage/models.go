@@ -270,6 +270,11 @@ var (
 	// a client looping until "no more" never stops.
 	ErrInvalidCursor = fmt.Errorf("invalid pagination cursor")
 
+	// ErrInvalidFilter wraps a collection query filter the client got wrong:
+	// an unknown operator, a malformed clause. The wrapping error names the
+	// fault and the sentinel makes it a 400 rather than a 500.
+	ErrInvalidFilter = fmt.Errorf("invalid collection filter")
+
 	// ErrDirectoryQueryTooLong is a directory search longer than
 	// MaxDirectoryQueryLength.
 	ErrDirectoryQueryTooLong = fmt.Errorf("directory query too long")

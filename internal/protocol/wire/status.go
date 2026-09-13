@@ -160,6 +160,11 @@ func classify(err error) (status int, retryAfter time.Duration, msg string) {
 	if errors.Is(err, storage.ErrInvalidCursor) {
 		return StatusBadRequest, 0, storage.ErrInvalidCursor.Error()
 	}
+	if errors.Is(err, storage.ErrInvalidFilter) {
+		// The wrapped text names the operator or clause at fault, which is
+		// exactly what the client needs to fix its query.
+		return StatusBadRequest, 0, err.Error()
+	}
 	if errors.Is(err, storage.ErrDirectoryQueryTooLong) {
 		return StatusBadRequest, 0, storage.ErrDirectoryQueryTooLong.Error()
 	}

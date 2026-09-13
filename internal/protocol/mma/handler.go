@@ -643,11 +643,9 @@ func handleQueryCapacity(sc *forge.StreamContext, next func()) {
 
 	view, err := sampler.Capacity()
 	if err != nil {
-		sc.Logger.Warn("capacity query before the first sample completed", "error", err)
-		sc.Response = &AdminResponse{
-			Success:      false,
-			ErrorMessage: err.Error(),
-		}
+		// Classified by the writer: ErrNotSampled is a 503, and a response
+		// with a message but no status used to read as a 500 to clients.
+		sc.Err = err
 		return
 	}
 

@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+
+	"github.com/twostack/go-ricochet/internal/storage"
 )
 
 // validFieldName matches safe JSONB field names (alphanumeric, underscore, dot, hyphen).
@@ -45,7 +47,7 @@ func BuildJSONBFilter(filter map[string]any, startArgIdx int) (string, []any, er
 		case "$and", "$or":
 			arr, ok := value.([]any)
 			if !ok {
-				return "", nil, fmt.Errorf("operator %s requires an array", key)
+				return "", nil, fmt.Errorf("%w: operator %s requires an array", storage.ErrInvalidFilter, key)
 			}
 			if len(arr) == 0 {
 				continue
@@ -55,7 +57,7 @@ func BuildJSONBFilter(filter map[string]any, startArgIdx int) (string, []any, er
 			for _, item := range arr {
 				subFilter, ok := item.(map[string]any)
 				if !ok {
-					return "", nil, fmt.Errorf("operator %s array items must be objects", key)
+					return "", nil, fmt.Errorf("%w: operator %s array items must be objects", storage.ErrInvalidFilter, key)
 				}
 				clause, subArgs, err := BuildJSONBFilter(subFilter, argIdx)
 				if err != nil {
@@ -74,7 +76,7 @@ func BuildJSONBFilter(filter map[string]any, startArgIdx int) (string, []any, er
 
 		default:
 			if !validFieldName.MatchString(key) {
-				return "", nil, fmt.Errorf("invalid field name: %q", key)
+				return "", nil, fmt.Errorf("%w: invalid field name %q", storage.ErrInvalidFilter, key)
 			}
 
 			switch v := value.(type) {
@@ -91,7 +93,7 @@ func BuildJSONBFilter(filter map[string]any, startArgIdx int) (string, []any, er
 					case op == "$ilike":
 						pattern, ok := opVal.(string)
 						if !ok {
-							return "", nil, fmt.Errorf("$ilike requires a string value")
+							return "", nil, fmt.Errorf("%w: $ilike requires a string value", storage.ErrInvalidFilter)
 						}
 						clauses = append(clauses,
 							fmt.Sprintf("content->>'%s' ILIKE $%d", key, argIdx))
@@ -109,7 +111,7 @@ func BuildJSONBFilter(filter map[string]any, startArgIdx int) (string, []any, er
 						argIdx++
 
 					default:
-						return "", nil, fmt.Errorf("unknown operator: %s", op)
+						return "", nil, fmt.Errorf("%w: unknown operator %s", storage.ErrInvalidFilter, op)
 					}
 				}
 
