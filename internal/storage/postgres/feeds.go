@@ -45,7 +45,7 @@ func (s *PostgresStorage) CreateFeed(ctx context.Context, ownerID peer.ID, path,
 		return nil, fmt.Errorf("create feed: %w", err)
 	}
 
-	s.logger.Info("Created feed", "path", r.FullPath())
+	s.logger.Debug("Created feed", "path", r.FullPath())
 	return &r, nil
 }
 

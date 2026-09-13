@@ -28,7 +28,7 @@ func (s *PostgresStorage) CreateCollection(ctx context.Context, ownerID peer.ID,
 		return nil, fmt.Errorf("create collection: %w", err)
 	}
 
-	s.logger.Info("Created collection", "path", r.FullPath())
+	s.logger.Debug("Created collection", "path", r.FullPath())
 	return &r, nil
 }
 

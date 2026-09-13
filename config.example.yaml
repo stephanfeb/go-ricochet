@@ -343,7 +343,11 @@ admission_control:
 # Logging
 #
 # There is no logging section: the server logs at INFO, or at DEBUG when
-# started with --development. A `logging:` block here is parsed by nobody and
+# started with --development. At INFO every request is exactly one line,
+# msg=request, with protocol, op, status, peer, duration and stream id; a
+# refused request adds one WARN (client's fault) or ERROR (server's) naming
+# the cause, on the same stream id. Everything a handler says about its own
+# progress is DEBUG. A `logging:` block here is parsed by nobody and
 # silently ignored, which is why it is not shown as a commented example --
 # an ignored setting that looks configured is worse than an absent one.
 #

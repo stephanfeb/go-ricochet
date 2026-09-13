@@ -228,7 +228,7 @@ func clampExpiry(msg *core.Message, record *storage.MailboxRecord, now time.Time
 
 // DeliverLocal delivers a message to a local mailbox.
 func (s *MailboxServer) DeliverLocal(ctx context.Context, msg *core.Message) (int, error) {
-	s.logger.Info("delivering message",
+	s.logger.Debug("delivering message",
 		"message_id", msg.MessageID,
 		"from", msg.SenderPeerID,
 		"to", msg.RecipientPeerID,
@@ -264,7 +264,7 @@ func (s *MailboxServer) DeliverLocal(ctx context.Context, msg *core.Message) (in
 		return 0, err
 	}
 
-	s.logger.Info("delivered message",
+	s.logger.Debug("delivered message",
 		"message_id", msg.MessageID,
 		"mailbox", addr.FullPath(),
 	)
@@ -338,7 +338,7 @@ func (s *MailboxServer) wrapRecord(record *storage.MailboxRecord) (mailboxes.Mai
 // identity reading its own inbox before anything was delivered is not an
 // error — and a NotFoundError for anyone else.
 func (s *MailboxServer) Retrieve(ctx context.Context, addr *core.MailboxAddress, callerID peer.ID, opts RetrieveOpts) ([]*core.Message, bool, error) {
-	s.logger.Info("retrieving messages",
+	s.logger.Debug("retrieving messages",
 		"mailbox", addr.FullPath(),
 		"caller", callerID.String(),
 	)
@@ -364,7 +364,7 @@ func (s *MailboxServer) Retrieve(ctx context.Context, addr *core.MailboxAddress,
 		return nil, false, err
 	}
 
-	s.logger.Info("retrieved messages",
+	s.logger.Debug("retrieved messages",
 		"count", len(messages),
 		"mailbox", addr.FullPath(),
 	)
@@ -402,7 +402,7 @@ func (s *MailboxServer) CreateMailbox(ctx context.Context, addr *core.MailboxAdd
 		return err
 	}
 
-	s.logger.Info("created mailbox",
+	s.logger.Debug("created mailbox",
 		"type", addr.Type,
 		"path", addr.FullPath(),
 	)
@@ -431,7 +431,7 @@ func (s *MailboxServer) DeleteMailbox(ctx context.Context, addr *core.MailboxAdd
 		s.notifier.MailboxDeleted(addr)
 	}
 
-	s.logger.Info("deleted mailbox", "path", addr.FullPath())
+	s.logger.Debug("deleted mailbox", "path", addr.FullPath())
 	return nil
 }
 

@@ -144,7 +144,7 @@ func (s *PostgresStorage) GetOrCreateMailbox(ctx context.Context, addr *core.Mai
 	r.Type = core.MailboxType(typ)
 
 	if created {
-		s.logger.Info("Created mailbox", "path", addr.FullPath(), "type", addr.Type)
+		s.logger.Debug("Created mailbox", "path", addr.FullPath(), "type", addr.Type)
 	}
 	return &r, nil
 }

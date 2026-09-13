@@ -167,6 +167,20 @@ type StoreAck struct {
 	RetryAfterMs int64 `json:"retryAfterMs,omitempty"`
 }
 
+// StatusCode is the status the ack reports: Status when set, 200 for a
+// success that carries none, and 500 for a failure that carries none, which
+// is what a server predating Status meant by one.
+func (a *StoreAck) StatusCode() int {
+	switch {
+	case a.Status != 0:
+		return a.Status
+	case a.Success:
+		return StatusOK
+	default:
+		return StatusInternalError
+	}
+}
+
 // RetrieveRequest represents a request to retrieve messages.
 type RetrieveRequest struct {
 	PeerID       string           `json:"peerId"`

@@ -56,7 +56,7 @@ func (r *Router) AcceptMessage(ctx context.Context, msg *core.Message, senderID 
 		return "", fmt.Errorf("deliver message: %w", err)
 	}
 
-	r.logger.Info("message routed to local MDA",
+	r.logger.Debug("message routed to local MDA",
 		"message_id", msg.MessageID,
 		"recipient", msg.RecipientPeerID,
 	)
@@ -113,7 +113,7 @@ func (r *Router) AcceptForwarded(ctx context.Context, msg *core.Message, forward
 		return "", fmt.Errorf("deliver forwarded message: %w", err)
 	}
 
-	r.logger.Info("forwarded message routed to local MDA",
+	r.logger.Debug("forwarded message routed to local MDA",
 		"message_id", forwarded.MessageID,
 		"forwarder", forwarderID.String(),
 		"sender", forwarded.SenderPeerID,

@@ -33,6 +33,7 @@ import (
 // are aliased here so the handlers keep reading wire.StatusX.
 const (
 	StatusOK                  = public.StatusOK
+	StatusMultiStatus         = public.StatusMultiStatus
 	StatusBadRequest          = public.StatusBadRequest
 	StatusForbidden           = public.StatusForbidden
 	StatusNotFound            = public.StatusNotFound

@@ -93,6 +93,7 @@ func NewPipeline(logger *slog.Logger, pool *codec.BufferPool, reg *forge.Registr
 
 	return wire.Bounded(forge.NewPipeline(logger,
 		metrics.Middleware(metrics.FromRegistry(reg), "sca", ""),
+		wire.AccessLog("sca", ""),
 		middleware.Recovery(),
 		collectionResponseWriter(),
 		forge.FrameDecodeMiddleware(pool),

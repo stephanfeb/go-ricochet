@@ -104,6 +104,19 @@ type AdminResponse struct {
 	Capacity *core.ServerCapacity `json:"capacity,omitempty"`
 }
 
+// StatusCode is the status the response reports: Status when set, otherwise
+// 200 for success and 400 for a refusal that named no status.
+func (r *AdminResponse) StatusCode() int {
+	switch {
+	case r.Status != 0:
+		return r.Status
+	case r.Success:
+		return wire.StatusOK
+	default:
+		return wire.StatusBadRequest
+	}
+}
+
 // MailboxInfo represents a mailbox in list responses.
 type MailboxInfo struct {
 	FolderPath    string `json:"folderPath"`
@@ -138,6 +151,7 @@ func NewPipeline(logger *slog.Logger, pool *codec.BufferPool, reg *forge.Registr
 
 	return wire.Bounded(forge.NewPipeline(logger,
 		metrics.Middleware(metrics.FromRegistry(reg), "mma", ""),
+		wire.AccessLog("mma", ""),
 		middleware.Recovery(),
 		adminResponseWriter(),
 		forge.FrameDecodeMiddleware(pool),
@@ -284,7 +298,7 @@ func handleCreateMailbox(sc *forge.StreamContext, next func()) {
 		return
 	}
 
-	sc.Logger.Info("created mailbox",
+	sc.Logger.Debug("created mailbox",
 		"path", addr.FullPath(),
 		"type", mbType.String(),
 		"caller", callerID.String(),
@@ -320,7 +334,7 @@ func handleDeleteMailbox(sc *forge.StreamContext, next func()) {
 		return
 	}
 
-	sc.Logger.Info("deleted mailbox",
+	sc.Logger.Debug("deleted mailbox",
 		"path", addr.FullPath(),
 		"caller", callerID.String(),
 	)
@@ -382,7 +396,7 @@ func handleGrantAccess(sc *forge.StreamContext, next func()) {
 		return
 	}
 
-	sc.Logger.Info("granted access",
+	sc.Logger.Debug("granted access",
 		"mailbox", record.FullPath(),
 		"grantee", granteePeerID.String(),
 		"mode", accessMode.String(),
@@ -436,7 +450,7 @@ func handleRevokeAccess(sc *forge.StreamContext, next func()) {
 		return
 	}
 
-	sc.Logger.Info("revoked access",
+	sc.Logger.Debug("revoked access",
 		"mailbox", record.FullPath(),
 		"grantee", granteePeerID.String(),
 	)
@@ -566,7 +580,7 @@ func handleUpdateConfig(sc *forge.StreamContext, next func()) {
 		return
 	}
 
-	sc.Logger.Info("updated mailbox config",
+	sc.Logger.Debug("updated mailbox config",
 		"path", record.FullPath(),
 		"caller", callerID.String(),
 	)

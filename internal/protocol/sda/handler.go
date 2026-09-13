@@ -160,6 +160,7 @@ func NewPipeline(logger *slog.Logger, pool *codec.BufferPool, reg *forge.Registr
 
 	return wire.Bounded(forge.NewPipeline(logger,
 		metrics.Middleware(metrics.FromRegistry(reg), "sda", ""),
+		wire.AccessLog("sda", ""),
 		middleware.Recovery(),
 		docResponseWriter(),
 		forge.FrameDecodeMiddleware(pool),
@@ -655,7 +656,7 @@ func handleBatchPut(sc *forge.StreamContext, next func()) {
 		return
 	}
 
-	sc.Logger.Info("batch put complete",
+	sc.Logger.Debug("batch put complete",
 		"owner", ownerID.(peer.ID).String(),
 		"documents", len(req.BatchDocuments),
 		"applied", applied,

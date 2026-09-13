@@ -41,6 +41,7 @@ func NewPipeline(logger *slog.Logger, pool *codec.BufferPool, reg *forge.Registr
 
 	return wire.Bounded(forge.NewPipeline(logger,
 		metrics.Middleware(metrics.FromRegistry(reg), "msa", "submit"),
+		wire.AccessLog("msa", "submit"),
 		middleware.Recovery(),
 		ackResponseWriter(),
 		forge.FrameDecodeMiddleware(pool),
@@ -65,12 +66,27 @@ type BatchSubmitResponse struct {
 	Total    int             `json:"total"`
 }
 
+// StatusCode is 200 when every message was accepted, the single ack's status
+// when the batch was refused as a whole, and 207 for a mix: the client has to
+// read the acks either way, and the access line should say so.
+func (r *BatchSubmitResponse) StatusCode() int {
+	switch {
+	case r.Total == 0 && len(r.Acks) == 1:
+		return r.Acks[0].StatusCode()
+	case r.Accepted == r.Total:
+		return wire.StatusOK
+	default:
+		return wire.StatusMultiStatus
+	}
+}
+
 // NewBatchPipeline creates a forge pipeline for batch mail submission.
 func NewBatchPipeline(logger *slog.Logger, pool *codec.BufferPool, reg *forge.Registry) *forge.Pipeline {
 	limiter := ratelimit.FromRegistry(reg).MSABatch
 
 	return wire.Bounded(forge.NewPipeline(logger,
 		metrics.Middleware(metrics.FromRegistry(reg), "msa_batch", "batch_submit"),
+		wire.AccessLog("msa_batch", "batch_submit"),
 		middleware.Recovery(),
 		batchResponseWriter(),
 		forge.FrameDecodeMiddleware(pool),
@@ -189,7 +205,7 @@ func batchSubmitHandler(sc *forge.StreamContext, next func()) {
 		acks = append(acks, ack)
 	}
 
-	sc.Logger.Info("batch submit complete",
+	sc.Logger.Debug("batch submit complete",
 		"from", sc.PeerID.String(),
 		"messages", len(req.Messages),
 		"accepted", accepted,
@@ -254,7 +270,7 @@ func submitHandler(sc *forge.StreamContext, next func()) {
 	router, _ := forge.ServiceFrom[*mta.Router](sc, "mta")
 	msg := sc.Request.(*core.Message)
 
-	sc.Logger.Info("submitting message",
+	sc.Logger.Debug("submitting message",
 		"message_id", msg.MessageID,
 		"from", msg.SenderPeerID,
 		"to", msg.RecipientPeerID,

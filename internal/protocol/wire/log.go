@@ -7,9 +7,9 @@ import (
 )
 
 // LogRejection records the real error behind a failed request. The client
-// sees ClientMessage(err); this is where the full text goes, tagged by the
-// stream context's logger with the peer and protocol and here with the
-// stream id, so an operator can match a client's report to the cause.
+// sees ClientMessage(err); this is where the full text goes, tagged with the
+// peer and the stream id, which the request's access line (AccessLog) also
+// carries, so an operator can match a client's report to the cause.
 //
 // A 5xx is the server's fault and logged at Error; anything else is the
 // client's and logged at Warn, since a flood of client mistakes is worth
@@ -18,7 +18,7 @@ func LogRejection(sc *forge.StreamContext, status int, err error) {
 	if err == nil {
 		return
 	}
-	attrs := []any{"status", status, "error", err}
+	attrs := []any{"status", status, "error", err, "peer", sc.PeerID}
 	if sc.Stream != nil {
 		attrs = append(attrs, "stream", sc.Stream.ID())
 	}

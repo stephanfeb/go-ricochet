@@ -4,7 +4,10 @@ package wire
 // They are HTTP's, because the semantics line up and every client library and
 // operator already knows them.
 const (
-	StatusOK                 = 200
+	StatusOK = 200
+	// StatusMultiStatus is a batch whose members did not all share one outcome;
+	// the per-member results carry the detail.
+	StatusMultiStatus        = 207
 	StatusBadRequest         = 400
 	StatusForbidden          = 403
 	StatusNotFound           = 404

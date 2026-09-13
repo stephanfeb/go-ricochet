@@ -45,6 +45,7 @@ func NewPipeline(logger *slog.Logger, pool *codec.BufferPool, reg *forge.Registr
 
 	return wire.Bounded(forge.NewPipeline(logger,
 		metrics.Middleware(metrics.FromRegistry(reg), "maa", ""),
+		wire.AccessLog("maa", ""),
 		middleware.Recovery(),
 		maaResponseWriter(),
 		forge.FrameDecodeMiddleware(pool),
@@ -263,7 +264,7 @@ func handleRetrieve(sc *forge.StreamContext, next func()) {
 	// will wrap this in a length-prefixed frame. We use rawResponse to signal
 	// that this is pre-encoded bytes, not a JSON object to marshal.
 	sc.Response = rawResponse(compoundBytes)
-	sc.Logger.Info("retrieved messages", "count", len(messages))
+	sc.Logger.Debug("retrieved messages", "count", len(messages))
 }
 
 // handleMarkDelivered marks messages as delivered.
@@ -282,7 +283,7 @@ func handleMarkDelivered(sc *forge.StreamContext, next func()) {
 		UpdatedCount: updatedCount,
 	}
 
-	sc.Logger.Info("marked messages delivered", "count", updatedCount)
+	sc.Logger.Debug("marked messages delivered", "count", updatedCount)
 }
 
 // handleUpdateFlags updates IMAP-style flags on a message.
@@ -339,7 +340,7 @@ func handleExpunge(sc *forge.StreamContext, next func()) {
 		DeletedCount: deletedCount,
 	}
 
-	sc.Logger.Info("expunged messages", "count", deletedCount)
+	sc.Logger.Debug("expunged messages", "count", deletedCount)
 }
 
 // handleDeleteMessages immediately deletes messages by ID.
@@ -365,5 +366,5 @@ func handleDeleteMessages(sc *forge.StreamContext, next func()) {
 	}
 	sc.Response = ack
 
-	sc.Logger.Info("deleted messages", "requested", len(req.MessageIDs), "deleted", deleted)
+	sc.Logger.Debug("deleted messages", "requested", len(req.MessageIDs), "deleted", deleted)
 }

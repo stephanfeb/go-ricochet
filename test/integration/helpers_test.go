@@ -1,11 +1,13 @@
 package integration_test
 
 import (
+	"bytes"
 	"context"
 	"log/slog"
 	"net/url"
 	"os"
 	"strconv"
+	"sync"
 	"testing"
 	"time"
 
@@ -50,6 +52,31 @@ type testServer struct {
 	Metrics  *metrics.Metrics
 	Capacity *capacity.Sampler
 	Storage  *postgres.PostgresStorage
+
+	logs *logCapture
+}
+
+// Logs returns everything the server has logged at Info or above so far.
+func (ts *testServer) Logs() string { return ts.logs.String() }
+
+// logCapture is a goroutine-safe sink behind the server's logger. Output
+// still reaches stderr so a failing test shows what the server said.
+type logCapture struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (c *logCapture) Write(p []byte) (int, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	os.Stderr.Write(p)
+	return c.buf.Write(p)
+}
+
+func (c *logCapture) String() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.buf.String()
 }
 
 // newTestServer creates a fully wired server with PostgreSQL storage and all
@@ -66,7 +93,8 @@ func newTestServer(t *testing.T, configure ...func(*core.ServerConfig)) *testSer
 	}
 
 	ctx := context.Background()
-	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	logs := &logCapture{}
+	logger := slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
 	// Generate server identity.
 	priv, _, err := crypto.GenerateEd25519Key(nil)
@@ -183,6 +211,7 @@ func newTestServer(t *testing.T, configure ...func(*core.ServerConfig)) *testSer
 		Metrics:  met,
 		Capacity: sampler,
 		Storage:  store,
+		logs:     logs,
 	}
 
 	t.Cleanup(func() {
