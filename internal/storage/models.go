@@ -253,6 +253,10 @@ var (
 	// listing that quietly restarts looks like a listing that never ends, and
 	// a client looping until "no more" never stops.
 	ErrInvalidCursor = fmt.Errorf("invalid pagination cursor")
+
+	// ErrDirectoryQueryTooLong is a directory search longer than
+	// MaxDirectoryQueryLength.
+	ErrDirectoryQueryTooLong = fmt.Errorf("directory query too long")
 )
 
 // DocumentSizeExceededError indicates a document exceeds the size limit.
@@ -430,3 +434,6 @@ type OwnerUsage struct {
 	Messages     int64  `json:"messages"`
 	MessageBytes int64  `json:"messageBytes"`
 }
+
+// MaxDirectoryQueryLength bounds a directory search string in bytes.
+const MaxDirectoryQueryLength = 100

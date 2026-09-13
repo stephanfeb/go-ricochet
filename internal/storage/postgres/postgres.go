@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"regexp"
 	"strings"
 	"time"
 
@@ -946,6 +947,27 @@ func (s *PostgresStorage) GetDirectoryEntry(ctx context.Context, ownerPeerID str
 	return &entry, nil
 }
 
+// directoryWord picks the searchable words out of a directory query. Only
+// letters and digits survive, so the query can never carry pattern or
+// tsquery syntax of its own.
+var directoryWord = regexp.MustCompile(`[\p{L}\p{N}]+`)
+
+// prefixTSQuery renders a directory query as a tsquery in which every word
+// is a prefix: "ali cryp" becomes 'ali':* & 'cryp':*, which matches Alice
+// Cryptographer through the full-text index. The second result is false
+// when the query holds no words at all.
+func prefixTSQuery(query string) (string, bool) {
+	words := directoryWord.FindAllString(query, -1)
+	if len(words) == 0 {
+		return "", false
+	}
+	terms := make([]string, 0, len(words))
+	for _, w := range words {
+		terms = append(terms, "'"+w+"':*")
+	}
+	return strings.Join(terms, " & "), true
+}
+
 func (s *PostgresStorage) BrowseDirectory(ctx context.Context, query string, cursor string, limit int) (*storage.DirectoryPage, error) {
 	if limit <= 0 {
 		limit = 20
@@ -958,13 +980,29 @@ func (s *PostgresStorage) BrowseDirectory(ctx context.Context, query string, cur
 	args := []any{}
 	argIdx := 1
 
-	// Case-insensitive substring search on display_name and bio
+	// Search display_name and bio through the full-text index
+	// (idx_directory_fts, whose expression this must match exactly). Each
+	// word is a prefix, so a partly typed name still finds its owner. The
+	// query cannot carry syntax: only its letters and digits are used, so %
+	// and _ match nothing rather than everything, and it is capped so a
+	// client cannot hand the planner a novel.
+	query = strings.TrimSpace(query)
+	if len(query) > storage.MaxDirectoryQueryLength {
+		return nil, fmt.Errorf("%w: %d bytes, maximum %d",
+			storage.ErrDirectoryQueryTooLong, len(query), storage.MaxDirectoryQueryLength)
+	}
 	if query != "" {
+		tsquery, ok := prefixTSQuery(query)
+		if !ok {
+			// Nothing searchable was typed: no listing can match, and the
+			// database need not be asked.
+			return &storage.DirectoryPage{}, nil
+		}
 		conditions = append(conditions, fmt.Sprintf(
-			"(coalesce(display_name, '') ILIKE $%d OR coalesce(bio, '') ILIKE $%d)", argIdx, argIdx+1))
-		likePattern := "%" + query + "%"
-		args = append(args, likePattern, likePattern)
-		argIdx += 2
+			`to_tsvector('english', coalesce(display_name, '') || ' ' || coalesce(bio, ''))
+			    @@ to_tsquery('english', $%d)`, argIdx))
+		args = append(args, tsquery)
+		argIdx++
 	}
 
 	// Cursor-based pagination.
@@ -1016,7 +1054,7 @@ func (s *PostgresStorage) BrowseDirectory(ctx context.Context, query string, cur
 		LIMIT $%d`, whereClause, argIdx)
 	args = append(args, limit+1)
 
-	s.logger.Info("browse directory SQL", "query", sqlQuery, "args", args)
+	s.logger.Debug("browse directory", "search", query != "", "cursor", cursor != "", "limit", limit)
 
 	rows, err := s.pool.Query(ctx, sqlQuery, args...)
 	if err != nil {

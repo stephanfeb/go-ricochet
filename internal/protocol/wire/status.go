@@ -152,6 +152,9 @@ func classify(err error) (status int, retryAfter time.Duration, msg string) {
 	if errors.Is(err, storage.ErrInvalidCursor) {
 		return StatusBadRequest, 0, storage.ErrInvalidCursor.Error()
 	}
+	if errors.Is(err, storage.ErrDirectoryQueryTooLong) {
+		return StatusBadRequest, 0, storage.ErrDirectoryQueryTooLong.Error()
+	}
 	// A request the server could not parse is the client's to fix, and the
 	// decoder's wording says where.
 	var syntax *json.SyntaxError

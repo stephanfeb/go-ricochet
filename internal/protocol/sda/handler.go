@@ -907,9 +907,9 @@ func handleDirectoryBrowse(sc *forge.StreamContext, req *DocRequest) {
 		limit = *req.DirectoryLimit
 	}
 
-	sc.Logger.Info("directory browse request",
-		"query", req.DirectoryQuery,
-		"cursor", req.DirectoryCursor,
+	sc.Logger.Debug("directory browse request",
+		"search", req.DirectoryQuery != "",
+		"cursor", req.DirectoryCursor != "",
 		"limit", limit,
 	)
 
@@ -918,13 +918,13 @@ func handleDirectoryBrowse(sc *forge.StreamContext, req *DocRequest) {
 
 	page, err := store.BrowseDirectory(ctx, req.DirectoryQuery, req.DirectoryCursor, limit)
 	if err != nil {
-		if errors.Is(err, storage.ErrInvalidCursor) {
+		if errors.Is(err, storage.ErrInvalidCursor) || errors.Is(err, storage.ErrDirectoryQueryTooLong) {
 			// The caller sent something the server cannot read, so this is a
 			// 400. Answering the first page instead would look like success
 			// and loop forever.
-			sc.Logger.Warn("directory browse with an unreadable cursor", "error", err)
+			sc.Logger.Warn("directory browse request refused", "error", err)
 			sc.Response = &DocResponse{Status: StatusBadRequest,
-				Headers: map[string]any{"Error": err.Error()}}
+				Headers: map[string]any{"Error": wire.ClientMessage(err)}}
 			return
 		}
 		sc.Logger.Error("failed to browse directory", "error", err)
@@ -936,10 +936,9 @@ func handleDirectoryBrowse(sc *forge.StreamContext, req *DocRequest) {
 	if page.Entries != nil {
 		entryCount = len(page.Entries)
 	}
-	sc.Logger.Info("directory browse result",
+	sc.Logger.Debug("directory browse result",
 		"entries", entryCount,
 		"hasMore", page.HasMore,
-		"nextCursor", page.NextCursor,
 	)
 
 	bodyBytes, err := json.Marshal(page)
