@@ -252,6 +252,61 @@ this repository, `-mode put|query|query1|list|bench`, `-prefill`,
 `-limit`, `-payload-size`, `-cpuprofile`) is in the N10 backlog row so
 the next session can re-take these after each lever.
 
+## Session of 2026-09-14: go-udx acknowledging every second packet (N10)
+
+The profile above put the `sca` time in the transport: one ACK datagram per
+data datagram, sent from the single read loop that also receives. go-udx
+`v0.1.1` acknowledges every second in-order packet instead, at once on a
+gap or a stream edge, on a timer otherwise, and reports the wait in the
+frame (RFC 9000 §13.2; see the go-udx commit for the window-growth fix
+that had to go with it). This session measures it: two HEAD servers
+(`20e0e54` plus the dependency bump) side by side on fresh databases, one
+on go-udx `v0.1.0` at both ends (bench and server), one on `v0.1.1` at
+both ends, 1,000 requests at 10 workers per row, two passes in opposite
+order, idle 12-core host at load 2.
+
+| Scenario | `v0.1.0` req/s (pass 1 / 2) | `v0.1.1` req/s (pass 1 / 2) | `v0.1.0` p50 / p99 | `v0.1.1` p50 / p99 |
+|---|---:|---:|---:|---:|
+| `msa` submit | 8,199 / 9,018 | 10,199 / 9,880 | 0.9ms / 2.6ms | 0.9ms / 2.1ms |
+| `maa` retrieve | 4,123 / 4,055 | 6,493 / 6,537 | 2.4ms / 4.0ms | 1.4ms / 2.8ms |
+| `sda` put + get | 4,545 / 4,985 | 6,906 / 6,681 | 1.9ms / 3.3ms | 1.4ms / 2.6ms |
+| `sfa` append + get | 4,489 / 3,389 | 5,330 / 5,985 | 2.9ms / 5.0ms | 1.6ms / 2.8ms |
+| `sca` put item + query | 813 / 826 | 1,131 / 1,116 | 13.0ms / 22.2ms | 9.3ms / 16.6ms |
+| `mma` create + delete mailbox | 5,764 / 5,132 | 6,041 / 6,003 | 1.7ms / 8.5ms | 1.4ms / 10.8ms |
+| `mixed` (all six) | 3,443 / 3,657 | 5,426 / 4,743 | 2.6ms / 6.1ms | 1.8ms / 6.6ms |
+
+Latencies are pass 2. The harness from the section above, on the same two
+servers (query = the default 50-item page of 2 KB items, 10 workers,
+2,000 requests, collections of 100):
+
+| Operation | `v0.1.0` req/s | `v0.1.1` req/s | p50 before → after | UDP datagrams per query |
+|---|---:|---:|---:|---:|
+| query, default page | 722 | 1,083 | 13.2ms → 8.9ms | 246 → 183 |
+| put item | 6,573 | 6,129 | 1.3ms → 1.4ms | |
+| put + query | 641 | 891 | 15.2ms → 10.7ms | |
+
+What this says:
+
+**Every row moved, because the read loop carries every row.** Retrieve,
+document and feed reads gained 40–60%, submit 10–20%, the mix 30–55%,
+and the collection page 37%. The server's read loop during the query run
+went from 95% of a core (7.4 s receiving plus 6.9 s sending ACKs in a
+15 s profile) to about 45% (5.6 s in a 12 s profile); the sends left in
+the profile are the data path, 100 datagrams per page. A 64 KB transfer
+is now 26 ack-only datagrams for 48 data packets, where it was 48.
+
+**The benefit is per end.** With the new client against the old server
+`sca` ran at 1,045 req/s and the reverse pairing at 863: each side's
+ACKs are that side's saving, so a phone on the old dart-udx gets the
+server's half (fewer downlink packets on upload) until dart-udx mirrors
+the rule (backlog N14).
+
+**`sca` is still four to six times below the other stores**, now at
+about 1,100 req/s for a 137 KB page. What remains is the 100 data
+datagrams the page still needs, sent one syscall each (N13), and the
+bytes themselves (N12). The put alone is unchanged at document speed,
+as it should be: a 2 KB request was never ACK-bound.
+
 ## Batched
 
 One request carries 100 items. Requests per second is not the interesting
@@ -324,5 +379,6 @@ were also pacing themselves under a rate limit that no longer exists.
   The session table for 2026-09-13 stays as a record of what a saturated
   host does to these numbers.
 - **`sca` throughput** is the transport carrying a 137 KB page as one datagram
-  and one acknowledgement per 1.4 KB, not the store: see "where the `sca` time
-  goes" above and backlog N10–N12 (2026-09-14).
+  per 1.4 KB, not the store: see "where the `sca` time goes" above. The
+  acknowledgement half is gone with go-udx v0.1.1 (N10, the session after
+  it); the data half and the bytes are backlog N13 and N12 (2026-09-14).
