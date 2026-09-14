@@ -238,10 +238,10 @@ github.com/smartystreets/goconvey v1.8.1 h1:qGjIddxOk4grTu9JPOU31tVfq3cNdBlNa5sS
 github.com/smartystreets/goconvey v1.8.1/go.mod h1:+/u4qLyY6x1jReYOp7GOM2FSt8aP9CzCZL03bI28W60=
 github.com/spaolacci/murmur3 v1.1.0 h1:7c1g84S4BPRrfL5Xrdp6fOJ206sU9y293DDHaoy0bLI=
 github.com/spaolacci/murmur3 v1.1.0/go.mod h1:JwIasOWyU6f++ZhiEuf87xNszmSA2myDM2Kzu9HwQUA=
-github.com/stephanfeb/go-libp2p-udx-transport v0.1.2 h1:+roRCjYYqShUKNIMkmKQ+87aeUP8j8ux/elo8+snzKY=
-github.com/stephanfeb/go-libp2p-udx-transport v0.1.2/go.mod h1:MH9JIQSbIEAKt1a+MVBBuKfUhJbxb5BhGAx8JOZo0ro=
-github.com/stephanfeb/go-udx v0.1.1 h1:gBZeUgVqymViX6IU5s1x/rHfwLp9U1+2PTHgZbWmtYY=
-github.com/stephanfeb/go-udx v0.1.1/go.mod h1:j7htlIJ9JspKQ+x4bUKZHsJotuZ8SqrzPSQRGyMS0WU=
+github.com/stephanfeb/go-libp2p-udx-transport v0.1.3 h1:viJRhDQpT/7KK+g9NLcEv8oyB3DbpPVyoaAHwf7e7Qc=
+github.com/stephanfeb/go-libp2p-udx-transport v0.1.3/go.mod h1:ds93j73fzeZr7Be1/zqz5Yo5rKP0Kz+mGlTGOAcerGg=
+github.com/stephanfeb/go-udx v0.1.2 h1:GTjnxN7vC1KyTQnBokiNkakbkgXx2TKGV6xx0CZkZ60=
+github.com/stephanfeb/go-udx v0.1.2/go.mod h1:ahxeJ/BeoSpJBJL/pQB9MWV9nGT7QW+iAeYY7D98E1Y=
 github.com/stretchr/objx v0.1.0/go.mod h1:HFkY916IF+rwdDfMAkV7OtwuqBVzrE8GR6GFx+wExME=
 github.com/stretchr/testify v1.3.0/go.mod h1:M5WIy9Dh21IEIfnGCwXGc5bZfKNJtfHm1UVUgZn+9EI=
 github.com/stretchr/testify v1.4.0/go.mod h1:j7eGeouHqKxXV5pUuKE4zz7dFj8WfuZ+81PSLYec5m4=

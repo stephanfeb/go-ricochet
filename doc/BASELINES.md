@@ -307,6 +307,47 @@ datagrams the page still needs, sent one syscall each (N13), and the
 bytes themselves (N12). The put alone is unchanged at document speed,
 as it should be: a 2 KB request was never ACK-bound.
 
+## Session of 2026-09-14: batched socket I/O and per-connection goroutines (N13)
+
+After N10 the transport's cost was the data path itself: one `recvfrom`
+per arriving datagram and one `sendto` per 1,372-byte chunk, all on the
+single read loop per socket. go-udx `v0.1.2` (via transport `v0.1.3`)
+batches with `recvmmsg`/`sendmmsg` on Linux and moves each connection's
+packet handling to its own goroutine, so one socket is no longer bounded
+by one core. This was measured in Docker on Linux (the platform with the
+batched syscalls; production runs there), because macOS has neither call.
+Two servers were not run side by side this time; instead the same bench
+drove a server built on `v0.1.2` and one built on `v0.1.1`, on the same
+12-core Linux host, 1,000 requests at 10 workers, two passes.
+
+These Linux-in-Docker figures run lower than the macOS numbers in the
+sections above; compare within the table, not across sessions.
+
+| Scenario | `v0.1.1` req/s (p1 / p2) | `v0.1.2` req/s (p1 / p2) |
+|---|---:|---:|
+| `msa` submit | 5,060 / 6,365 | 5,075 / 6,216 |
+| `maa` retrieve | 3,400 / 3,385 | 3,758 / 4,170 |
+| `sda` put + get | 3,414 / 3,654 | 3,204 / 3,920 |
+| `sfa` append + get | 2,932 / 3,281 | 3,015 / 3,551 |
+| `sca` put item + query | 747 / 816 | 916 / 958 |
+| `mma` create + delete | 2,578 / 4,101 | 3,925 / 4,063 |
+| `mixed` (all six) | 3,198 / 3,097 | 3,075 / 3,124 |
+
+**The datagram-heavy operations gain, the small ones stay flat.** `sca`
+(a 137 KB reply, about 100 datagrams) is up roughly a fifth, and `maa`
+(ten 1 KB messages a request) about the same; `sda` and `sfa` a little;
+`msa` and `mixed`, dominated by small single-datagram requests, do not
+move, which is expected, since batching only helps once a request is many
+datagrams. No failures on any row. Bulk loopback throughput was unchanged
+(248 MB/s one stream, 158 MB/s eight), so the syscall was never bulk's
+bottleneck on loopback; the win is on the server's shared read loop under
+many connections, which this bench exercises.
+
+**A gauge came out of this**, `TestThroughput` in go-udx behind
+`UDX_THROUGHPUT`: bulk on one and eight streams, and a request-reply
+shape. The request-reply-on-one-connection shape is skipped because it
+reproduces a latent reset (backlog N16); no libp2p path opens it.
+
 ## Batched
 
 One request carries 100 items. Requests per second is not the interesting

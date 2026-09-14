@@ -13,7 +13,7 @@ require (
 	github.com/pierrec/lz4/v4 v4.1.25
 	github.com/prometheus/client_golang v1.24.1
 	github.com/prometheus/client_model v0.6.2
-	github.com/stephanfeb/go-libp2p-udx-transport v0.1.2
+	github.com/stephanfeb/go-libp2p-udx-transport v0.1.3
 	github.com/twostack/go-p2p-forge v0.1.5
 	golang.org/x/crypto v0.54.0
 	gopkg.in/yaml.v3 v3.0.1
@@ -102,7 +102,7 @@ require (
 	github.com/quic-go/quic-go v0.60.0 // indirect
 	github.com/quic-go/webtransport-go v0.11.1 // indirect
 	github.com/spaolacci/murmur3 v1.1.0 // indirect
-	github.com/stephanfeb/go-udx v0.1.1 // indirect
+	github.com/stephanfeb/go-udx v0.1.2 // indirect
 	github.com/whyrusleeping/go-keyspace v0.0.0-20160322163242-5b898ac5add1 // indirect
 	github.com/wlynxg/anet v0.0.5 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
