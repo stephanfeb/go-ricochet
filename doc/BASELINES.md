@@ -348,6 +348,28 @@ many connections, which this bench exercises.
 shape. The request-reply-on-one-connection shape is skipped because it
 reproduces a latent reset (backlog N16); no libp2p path opens it.
 
+## Session of 2026-09-14: the collection query page as raw JSON (N12)
+
+The query page was JSON, base64-encoded, embedded in the response JSON, so
+a 103 KB page of items shipped as 137 KB and the client base64-decoded it
+before parsing. Collection items are JSON by definition, so the response
+now carries them as raw JSON in a `data` field with `body` left empty; the
+client reads `data` when present and falls back to the base64 `body`. QUERY
+and single-item GET use it. Measured on macOS, a pre-N12 and an N12 server
+on the same go-udx `v0.1.2`, fresh databases, the query harness (default
+50-item page of 2 KB items, 10 workers, 3,000 requests, collections of
+100):
+
+| Operation | pre-N12 req/s (p1 / p2) | N12 req/s (p1 / p2) | UDP datagrams / 3,000 queries |
+|---|---:|---:|---:|
+| query, default page | 1,070 / 1,085 | 1,241 / 1,196 | 578k → 437k |
+| put + query (bench shape) | 735 | 884 | |
+
+The datagram count fell 24%, which is the base64 inflation removed
+(137 KB → 103 KB), and query throughput rose about 13%, the put+query
+bench shape about 20%. This is a wire change on QUERY and item GET; no
+shipped client speaks collections yet, and the Go client reads both fields.
+
 ## Batched
 
 One request carries 100 items. Requests per second is not the interesting

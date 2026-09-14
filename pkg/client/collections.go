@@ -316,13 +316,17 @@ func (c *Client) GetCollectionItem(ctx context.Context, ownerPeerID peer.ID, pat
 	if resp.Status != sca.StatusOK {
 		return nil, responseError("get collection item", resp.Status, resp.Headers)
 	}
-	if resp.Body == "" {
+	var content []byte
+	switch {
+	case len(resp.Data) > 0:
+		content = resp.Data
+	case resp.Body != "":
+		content, err = base64.StdEncoding.DecodeString(resp.Body)
+		if err != nil {
+			return nil, fmt.Errorf("decode collection item body: %w", err)
+		}
+	default:
 		return nil, nil
-	}
-
-	content, err := base64.StdEncoding.DecodeString(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("decode collection item body: %w", err)
 	}
 
 	item := &CollectionItem{
@@ -430,13 +434,19 @@ func (c *Client) QueryCollection(ctx context.Context, ownerPeerID peer.ID, path 
 	if resp.Status != sca.StatusOK {
 		return nil, responseError("query collection", resp.Status, resp.Headers)
 	}
-	if resp.Body == "" {
+	// The server sends the page as raw JSON in Data; older servers base64
+	// it into Body. Read whichever is present.
+	var bodyBytes []byte
+	switch {
+	case len(resp.Data) > 0:
+		bodyBytes = resp.Data
+	case resp.Body != "":
+		bodyBytes, err = base64.StdEncoding.DecodeString(resp.Body)
+		if err != nil {
+			return nil, fmt.Errorf("decode query body: %w", err)
+		}
+	default:
 		return &CollectionQueryResponse{}, nil
-	}
-
-	bodyBytes, err := base64.StdEncoding.DecodeString(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("decode query body: %w", err)
 	}
 
 	var raw struct {

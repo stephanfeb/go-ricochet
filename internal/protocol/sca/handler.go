@@ -95,6 +95,13 @@ type CollectionResponse struct {
 	Status  int            `json:"status"`
 	Headers map[string]any `json:"headers,omitempty"`
 	Body    string         `json:"body,omitempty"` // base64 encoded
+	// Data carries a JSON payload as raw JSON, embedded directly in the
+	// response rather than base64-encoded into Body. Collection items are
+	// JSON by definition, so base64 only inflated them by a third and made
+	// the client decode then re-parse. QUERY and item GET set Data; the
+	// client reads it when present and falls back to Body. Body stays for
+	// the responses that carry opaque bytes or a different shape.
+	Data json.RawMessage `json:"data,omitempty"`
 }
 
 // StatusCode reports the response status. It is how the metrics middleware
@@ -425,7 +432,7 @@ func handleGetItem(sc *forge.StreamContext, next func()) {
 			"Updated-At":   item.UpdatedAt.UnixMilli(),
 			"Created-At":   item.CreatedAt.UnixMilli(),
 		},
-		Body: base64.StdEncoding.EncodeToString(item.Content),
+		Data: json.RawMessage(item.Content),
 	}
 }
 
@@ -751,7 +758,7 @@ func handleQuery(sc *forge.StreamContext, next func()) {
 	sc.Response = &CollectionResponse{
 		Status:  StatusOK,
 		Headers: pageHeaders(result.TotalCount, result.NextCursor),
-		Body:    base64.StdEncoding.EncodeToString(bodyBytes),
+		Data:    json.RawMessage(bodyBytes),
 	}
 }
 

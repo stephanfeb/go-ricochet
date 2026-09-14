@@ -63,7 +63,7 @@ func TestCollectionLifecycle(t *testing.T) {
 	}
 
 	resp = call(protocoltest.PeerID(t), sca.CollectionRequest{Operation: sca.OpGET, Path: "products", Key: "sku-1"})
-	if resp.Status != sca.StatusOK || string(protocoltest.FromBase64(t, resp.Body)) != `{"name":"Drill","price":25}` || resp.Headers["X-Version"] != float64(2) {
+	if resp.Status != sca.StatusOK || string(resp.Data) != `{"name":"Drill","price":25}` || resp.Headers["X-Version"] != float64(2) {
 		t.Errorf("get item of a public collection by anyone: %+v", resp)
 	}
 	resp = call(owner, sca.CollectionRequest{Operation: sca.OpGET, Path: "products"})
@@ -116,7 +116,7 @@ func TestListKeysAndQuery(t *testing.T) {
 			Key string `json:"key"`
 		} `json:"items"`
 	}
-	if err := json.Unmarshal(protocoltest.FromBase64(t, resp.Body), &result); err != nil {
+	if err := json.Unmarshal(resp.Data, &result); err != nil {
 		t.Fatal(err)
 	}
 	if items := result.Items; len(items) != 1 || items[0].Key != "c" {
@@ -125,7 +125,7 @@ func TestListKeysAndQuery(t *testing.T) {
 
 	// Sorting compares the field as text, so it is exercised on names.
 	resp = call(owner, sca.CollectionRequest{Operation: sca.OpQUERY, Path: "products", SortField: "name", SortAsc: boolp(false), Limit: intp(2)})
-	if err := json.Unmarshal(protocoltest.FromBase64(t, resp.Body), &result); err != nil {
+	if err := json.Unmarshal(resp.Data, &result); err != nil {
 		t.Fatal(err)
 	}
 	if items := result.Items; len(items) != 2 || items[0].Key != "c" || items[1].Key != "b" || resp.Headers["X-Has-More"] != true {
