@@ -1016,7 +1016,7 @@ func (f *Fake) ListCollectionKeys(_ context.Context, collectionID int64, limit, 
 // $or, and a single sort field, compared as text the way the SQL does. A
 // cursor is the last key of the previous page and only works unsorted;
 // $ilike and $contains are JSONB matters. Anything past that is ErrNotFaked.
-func (f *Fake) QueryCollection(_ context.Context, collectionID int64, filter map[string]any, sortField string, sortAsc bool, limit, offset int, cursor string) (*storage.CollectionQueryResult, error) {
+func (f *Fake) QueryCollection(_ context.Context, collectionID int64, filter map[string]any, sortField string, sortAsc bool, limit, offset int, cursor string, wantTotal bool) (*storage.CollectionQueryResult, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if cursor != "" && sortField != "" {
@@ -1052,10 +1052,17 @@ func (f *Fake) QueryCollection(_ context.Context, collectionID int64, filter map
 			return a > b
 		})
 	}
+	// Total reporting mirrors the store (backlog N11): a cursor page reports
+	// -1; an unfiltered first page reports the record count; a filtered first
+	// page counts only when asked.
 	total := len(matched)
-	if cursor != "" {
+	switch {
+	case cursor != "":
 		total = -1
-	} else if offset > 0 {
+	case len(filter) > 0 && !wantTotal:
+		total = -1
+	}
+	if cursor == "" && offset > 0 {
 		if offset > len(matched) {
 			offset = len(matched)
 		}

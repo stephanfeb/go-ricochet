@@ -120,13 +120,17 @@ type Storage interface {
 	GetCollectionItem(ctx context.Context, collectionID int64, key string) (*CollectionItemRecord, error)
 	PutCollectionItem(ctx context.Context, collectionID int64, key string, content []byte, updatedBy peer.ID, ifMatch *string) (*CollectionItemRecord, bool, error)
 	DeleteCollectionItem(ctx context.Context, collectionID int64, key string) (bool, error)
-	// ListCollectionKeys pages keys in key order. A cursor continues after
+	// ListCollectionKeys pages keys in key order. Its total is the
+	// collection's maintained record_count (never a scan). A cursor continues after
 	// the key it names and takes precedence over offset; total is -1 on a
 	// cursor page. next is empty on the last page.
 	ListCollectionKeys(ctx context.Context, collectionID int64, limit, offset int, cursor string) (keys []string, total int, next string, err error)
 	// QueryCollection pages matching items. Same paging contract as
-	// ListCollectionKeys: cursor over offset, total on a first page only.
-	QueryCollection(ctx context.Context, collectionID int64, filter map[string]any, sortField string, sortAsc bool, limit, offset int, cursor string) (*CollectionQueryResult, error)
+	// ListCollectionKeys: cursor over offset, total on a first page only. An
+	// unfiltered first page's total is the maintained record_count; a filtered
+	// one is counted (scanning matches) only when wantTotal is set, otherwise
+	// its TotalCount is -1.
+	QueryCollection(ctx context.Context, collectionID int64, filter map[string]any, sortField string, sortAsc bool, limit, offset int, cursor string, wantTotal bool) (*CollectionQueryResult, error)
 
 	// Read authorization for documents, feeds and collections. The owner
 	// always reads; a public resource anyone; a shared one the peers on its

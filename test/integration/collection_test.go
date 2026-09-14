@@ -326,7 +326,7 @@ func TestQueryEquality(t *testing.T) {
 
 	// Query for tools only
 	result, err := cl.QueryCollection(ctx, cl.PeerID(), "products",
-		map[string]any{"category": "tools"})
+		map[string]any{"category": "tools"}, client.WithQueryTotal())
 	if err != nil {
 		t.Fatalf("QueryCollection: %v", err)
 	}
@@ -365,7 +365,7 @@ func TestQueryComparison(t *testing.T) {
 
 	// Query for items under $30
 	result, err := cl.QueryCollection(ctx, cl.PeerID(), "products",
-		map[string]any{"price": map[string]any{"$lt": 30}})
+		map[string]any{"price": map[string]any{"$lt": 30}}, client.WithQueryTotal())
 	if err != nil {
 		t.Fatalf("QueryCollection: %v", err)
 	}
@@ -406,7 +406,7 @@ func TestQueryCompound(t *testing.T) {
 				map[string]any{"category": "tools"},
 				map[string]any{"price": map[string]any{"$lt": 30}},
 			},
-		})
+		}, client.WithQueryTotal())
 	if err != nil {
 		t.Fatalf("QueryCollection: %v", err)
 	}

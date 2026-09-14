@@ -276,12 +276,28 @@ func clampCollectionLimit(limit int) int {
 	return limit
 }
 
+// collectionRecordCount reads the collection's maintained item count from
+// the collections table (a primary-key lookup), the exact total for an
+// unfiltered listing without scanning collection_items. record_count is kept
+// transactionally by PutCollectionItem and the delete paths.
+func (s *PostgresStorage) collectionRecordCount(ctx context.Context, collectionID int64) (int, error) {
+	var n int
+	if err := s.pool.QueryRow(ctx, `SELECT record_count FROM collections WHERE id = $1`, collectionID).Scan(&n); err != nil {
+		return 0, fmt.Errorf("collection record count: %w", err)
+	}
+	return n, nil
+}
+
 func (s *PostgresStorage) ListCollectionKeys(ctx context.Context, collectionID int64, limit, offset int, cursor string) ([]string, int, string, error) {
 	limit = clampCollectionLimit(limit)
 
 	conditions := []string{"collection_id = $1"}
 	args := []any{collectionID}
-	countExpr := "COUNT(*) OVER()"
+	// A key listing is always unfiltered, so its total is the collection's
+	// maintained record_count, not COUNT(*) OVER the page — which would scan
+	// every row of a large collection on every first page (backlog N11). A
+	// cursor page reports -1, since the first page already gave the total.
+	countExpr := "-1"
 	if cursor != "" {
 		c, err := decodeItemCursor(cursor)
 		if err != nil {
@@ -289,7 +305,6 @@ func (s *PostgresStorage) ListCollectionKeys(ctx context.Context, collectionID i
 		}
 		conditions = append(conditions, fmt.Sprintf("key > $%d", len(args)+1))
 		args = append(args, c.Key)
-		countExpr = "-1"
 		offset = 0
 	}
 	if offset < 0 {
@@ -311,7 +326,6 @@ func (s *PostgresStorage) ListCollectionKeys(ctx context.Context, collectionID i
 	defer rows.Close()
 
 	var keys []string
-	total := -1
 	for rows.Next() {
 		var key string
 		var tc int
@@ -319,13 +333,16 @@ func (s *PostgresStorage) ListCollectionKeys(ctx context.Context, collectionID i
 			return nil, 0, "", fmt.Errorf("scan collection key: %w", err)
 		}
 		keys = append(keys, key)
-		total = tc
 	}
 	if err := rows.Err(); err != nil {
 		return nil, 0, "", err
 	}
-	if cursor == "" && total < 0 {
-		total = 0
+	total := -1
+	if cursor == "" {
+		total, err = s.collectionRecordCount(ctx, collectionID)
+		if err != nil {
+			return nil, 0, "", err
+		}
 	}
 	next := ""
 	if len(keys) > limit {
@@ -335,7 +352,7 @@ func (s *PostgresStorage) ListCollectionKeys(ctx context.Context, collectionID i
 	return keys, total, next, nil
 }
 
-func (s *PostgresStorage) QueryCollection(ctx context.Context, collectionID int64, filter map[string]any, sortField string, sortAsc bool, limit, offset int, cursor string) (*storage.CollectionQueryResult, error) {
+func (s *PostgresStorage) QueryCollection(ctx context.Context, collectionID int64, filter map[string]any, sortField string, sortAsc bool, limit, offset int, cursor string, wantTotal bool) (*storage.CollectionQueryResult, error) {
 	limit = clampCollectionLimit(limit)
 
 	filterClause, filterArgs, err := BuildJSONBFilter(filter, 2) // $1 is collection_id
@@ -363,7 +380,17 @@ func (s *PostgresStorage) QueryCollection(ctx context.Context, collectionID int6
 		orderClause = fmt.Sprintf("%s %s, key %s", sortExpr, dir, dir)
 	}
 
-	countExpr := "COUNT(*) OVER()"
+	// How the page reports its total (backlog N11). An unfiltered page uses
+	// the collection's maintained record_count, so it never scans the whole
+	// collection to count. A filtered page counts with COUNT(*) OVER only
+	// when the caller asks (wantTotal): a count of matching rows must scan
+	// them, and paging follows the cursor, which needs no per-page total. A
+	// cursor page reports -1, since the first page already gave the total.
+	recordCountTotal := cursor == "" && len(filter) == 0
+	countExpr := "-1"
+	if cursor == "" && len(filter) > 0 && wantTotal {
+		countExpr = "COUNT(*) OVER()"
+	}
 	if cursor != "" {
 		c, err := decodeItemCursor(cursor)
 		if err != nil {
@@ -377,7 +404,6 @@ func (s *PostgresStorage) QueryCollection(ctx context.Context, collectionID int6
 			conditions = append(conditions, fmt.Sprintf("key %s $%d", cmp, n))
 			args = append(args, c.Key)
 		}
-		countExpr = "-1"
 		offset = 0
 	}
 	if offset < 0 {
@@ -422,8 +448,14 @@ func (s *PostgresStorage) QueryCollection(ctx context.Context, collectionID int6
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	if cursor == "" && total < 0 {
-		total = 0
+	switch {
+	case recordCountTotal:
+		total, err = s.collectionRecordCount(ctx, collectionID)
+		if err != nil {
+			return nil, err
+		}
+	case countExpr != "-1" && total < 0:
+		total = 0 // counted, but no rows matched
 	}
 
 	result := &storage.CollectionQueryResult{TotalCount: total}

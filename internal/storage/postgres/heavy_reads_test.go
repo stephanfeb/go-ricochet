@@ -175,7 +175,7 @@ func TestQueryCollectionPagesByCursor(t *testing.T) {
 
 	page := func(sortField string, asc bool, cursor string) *storage.CollectionQueryResult {
 		t.Helper()
-		res, err := store.QueryCollection(ctx, collID, map[string]any{"kind": "x"}, sortField, asc, 3, 0, cursor)
+		res, err := store.QueryCollection(ctx, collID, map[string]any{"kind": "x"}, sortField, asc, 3, 0, cursor, true)
 		if err != nil {
 			t.Fatalf("query (cursor %q): %v", cursor, err)
 		}
@@ -242,10 +242,10 @@ func TestQueryCollectionPagesByCursor(t *testing.T) {
 
 	// An offset page still counts, and a garbage cursor is a 400, not a
 	// silent first page.
-	if res, err := store.QueryCollection(ctx, collID, map[string]any{"kind": "x"}, "", true, 3, 3, ""); err != nil || res.TotalCount != 7 || len(res.Items) != 3 {
+	if res, err := store.QueryCollection(ctx, collID, map[string]any{"kind": "x"}, "", true, 3, 3, "", true); err != nil || res.TotalCount != 7 || len(res.Items) != 3 {
 		t.Errorf("offset page: %+v err=%v", res, err)
 	}
-	if _, err := store.QueryCollection(ctx, collID, nil, "", true, 3, 0, "not-a-cursor"); !errors.Is(err, storage.ErrInvalidCursor) {
+	if _, err := store.QueryCollection(ctx, collID, nil, "", true, 3, 0, "not-a-cursor", false); !errors.Is(err, storage.ErrInvalidCursor) {
 		t.Errorf("bad cursor error = %v, want ErrInvalidCursor", err)
 	}
 }

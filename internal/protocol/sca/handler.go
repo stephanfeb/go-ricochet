@@ -88,6 +88,10 @@ type CollectionRequest struct {
 	// its Next-Cursor header. It takes precedence over Offset, and a page
 	// fetched this way carries no X-Total-Count.
 	Cursor string `json:"cursor,omitempty"`
+	// WantTotal asks a filtered QUERY to count its matches for X-Total-Count.
+	// Counting matches scans them, so it is off by default; an unfiltered
+	// query's total is free (the maintained record count) and always sent.
+	WantTotal bool `json:"wantTotal,omitempty"`
 }
 
 // CollectionResponse is the JSON response format for collection operations.
@@ -719,7 +723,7 @@ func handleQuery(sc *forge.StreamContext, next func()) {
 		sortAsc = *req.SortAsc
 	}
 
-	result, err := store.QueryCollection(ctx, coll.ID, req.Filter, req.SortField, sortAsc, limit, offset, req.Cursor)
+	result, err := store.QueryCollection(ctx, coll.ID, req.Filter, req.SortField, sortAsc, limit, offset, req.Cursor, req.WantTotal)
 	if err != nil {
 		status, _ := wire.Classify(err)
 		wire.LogRejection(sc, status, err)

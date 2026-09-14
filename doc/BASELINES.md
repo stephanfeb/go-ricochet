@@ -370,6 +370,30 @@ The datagram count fell 24%, which is the base64 inflation removed
 bench shape about 20%. This is a wire change on QUERY and item GET; no
 shipped client speaks collections yet, and the Go client reads both fields.
 
+## Session of 2026-09-14: a collection page no longer counts the whole collection (N11)
+
+The first page of a query and of a key listing selected `COUNT(*) OVER()`
+alongside the page, so the window aggregate read every matching row before
+`LIMIT` applied — a full scan of the collection on every first page. Now an
+unfiltered page's total is the collection's maintained `record_count` (a
+primary-key lookup, no scan), and a filtered page counts its matches only
+when the caller asks (`wantTotal`), since counting matches must scan them and
+paging follows the cursor. A cursor page still reports no total. Measured on
+macOS, a pre-N11 and an N11 server on the same go-udx, unfiltered query, 10
+workers, 2,000 requests:
+
+| collection size | pre-N11 req/s | N11 req/s |
+|---|---:|---:|
+| 100 items | 1,242 | 1,267 |
+| 5,000 items | 922 | 1,253 |
+
+At 100 items there is nothing to save. At 5,000 the pre-N11 server drops 26%
+counting rows it will not return, while N11 holds at its small-collection
+speed: the query no longer slows as the collection grows, and the gap widens
+from here. This is the last collection-specific cost the profiling named; the
+rest of the `sca`-vs-`sda` difference is the legitimate size of a 50-item
+page, now a quarter smaller after N12.
+
 ## Batched
 
 One request carries 100 items. Requests per second is not the interesting

@@ -371,6 +371,7 @@ type collectionQueryConfig struct {
 	Limit        *int
 	Offset       *int
 	Cursor       string
+	WantTotal    bool
 }
 
 // WithQueryCursor continues a listing or query from the NextCursor of the
@@ -379,6 +380,15 @@ type collectionQueryConfig struct {
 func WithQueryCursor(cursor string) CollectionQueryOption {
 	return func(c *collectionQueryConfig) {
 		c.Cursor = cursor
+	}
+}
+
+// WithQueryTotal asks a filtered query to report the total number of matching
+// items in TotalCount. It costs a scan of the matches on the server, so it is
+// off by default; an unfiltered query reports its total for free regardless.
+func WithQueryTotal() CollectionQueryOption {
+	return func(c *collectionQueryConfig) {
+		c.WantTotal = true
 	}
 }
 

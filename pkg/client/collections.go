@@ -119,6 +119,9 @@ func (c *Client) doCollectionQuery(ctx context.Context, req *sca.CollectionReque
 	if cfg.Cursor != "" {
 		req.Cursor = cfg.Cursor
 	}
+	if cfg.WantTotal {
+		req.WantTotal = true
+	}
 
 	// Convert to CollectionOption for the shared doCollection helper
 	var collOpts []CollectionOption
