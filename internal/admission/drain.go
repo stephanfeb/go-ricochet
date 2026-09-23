@@ -4,7 +4,7 @@ import (
 	"errors"
 	"sync/atomic"
 
-	forge "github.com/twostack/go-p2p-forge"
+	forge "github.com/stephanfeb/go-p2p-forge"
 )
 
 // ErrDraining is returned to a request that arrives while the server is

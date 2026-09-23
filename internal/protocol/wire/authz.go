@@ -4,9 +4,9 @@ import (
 	"fmt"
 
 	"github.com/libp2p/go-libp2p/core/peer"
-	forge "github.com/twostack/go-p2p-forge"
+	forge "github.com/stephanfeb/go-p2p-forge"
 
-	"github.com/twostack/go-ricochet/internal/mda/mailboxes"
+	"github.com/stephanfeb/go-ricochet/internal/mda/mailboxes"
 )
 
 // The handlers used to check ownership each in their own way and answer each

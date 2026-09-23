@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/twostack/go-ricochet/internal/core"
-	client "github.com/twostack/go-ricochet/pkg/client"
+	"github.com/stephanfeb/go-ricochet/internal/core"
+	client "github.com/stephanfeb/go-ricochet/pkg/client"
 )
 
 // withSDAWriteLimit returns a config hook that replaces the SDA write bucket.

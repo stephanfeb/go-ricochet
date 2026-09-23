@@ -17,13 +17,13 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/core/protocol"
 
-	"github.com/twostack/go-ricochet/internal/protocol/frame"
-	"github.com/twostack/go-ricochet/internal/protocol/maa"
-	"github.com/twostack/go-ricochet/internal/protocol/mma"
-	"github.com/twostack/go-ricochet/internal/protocol/msa"
-	"github.com/twostack/go-ricochet/internal/protocol/notify"
-	"github.com/twostack/go-ricochet/internal/protocol/sda"
-	"github.com/twostack/go-ricochet/pkg/wire"
+	"github.com/stephanfeb/go-ricochet/internal/protocol/frame"
+	"github.com/stephanfeb/go-ricochet/internal/protocol/maa"
+	"github.com/stephanfeb/go-ricochet/internal/protocol/mma"
+	"github.com/stephanfeb/go-ricochet/internal/protocol/msa"
+	"github.com/stephanfeb/go-ricochet/internal/protocol/notify"
+	"github.com/stephanfeb/go-ricochet/internal/protocol/sda"
+	"github.com/stephanfeb/go-ricochet/pkg/wire"
 )
 
 // Client provides access to Ricochet store-and-forward services over libp2p streams.

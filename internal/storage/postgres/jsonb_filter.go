@@ -6,7 +6,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/twostack/go-ricochet/internal/storage"
+	"github.com/stephanfeb/go-ricochet/internal/storage"
 )
 
 // validFieldName matches safe JSONB field names (alphanumeric, underscore, dot, hyphen).

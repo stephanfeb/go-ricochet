@@ -6,7 +6,7 @@ import (
 
 	"github.com/pierrec/lz4/v4"
 
-	"github.com/twostack/go-ricochet/pkg/wire"
+	"github.com/stephanfeb/go-ricochet/pkg/wire"
 )
 
 const (

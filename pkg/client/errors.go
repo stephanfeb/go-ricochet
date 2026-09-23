@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/twostack/go-ricochet/internal/protocol/maa"
-	"github.com/twostack/go-ricochet/pkg/wire"
+	"github.com/stephanfeb/go-ricochet/internal/protocol/maa"
+	"github.com/stephanfeb/go-ricochet/pkg/wire"
 )
 
 // Errors from this package carry the server's classification instead of

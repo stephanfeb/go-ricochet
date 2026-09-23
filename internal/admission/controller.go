@@ -31,7 +31,7 @@ import (
 
 	"github.com/libp2p/go-libp2p/core/peer"
 
-	"github.com/twostack/go-ricochet/internal/core"
+	"github.com/stephanfeb/go-ricochet/internal/core"
 )
 
 // ErrOverloaded is returned when a request could not be admitted before the

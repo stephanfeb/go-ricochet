@@ -5,10 +5,10 @@ import (
 
 	"github.com/libp2p/go-libp2p/core/peer"
 
-	"github.com/twostack/go-ricochet/internal/core"
-	"github.com/twostack/go-ricochet/internal/protocol/maa"
-	"github.com/twostack/go-ricochet/internal/protocol/protocoltest"
-	"github.com/twostack/go-ricochet/internal/protocol/wire"
+	"github.com/stephanfeb/go-ricochet/internal/core"
+	"github.com/stephanfeb/go-ricochet/internal/protocol/maa"
+	"github.com/stephanfeb/go-ricochet/internal/protocol/protocoltest"
+	"github.com/stephanfeb/go-ricochet/internal/protocol/wire"
 )
 
 func setup(t *testing.T) (*protocoltest.Env, func(from peer.ID, req any) []byte, peer.ID, peer.ID) {

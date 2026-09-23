@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	client "github.com/twostack/go-ricochet/pkg/client"
+	client "github.com/stephanfeb/go-ricochet/pkg/client"
 )
 
 // A cross-peer retrieve of a mailbox that does not exist must not bring it

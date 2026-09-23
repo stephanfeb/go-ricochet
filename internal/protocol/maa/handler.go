@@ -9,16 +9,16 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/core/protocol"
 
-	forge "github.com/twostack/go-p2p-forge"
-	"github.com/twostack/go-p2p-forge/codec"
-	"github.com/twostack/go-p2p-forge/middleware"
+	forge "github.com/stephanfeb/go-p2p-forge"
+	"github.com/stephanfeb/go-p2p-forge/codec"
+	"github.com/stephanfeb/go-p2p-forge/middleware"
 
-	"github.com/twostack/go-ricochet/internal/admission"
-	"github.com/twostack/go-ricochet/internal/core"
-	"github.com/twostack/go-ricochet/internal/mda"
-	"github.com/twostack/go-ricochet/internal/metrics"
-	"github.com/twostack/go-ricochet/internal/protocol/wire"
-	"github.com/twostack/go-ricochet/internal/ratelimit"
+	"github.com/stephanfeb/go-ricochet/internal/admission"
+	"github.com/stephanfeb/go-ricochet/internal/core"
+	"github.com/stephanfeb/go-ricochet/internal/mda"
+	"github.com/stephanfeb/go-ricochet/internal/metrics"
+	"github.com/stephanfeb/go-ricochet/internal/protocol/wire"
+	"github.com/stephanfeb/go-ricochet/internal/ratelimit"
 )
 
 // ProtocolID is the MAA protocol identifier.

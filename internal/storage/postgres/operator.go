@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/twostack/go-ricochet/internal/storage"
+	"github.com/stephanfeb/go-ricochet/internal/storage"
 )
 
 // This file holds the cross-owner listings behind the operator surface.

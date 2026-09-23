@@ -27,8 +27,8 @@ import (
 	"github.com/multiformats/go-multiaddr"
 	udxtransport "github.com/stephanfeb/go-libp2p-udx-transport"
 
-	client "github.com/twostack/go-ricochet/pkg/client"
-	"github.com/twostack/go-ricochet/pkg/wire"
+	client "github.com/stephanfeb/go-ricochet/pkg/client"
+	"github.com/stephanfeb/go-ricochet/pkg/wire"
 )
 
 // benchConfig holds CLI-parsed configuration.

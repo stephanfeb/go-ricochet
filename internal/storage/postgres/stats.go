@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/twostack/go-ricochet/internal/storage"
+	"github.com/stephanfeb/go-ricochet/internal/storage"
 )
 
 // depthBucketEdges defines the mailbox-size histogram. The edges are fixed

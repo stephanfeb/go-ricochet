@@ -12,13 +12,13 @@ import (
 	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/protocol"
 
-	"github.com/twostack/go-ricochet/internal/protocol/frame"
-	"github.com/twostack/go-ricochet/internal/protocol/maa"
-	"github.com/twostack/go-ricochet/internal/protocol/mma"
-	"github.com/twostack/go-ricochet/internal/protocol/msa"
-	"github.com/twostack/go-ricochet/internal/protocol/sca"
-	client "github.com/twostack/go-ricochet/pkg/client"
-	"github.com/twostack/go-ricochet/pkg/wire"
+	"github.com/stephanfeb/go-ricochet/internal/protocol/frame"
+	"github.com/stephanfeb/go-ricochet/internal/protocol/maa"
+	"github.com/stephanfeb/go-ricochet/internal/protocol/mma"
+	"github.com/stephanfeb/go-ricochet/internal/protocol/msa"
+	"github.com/stephanfeb/go-ricochet/internal/protocol/sca"
+	client "github.com/stephanfeb/go-ricochet/pkg/client"
+	"github.com/stephanfeb/go-ricochet/pkg/wire"
 )
 
 // rawExchange sends one JSON frame on a fresh stream as the given identity

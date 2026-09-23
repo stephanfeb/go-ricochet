@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/twostack/go-ricochet/internal/core"
-	"github.com/twostack/go-ricochet/internal/protocol/notify"
+	"github.com/stephanfeb/go-ricochet/internal/core"
+	"github.com/stephanfeb/go-ricochet/internal/protocol/notify"
 )
 
 // recordingNode remembers which topics were joined and left.

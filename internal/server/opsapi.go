@@ -9,8 +9,8 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
-	"github.com/twostack/go-ricochet/internal/opsapi"
-	"github.com/twostack/go-ricochet/internal/opsview"
+	"github.com/stephanfeb/go-ricochet/internal/opsapi"
+	"github.com/stephanfeb/go-ricochet/internal/opsview"
 )
 
 // poolProvider is satisfied by the PostgreSQL storage backend. It is declared

@@ -8,10 +8,10 @@ import (
 
 	"github.com/libp2p/go-libp2p/core/peer"
 
-	"github.com/twostack/go-ricochet/internal/protocol/sca"
-	"github.com/twostack/go-ricochet/internal/protocol/sda"
-	"github.com/twostack/go-ricochet/internal/protocol/sfa"
-	"github.com/twostack/go-ricochet/pkg/wire"
+	"github.com/stephanfeb/go-ricochet/internal/protocol/sca"
+	"github.com/stephanfeb/go-ricochet/internal/protocol/sda"
+	"github.com/stephanfeb/go-ricochet/internal/protocol/sfa"
+	"github.com/stephanfeb/go-ricochet/pkg/wire"
 )
 
 // Who may read a document, feed or collection: the ACCESS operation of each

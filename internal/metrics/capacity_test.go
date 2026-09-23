@@ -4,8 +4,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/twostack/go-ricochet/internal/metrics"
-	"github.com/twostack/go-ricochet/internal/storage"
+	"github.com/stephanfeb/go-ricochet/internal/metrics"
+	"github.com/stephanfeb/go-ricochet/internal/storage"
 )
 
 // stubStats stands in for capacity.Sampler.

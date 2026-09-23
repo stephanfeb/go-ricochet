@@ -11,8 +11,8 @@ import (
 	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/peer"
 
-	"github.com/twostack/go-ricochet/internal/admission"
-	"github.com/twostack/go-ricochet/internal/core"
+	"github.com/stephanfeb/go-ricochet/internal/admission"
+	"github.com/stephanfeb/go-ricochet/internal/core"
 )
 
 func testPeerID(t *testing.T) peer.ID {

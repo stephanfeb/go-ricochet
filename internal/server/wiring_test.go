@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/twostack/go-ricochet/internal/core"
+	"github.com/stephanfeb/go-ricochet/internal/core"
 )
 
 // The MDA has to be built from the server's configuration.

@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/twostack/go-ricochet/internal/core"
+	"github.com/stephanfeb/go-ricochet/internal/core"
 )
 
 // TestCollectionQueryTotalsUseRecordCount pins backlog N11: an unfiltered

@@ -5,8 +5,8 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/twostack/go-ricochet/internal/core"
-	"github.com/twostack/go-ricochet/internal/storage"
+	"github.com/stephanfeb/go-ricochet/internal/core"
+	"github.com/stephanfeb/go-ricochet/internal/storage"
 )
 
 // Content the database cannot hold is the client's fault, not the server's.

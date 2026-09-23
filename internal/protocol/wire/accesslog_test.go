@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
-	forge "github.com/twostack/go-p2p-forge"
+	forge "github.com/stephanfeb/go-p2p-forge"
 
-	"github.com/twostack/go-ricochet/internal/protocol/wire"
+	"github.com/stephanfeb/go-ricochet/internal/protocol/wire"
 )
 
 // recordingHandler keeps every record at Info or above.

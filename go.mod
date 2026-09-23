@@ -1,4 +1,4 @@
-module github.com/twostack/go-ricochet
+module github.com/stephanfeb/go-ricochet
 
 go 1.25.7
 
@@ -14,7 +14,7 @@ require (
 	github.com/prometheus/client_golang v1.24.1
 	github.com/prometheus/client_model v0.6.2
 	github.com/stephanfeb/go-libp2p-udx-transport v0.1.3
-	github.com/twostack/go-p2p-forge v0.1.5
+	github.com/stephanfeb/go-p2p-forge v0.2.0
 	golang.org/x/crypto v0.54.0
 	gopkg.in/yaml.v3 v3.0.1
 )

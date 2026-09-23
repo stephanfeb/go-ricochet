@@ -6,9 +6,9 @@ import (
 
 	"github.com/libp2p/go-libp2p/core/network"
 
-	"github.com/twostack/go-ricochet/internal/protocol/frame"
-	"github.com/twostack/go-ricochet/internal/protocol/notify"
-	"github.com/twostack/go-ricochet/pkg/wire"
+	"github.com/stephanfeb/go-ricochet/internal/protocol/frame"
+	"github.com/stephanfeb/go-ricochet/internal/protocol/notify"
+	"github.com/stephanfeb/go-ricochet/pkg/wire"
 )
 
 // NotificationHandler is called when a push notification is received. The

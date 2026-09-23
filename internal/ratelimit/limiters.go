@@ -10,10 +10,10 @@ package ratelimit
 import (
 	"sync"
 
-	forge "github.com/twostack/go-p2p-forge"
-	"github.com/twostack/go-p2p-forge/middleware"
+	forge "github.com/stephanfeb/go-p2p-forge"
+	"github.com/stephanfeb/go-p2p-forge/middleware"
 
-	"github.com/twostack/go-ricochet/internal/core"
+	"github.com/stephanfeb/go-ricochet/internal/core"
 )
 
 // RegistryKey is the forge registry key under which the limiters are provided.

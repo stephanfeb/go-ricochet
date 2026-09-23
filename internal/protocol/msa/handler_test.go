@@ -6,10 +6,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/twostack/go-ricochet/internal/core"
-	"github.com/twostack/go-ricochet/internal/protocol/msa"
-	"github.com/twostack/go-ricochet/internal/protocol/protocoltest"
-	"github.com/twostack/go-ricochet/internal/protocol/wire"
+	"github.com/stephanfeb/go-ricochet/internal/core"
+	"github.com/stephanfeb/go-ricochet/internal/protocol/msa"
+	"github.com/stephanfeb/go-ricochet/internal/protocol/protocoltest"
+	"github.com/stephanfeb/go-ricochet/internal/protocol/wire"
 )
 
 func encode(t *testing.T, msg *core.Message) []byte {

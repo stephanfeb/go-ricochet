@@ -3,7 +3,7 @@ package wire
 import (
 	"time"
 
-	forge "github.com/twostack/go-p2p-forge"
+	forge "github.com/stephanfeb/go-p2p-forge"
 )
 
 // statusCoder is implemented by every response type, so the access line can

@@ -5,7 +5,7 @@ Part of the [release audit of 2026-09-13](README.md). Every checkable claim in `
 | # | Claim | Location | Verdict | Evidence | Fix needed |
 |---|---|---|---|---|---|
 | 1 | "production-ready" | README:3 | UNVERIFIABLE | Own docs list open production gaps: `NullResourceManager`, no connection manager, `MaxConcurrentConnections` unenforced, unbounded notifier goroutines (`doc/SCALABILITY.md`) | Soften, or link to SCALABILITY status |
-| 2 | Link to `github.com/user/ricochet` | README:5 | FALSE | Placeholder URL; module is `github.com/twostack/go-ricochet` | Replace or remove |
+| 2 | Link to `github.com/user/ricochet` | README:5 | FALSE | Placeholder URL; module is `github.com/stephanfeb/go-ricochet` | Replace or remove |
 | 3 | Store-and-forward messaging | README:9 | TRUE | `pkg/client/client.go:208-230` → `msa/handler.go:125` → `mta/router.go:44-56` → `mda.DeliverLocal` | — |
 | 4 | Private/shared/public mailboxes with ACLs | README:10 | TRUE | `internal/core/mailbox.go:14-16,51`; `mma/handler.go:31-41`; `mailbox_acls` | — |
 | 5 | Document store: ETag conditional ops, versioning, merge-patch | README:11 | TRUE | `sda/handler.go:31-41`, `:69,320,468`; `options.go:156-175`; `document_versions` | — |
@@ -32,7 +32,7 @@ Part of the [release audit of 2026-09-13](README.md). Every checkable claim in `
 | 26 | CLI block is the full flag set | README:93-105 | PARTIAL | Missing: `--external-addrs`, `--config`, `--debug-dht`, and auto-load of `/etc/ricochet/config.yaml` (`main.go:41-43,59-63`) | Add |
 | 27 | `--pg-sslmode` values | README:104 | TRUE | Default `require` (Default/Prod), `disable` (Dev) — README doesn't state the default | State default |
 | 28 | `client.New(h, client.Config{...})`, `ServerPreference{PeerID, Priority}` | README:123-129 | TRUE | `client.go:34-45,111`; compiled externally | — |
-| 29 | Import path `github.com/twostack/go-ricochet/pkg/client` | README:116 | TRUE | `go.mod:1` | — |
+| 29 | Import path `github.com/stephanfeb/go-ricochet/pkg/client` | README:116 | TRUE | `go.mod:1` | — |
 | 30 | `SendMessage` + `WithFolderPath/WithPriority/WithExpiry/WithCompression/WithEncryption` | README:136-145 | TRUE (signatures) | `options.go:34,41,48,63,77` | — |
 | 31 | `core.PriorityUrgent`, `core.PriorityHigh` | README:141,159 | FALSE | `core` is `internal/core`; external build fails. Exported aliases exist: `client.PriorityUrgent/PriorityHigh` (`options.go:13-18`) | Use `client.Priority*` |
 | 32 | `RetrieveMessages` + retrieve options | README:152-160 | TRUE | `options.go:96-123`; `client.go:377` | — |

@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	client "github.com/twostack/go-ricochet/pkg/client"
+	client "github.com/stephanfeb/go-ricochet/pkg/client"
 )
 
 func TestJoinDirectory(t *testing.T) {

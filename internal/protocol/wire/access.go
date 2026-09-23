@@ -5,10 +5,10 @@ import (
 	"fmt"
 
 	"github.com/libp2p/go-libp2p/core/peer"
-	forge "github.com/twostack/go-p2p-forge"
+	forge "github.com/stephanfeb/go-p2p-forge"
 
-	"github.com/twostack/go-ricochet/internal/core"
-	"github.com/twostack/go-ricochet/internal/storage"
+	"github.com/stephanfeb/go-ricochet/internal/core"
+	"github.com/stephanfeb/go-ricochet/internal/storage"
 )
 
 // Read authorization for documents, feeds and collections. Reads used to be

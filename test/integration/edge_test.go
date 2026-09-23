@@ -9,10 +9,10 @@ import (
 
 	"github.com/libp2p/go-libp2p/core/crypto"
 
-	"github.com/twostack/go-p2p-forge/codec"
+	"github.com/stephanfeb/go-p2p-forge/codec"
 
-	"github.com/twostack/go-ricochet/internal/core"
-	"github.com/twostack/go-ricochet/internal/protocol/maa"
+	"github.com/stephanfeb/go-ricochet/internal/core"
+	"github.com/stephanfeb/go-ricochet/internal/protocol/maa"
 )
 
 // A peer that opens a stream, declares a ten-megabyte frame and then sends

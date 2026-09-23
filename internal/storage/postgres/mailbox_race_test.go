@@ -5,7 +5,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/twostack/go-ricochet/internal/core"
+	"github.com/stephanfeb/go-ricochet/internal/core"
 )
 
 // The first delivery to a mailbox creates it. When several first deliveries

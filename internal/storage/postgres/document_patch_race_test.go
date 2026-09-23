@@ -8,7 +8,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/twostack/go-ricochet/internal/storage"
+	"github.com/stephanfeb/go-ricochet/internal/storage"
 )
 
 // Two patches carrying the same If-Match race for one document: exactly one

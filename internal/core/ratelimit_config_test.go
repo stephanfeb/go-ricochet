@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/twostack/go-ricochet/internal/core"
+	"github.com/stephanfeb/go-ricochet/internal/core"
 )
 
 // writeConfig writes yaml to a temp file and returns its path.

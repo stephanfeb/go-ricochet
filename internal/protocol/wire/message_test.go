@@ -9,8 +9,8 @@ import (
 
 	"github.com/jackc/pgx/v5/pgconn"
 
-	"github.com/twostack/go-ricochet/internal/mda/mailboxes"
-	"github.com/twostack/go-ricochet/internal/mta"
+	"github.com/stephanfeb/go-ricochet/internal/mda/mailboxes"
+	"github.com/stephanfeb/go-ricochet/internal/mta"
 )
 
 // A database error, however it was wrapped, reaches the client as a fixed

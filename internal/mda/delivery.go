@@ -9,9 +9,9 @@ import (
 	lru "github.com/hashicorp/golang-lru/v2"
 	"github.com/libp2p/go-libp2p/core/peer"
 
-	"github.com/twostack/go-ricochet/internal/core"
-	"github.com/twostack/go-ricochet/internal/mda/mailboxes"
-	"github.com/twostack/go-ricochet/internal/storage"
+	"github.com/stephanfeb/go-ricochet/internal/core"
+	"github.com/stephanfeb/go-ricochet/internal/mda/mailboxes"
+	"github.com/stephanfeb/go-ricochet/internal/storage"
 )
 
 // RetrieveOpts holds options for message retrieval.

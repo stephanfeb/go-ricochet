@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/twostack/go-ricochet/internal/core"
-	client "github.com/twostack/go-ricochet/pkg/client"
+	"github.com/stephanfeb/go-ricochet/internal/core"
+	client "github.com/stephanfeb/go-ricochet/pkg/client"
 )
 
 // isOverloaded reports whether err is the server's 503 shed response.

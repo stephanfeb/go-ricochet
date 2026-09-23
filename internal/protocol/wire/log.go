@@ -3,7 +3,7 @@ package wire
 import (
 	"log/slog"
 
-	forge "github.com/twostack/go-p2p-forge"
+	forge "github.com/stephanfeb/go-p2p-forge"
 )
 
 // LogRejection records the real error behind a failed request. The client

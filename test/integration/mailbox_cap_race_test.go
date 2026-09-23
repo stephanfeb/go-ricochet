@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/twostack/go-ricochet/internal/core"
-	client "github.com/twostack/go-ricochet/pkg/client"
-	"github.com/twostack/go-ricochet/pkg/wire"
+	"github.com/stephanfeb/go-ricochet/internal/core"
+	client "github.com/stephanfeb/go-ricochet/pkg/client"
+	"github.com/stephanfeb/go-ricochet/pkg/wire"
 )
 
 // The cap is enforced under the mailbox row lock. It used to be a count read

@@ -3,7 +3,7 @@ package core
 import (
 	"github.com/libp2p/go-libp2p/core/peer"
 
-	"github.com/twostack/go-ricochet/pkg/wire"
+	"github.com/stephanfeb/go-ricochet/pkg/wire"
 )
 
 // The wire model lives in pkg/wire so that clients outside this module can

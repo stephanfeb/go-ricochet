@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/twostack/go-ricochet/internal/core"
+	"github.com/stephanfeb/go-ricochet/internal/core"
 )
 
 const (

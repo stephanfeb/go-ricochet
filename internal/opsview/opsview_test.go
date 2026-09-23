@@ -12,9 +12,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/twostack/go-ricochet/internal/capacity"
-	"github.com/twostack/go-ricochet/internal/core"
-	"github.com/twostack/go-ricochet/internal/storage"
+	"github.com/stephanfeb/go-ricochet/internal/capacity"
+	"github.com/stephanfeb/go-ricochet/internal/core"
+	"github.com/stephanfeb/go-ricochet/internal/storage"
 )
 
 // A real peer ID, so the owner validation is exercised against something that

@@ -8,8 +8,8 @@ import (
 
 	"github.com/libp2p/go-libp2p/core/peer"
 
-	"github.com/twostack/go-ricochet/internal/protocol/frame"
-	"github.com/twostack/go-ricochet/internal/protocol/sfa"
+	"github.com/stephanfeb/go-ricochet/internal/protocol/frame"
+	"github.com/stephanfeb/go-ricochet/internal/protocol/sfa"
 )
 
 // FeedInfo contains metadata about a feed.

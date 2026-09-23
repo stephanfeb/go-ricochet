@@ -3,7 +3,7 @@ package server
 import (
 	"github.com/prometheus/client_golang/prometheus"
 
-	"github.com/twostack/go-ricochet/internal/metrics"
+	"github.com/stephanfeb/go-ricochet/internal/metrics"
 )
 
 // registerCollectors attaches the runtime collectors to the metrics registry.

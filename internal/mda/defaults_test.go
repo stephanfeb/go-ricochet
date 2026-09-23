@@ -4,8 +4,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/twostack/go-ricochet/internal/core"
-	"github.com/twostack/go-ricochet/internal/mda"
+	"github.com/stephanfeb/go-ricochet/internal/core"
+	"github.com/stephanfeb/go-ricochet/internal/mda"
 )
 
 // The bug this replaces: getMailbox passed the literals 1000 and 30, so a

@@ -4,10 +4,10 @@ import (
 	"testing"
 	"time"
 
-	forge "github.com/twostack/go-p2p-forge"
-	"github.com/twostack/go-p2p-forge/forgetest"
+	forge "github.com/stephanfeb/go-p2p-forge"
+	"github.com/stephanfeb/go-p2p-forge/forgetest"
 
-	"github.com/twostack/go-ricochet/internal/core"
+	"github.com/stephanfeb/go-ricochet/internal/core"
 )
 
 // message_timeout used to be parsed and read by nothing. It is now the

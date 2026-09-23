@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/twostack/go-ricochet/internal/core"
-	"github.com/twostack/go-ricochet/internal/metrics"
-	client "github.com/twostack/go-ricochet/pkg/client"
+	"github.com/stephanfeb/go-ricochet/internal/core"
+	"github.com/stephanfeb/go-ricochet/internal/metrics"
+	client "github.com/stephanfeb/go-ricochet/pkg/client"
 )
 
 // series is one gathered sample, flattened for assertions.
