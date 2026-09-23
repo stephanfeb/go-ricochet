@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/twostack/go-ricochet/internal/storage"
+	"github.com/stephanfeb/go-ricochet/internal/storage"
 )
 
 // A directory search is a literal: LIKE wildcards in it match themselves,

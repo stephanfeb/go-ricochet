@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	client "github.com/twostack/go-ricochet/pkg/client"
-	"github.com/twostack/go-ricochet/pkg/wire"
+	client "github.com/stephanfeb/go-ricochet/pkg/client"
+	"github.com/stephanfeb/go-ricochet/pkg/wire"
 )
 
 // forbidden reports whether err is the server's 403.

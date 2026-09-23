@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/twostack/go-ricochet/internal/opsapi"
-	"github.com/twostack/go-ricochet/internal/storage/postgres"
+	"github.com/stephanfeb/go-ricochet/internal/opsapi"
+	"github.com/stephanfeb/go-ricochet/internal/storage/postgres"
 )
 
 // newOpsSurface builds the operator surface over a real PostgreSQL pool, wired

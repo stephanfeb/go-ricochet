@@ -9,11 +9,11 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
 
-	forge "github.com/twostack/go-p2p-forge"
-	forgemw "github.com/twostack/go-p2p-forge/middleware"
+	forge "github.com/stephanfeb/go-p2p-forge"
+	forgemw "github.com/stephanfeb/go-p2p-forge/middleware"
 
-	"github.com/twostack/go-ricochet/internal/admission"
-	"github.com/twostack/go-ricochet/internal/metrics"
+	"github.com/stephanfeb/go-ricochet/internal/admission"
+	"github.com/stephanfeb/go-ricochet/internal/metrics"
 )
 
 // statusResponse stands in for the protocol response types, which carry an

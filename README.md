@@ -2,7 +2,7 @@
 
 A store-and-forward messaging server for P2P networks, built on [libp2p](https://libp2p.io/). Provides reliable message delivery when recipients are offline, following an email MX server architecture.
 
-go-ricochet is the Go implementation of the Ricochet protocol (module `github.com/twostack/go-ricochet`), designed for decentralized messaging, document storage, and mailbox management over peer-to-peer networks.
+go-ricochet is the Go implementation of the Ricochet protocol (module `github.com/stephanfeb/go-ricochet`), designed for decentralized messaging, document storage, and mailbox management over peer-to-peer networks.
 
 ## Features
 
@@ -131,8 +131,8 @@ The `pkg/client` package provides a full-featured client for interacting with Ri
 ```go
 import (
     "github.com/libp2p/go-libp2p"
-    client "github.com/twostack/go-ricochet/pkg/client"
-    "github.com/twostack/go-ricochet/pkg/wire"
+    client "github.com/stephanfeb/go-ricochet/pkg/client"
+    "github.com/stephanfeb/go-ricochet/pkg/wire"
 )
 
 // Create a libp2p host

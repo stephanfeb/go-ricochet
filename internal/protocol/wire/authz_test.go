@@ -2,15 +2,15 @@ package wire_test
 
 import (
 	"fmt"
-	"github.com/twostack/go-ricochet/internal/storage"
+	"github.com/stephanfeb/go-ricochet/internal/storage"
 	"strings"
 	"testing"
 
 	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/peer"
-	forge "github.com/twostack/go-p2p-forge"
+	forge "github.com/stephanfeb/go-p2p-forge"
 
-	"github.com/twostack/go-ricochet/internal/protocol/wire"
+	"github.com/stephanfeb/go-ricochet/internal/protocol/wire"
 )
 
 func newPeer(t *testing.T) peer.ID {

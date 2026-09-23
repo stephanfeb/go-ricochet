@@ -13,7 +13,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 	"golang.org/x/crypto/nacl/box"
 
-	"github.com/twostack/go-ricochet/pkg/wire"
+	"github.com/stephanfeb/go-ricochet/pkg/wire"
 )
 
 const nonceSize = 24

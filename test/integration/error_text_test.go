@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/twostack/go-ricochet/pkg/wire"
+	"github.com/stephanfeb/go-ricochet/pkg/wire"
 )
 
 // When storage fails under a live server, the client learns that the

@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	client "github.com/twostack/go-ricochet/pkg/client"
+	client "github.com/stephanfeb/go-ricochet/pkg/client"
 )
 
 // A client pages a query with the cursor each page hands back, and sees

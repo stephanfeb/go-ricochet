@@ -26,9 +26,9 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/collectors"
 
-	forge "github.com/twostack/go-p2p-forge"
+	forge "github.com/stephanfeb/go-p2p-forge"
 
-	"github.com/twostack/go-ricochet/internal/admission"
+	"github.com/stephanfeb/go-ricochet/internal/admission"
 )
 
 // RegistryKey is the forge registry key under which the metrics are provided

@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	client "github.com/twostack/go-ricochet/pkg/client"
+	client "github.com/stephanfeb/go-ricochet/pkg/client"
 )
 
 // TestConcurrentDocumentGet verifies that multiple concurrent GET requests

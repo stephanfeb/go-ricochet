@@ -6,8 +6,8 @@ import (
 
 	"github.com/libp2p/go-libp2p/core/peer"
 
-	"github.com/twostack/go-ricochet/internal/protocol/protocoltest"
-	"github.com/twostack/go-ricochet/internal/protocol/sda"
+	"github.com/stephanfeb/go-ricochet/internal/protocol/protocoltest"
+	"github.com/stephanfeb/go-ricochet/internal/protocol/sda"
 )
 
 func setup(t *testing.T) (*protocoltest.Env, func(from peer.ID, req sda.DocRequest) *sda.DocResponse, peer.ID) {

@@ -18,7 +18,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 	multiaddr "github.com/multiformats/go-multiaddr"
 
-	forge "github.com/twostack/go-p2p-forge"
+	forge "github.com/stephanfeb/go-p2p-forge"
 )
 
 // RegistryKey is the forge registry key under which the Peers are provided.

@@ -5,7 +5,7 @@ import (
 
 	"github.com/libp2p/go-libp2p/core/protocol"
 
-	"github.com/twostack/go-ricochet/pkg/wire"
+	"github.com/stephanfeb/go-ricochet/pkg/wire"
 )
 
 // ProtocolID is the protocol identifier for mailbox notifications.

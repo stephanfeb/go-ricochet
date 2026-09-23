@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"unicode/utf8"
 
-	public "github.com/twostack/go-ricochet/pkg/wire"
+	public "github.com/stephanfeb/go-ricochet/pkg/wire"
 )
 
 // Field bounds, aliased from pkg/wire where clients can read them.

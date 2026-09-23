@@ -13,8 +13,8 @@ import (
 	libp2pcrypto "github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/peer"
 
-	"github.com/twostack/go-ricochet/internal/core"
-	"github.com/twostack/go-ricochet/internal/storage"
+	"github.com/stephanfeb/go-ricochet/internal/core"
+	"github.com/stephanfeb/go-ricochet/internal/storage"
 )
 
 // newTestStorage connects to the database named by RICOCHET_TEST_POSTGRES_DSN,

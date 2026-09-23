@@ -5,7 +5,7 @@ import (
 	"time"
 
 	"github.com/libp2p/go-libp2p/core/peer"
-	"github.com/twostack/go-ricochet/internal/core"
+	"github.com/stephanfeb/go-ricochet/internal/core"
 )
 
 // MailboxRecord represents a stored mailbox.

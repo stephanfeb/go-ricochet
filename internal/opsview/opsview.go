@@ -30,9 +30,9 @@ import (
 
 	"github.com/libp2p/go-libp2p/core/peer"
 
-	"github.com/twostack/go-ricochet/internal/capacity"
-	"github.com/twostack/go-ricochet/internal/core"
-	"github.com/twostack/go-ricochet/internal/storage"
+	"github.com/stephanfeb/go-ricochet/internal/capacity"
+	"github.com/stephanfeb/go-ricochet/internal/core"
+	"github.com/stephanfeb/go-ricochet/internal/storage"
 )
 
 // defaultTimeout bounds each query. These endpoints scan, and an operator

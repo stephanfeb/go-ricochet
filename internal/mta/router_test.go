@@ -11,12 +11,12 @@ import (
 	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/peer"
 
-	"github.com/twostack/go-p2p-forge/middleware"
+	"github.com/stephanfeb/go-p2p-forge/middleware"
 
-	"github.com/twostack/go-ricochet/internal/core"
-	"github.com/twostack/go-ricochet/internal/mda"
-	"github.com/twostack/go-ricochet/internal/mta"
-	"github.com/twostack/go-ricochet/internal/storage/storagetest"
+	"github.com/stephanfeb/go-ricochet/internal/core"
+	"github.com/stephanfeb/go-ricochet/internal/mda"
+	"github.com/stephanfeb/go-ricochet/internal/mta"
+	"github.com/stephanfeb/go-ricochet/internal/storage/storagetest"
 )
 
 // ---------------------------------------------------------------------------

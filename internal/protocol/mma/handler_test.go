@@ -6,10 +6,10 @@ import (
 
 	"github.com/libp2p/go-libp2p/core/peer"
 
-	"github.com/twostack/go-ricochet/internal/core"
-	"github.com/twostack/go-ricochet/internal/protocol/mma"
-	"github.com/twostack/go-ricochet/internal/protocol/protocoltest"
-	"github.com/twostack/go-ricochet/internal/protocol/wire"
+	"github.com/stephanfeb/go-ricochet/internal/core"
+	"github.com/stephanfeb/go-ricochet/internal/protocol/mma"
+	"github.com/stephanfeb/go-ricochet/internal/protocol/protocoltest"
+	"github.com/stephanfeb/go-ricochet/internal/protocol/wire"
 )
 
 func setup(t *testing.T, configure ...func(*core.ServerConfig)) (*protocoltest.Env, func(from peer.ID, req mma.AdminRequest) *mma.AdminResponse, peer.ID) {

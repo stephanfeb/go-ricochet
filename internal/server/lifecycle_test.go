@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/twostack/go-ricochet/internal/core"
-	"github.com/twostack/go-ricochet/internal/storage/postgres"
+	"github.com/stephanfeb/go-ricochet/internal/core"
+	"github.com/stephanfeb/go-ricochet/internal/storage/postgres"
 )
 
 // freeUDPPort returns a port nothing is bound to right now. UDX binds a

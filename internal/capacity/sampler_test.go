@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/twostack/go-ricochet/internal/capacity"
-	"github.com/twostack/go-ricochet/internal/storage"
+	"github.com/stephanfeb/go-ricochet/internal/capacity"
+	"github.com/stephanfeb/go-ricochet/internal/storage"
 )
 
 // stubStorage supplies aggregates without a database. Only ServerStats is

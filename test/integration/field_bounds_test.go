@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/twostack/go-ricochet/pkg/client"
-	"github.com/twostack/go-ricochet/pkg/wire"
+	"github.com/stephanfeb/go-ricochet/pkg/client"
+	"github.com/stephanfeb/go-ricochet/pkg/wire"
 )
 
 // Every free-text field a client can send is bounded, and a value past the

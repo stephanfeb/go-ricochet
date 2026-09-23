@@ -8,12 +8,12 @@ import (
 	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/peer"
 
-	forge "github.com/twostack/go-p2p-forge"
-	"github.com/twostack/go-p2p-forge/codec"
+	forge "github.com/stephanfeb/go-p2p-forge"
+	"github.com/stephanfeb/go-p2p-forge/codec"
 
-	"github.com/twostack/go-ricochet/internal/admission"
-	"github.com/twostack/go-ricochet/internal/core"
-	"github.com/twostack/go-ricochet/internal/metrics"
+	"github.com/stephanfeb/go-ricochet/internal/admission"
+	"github.com/stephanfeb/go-ricochet/internal/core"
+	"github.com/stephanfeb/go-ricochet/internal/metrics"
 )
 
 func testPeer(t *testing.T) peer.ID {

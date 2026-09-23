@@ -16,9 +16,9 @@ import (
 	"github.com/libp2p/go-libp2p/p2p/security/noise"
 	udxtransport "github.com/stephanfeb/go-libp2p-udx-transport"
 
-	"github.com/twostack/go-ricochet/internal/core"
-	"github.com/twostack/go-ricochet/internal/trust"
-	client "github.com/twostack/go-ricochet/pkg/client"
+	"github.com/stephanfeb/go-ricochet/internal/core"
+	"github.com/stephanfeb/go-ricochet/internal/trust"
+	client "github.com/stephanfeb/go-ricochet/pkg/client"
 )
 
 func keyAndID(t *testing.T) (crypto.PrivKey, peer.ID) {

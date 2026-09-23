@@ -3,7 +3,7 @@ package capacity
 import (
 	"errors"
 
-	forge "github.com/twostack/go-p2p-forge"
+	forge "github.com/stephanfeb/go-p2p-forge"
 )
 
 // ErrStorageFull refuses a write while the database is at or over

@@ -10,8 +10,8 @@ import (
 
 	"github.com/libp2p/go-libp2p/core/peer"
 
-	"github.com/twostack/go-ricochet/internal/core"
-	client "github.com/twostack/go-ricochet/pkg/client"
+	"github.com/stephanfeb/go-ricochet/internal/core"
+	client "github.com/stephanfeb/go-ricochet/pkg/client"
 )
 
 // mustSend submits and fails the test unless the server accepted.

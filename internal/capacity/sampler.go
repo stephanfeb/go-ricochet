@@ -21,10 +21,10 @@ import (
 	"sync"
 	"time"
 
-	forge "github.com/twostack/go-p2p-forge"
+	forge "github.com/stephanfeb/go-p2p-forge"
 
-	"github.com/twostack/go-ricochet/internal/core"
-	"github.com/twostack/go-ricochet/internal/storage"
+	"github.com/stephanfeb/go-ricochet/internal/core"
+	"github.com/stephanfeb/go-ricochet/internal/storage"
 )
 
 // RegistryKey is the forge registry key under which the sampler is provided to

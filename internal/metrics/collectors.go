@@ -4,9 +4,9 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/prometheus/client_golang/prometheus"
 
-	"github.com/twostack/go-p2p-forge/codec"
+	"github.com/stephanfeb/go-p2p-forge/codec"
 
-	"github.com/twostack/go-ricochet/internal/admission"
+	"github.com/stephanfeb/go-ricochet/internal/admission"
 )
 
 // The collectors below read live counters rather than keeping their own. That

@@ -3,9 +3,9 @@ package wire
 import (
 	"context"
 
-	forge "github.com/twostack/go-p2p-forge"
+	forge "github.com/stephanfeb/go-p2p-forge"
 
-	"github.com/twostack/go-ricochet/internal/core"
+	"github.com/stephanfeb/go-ricochet/internal/core"
 )
 
 // Bounded applies the server's edge timeouts to a pipeline.

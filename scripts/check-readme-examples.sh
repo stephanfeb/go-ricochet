@@ -32,8 +32,8 @@ import (
 
     "github.com/libp2p/go-libp2p"
     "github.com/libp2p/go-libp2p/core/peer"
-    client "github.com/twostack/go-ricochet/pkg/client"
-    "github.com/twostack/go-ricochet/pkg/wire"
+    client "github.com/stephanfeb/go-ricochet/pkg/client"
+    "github.com/stephanfeb/go-ricochet/pkg/wire"
 )
 
 var (
@@ -94,8 +94,8 @@ module example.com/readme-check
 
 go $(sed -n 's/^go \(.*\)$/\1/p' "$REPO/go.mod")
 
-require github.com/twostack/go-ricochet v0.0.0
-replace github.com/twostack/go-ricochet => $REPO
+require github.com/stephanfeb/go-ricochet v0.0.0
+replace github.com/stephanfeb/go-ricochet => $REPO
 GOMOD
 # The example module has to resolve the same versions as the repo; copying
 # its go.sum is quicker and quieter than letting tidy rediscover them.

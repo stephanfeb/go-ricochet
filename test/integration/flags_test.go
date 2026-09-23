@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/twostack/go-ricochet/internal/core"
+	"github.com/stephanfeb/go-ricochet/internal/core"
 )
 
 func TestMarkDelivered(t *testing.T) {

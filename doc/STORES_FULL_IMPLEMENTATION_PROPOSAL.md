@@ -375,8 +375,8 @@ import (
     "github.com/libp2p/go-libp2p/core/peer"
     "github.com/libp2p/go-libp2p/core/protocol"
 
-    "github.com/twostack/go-ricochet/internal/protocol/frame"
-    "github.com/twostack/go-ricochet/internal/storage"
+    "github.com/stephanfeb/go-ricochet/internal/protocol/frame"
+    "github.com/stephanfeb/go-ricochet/internal/storage"
 )
 
 const ProtocolID = protocol.ID("/ricochet/store/feed/1.0.0")

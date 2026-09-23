@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/twostack/go-ricochet/pkg/wire"
+	"github.com/stephanfeb/go-ricochet/pkg/wire"
 )
 
 func TestCompressDecompressRoundTrip(t *testing.T) {

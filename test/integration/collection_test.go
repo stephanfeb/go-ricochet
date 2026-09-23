@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/twostack/go-ricochet/pkg/client"
+	"github.com/stephanfeb/go-ricochet/pkg/client"
 )
 
 func TestCreateAndGetCollection(t *testing.T) {

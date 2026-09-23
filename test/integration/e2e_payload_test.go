@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	client "github.com/twostack/go-ricochet/pkg/client"
+	client "github.com/stephanfeb/go-ricochet/pkg/client"
 )
 
 // End-to-end encryption and compression are applied by the sending client and
