@@ -1,10 +1,14 @@
 name: Release
 
-# Pushing a tag vX.Y.Z (or vX.Y.Z-rc1, published as a pre-release) runs the
-# test suite, builds the binaries and Debian packages, and publishes them as
-# a GitHub release for that tag. Running the workflow by hand builds the same
-# files from the chosen branch and keeps them as a workflow artifact without
-# publishing anything.
+# Pushing a tag vX.Y.Z (or vX.Y.Z-rc1, a pre-release) runs the test suite,
+# builds the binaries and Debian packages, and attaches them with their
+# checksums to a DRAFT GitHub release for that tag. The macOS binaries built
+# here are not Developer ID signed, so on a Mac that holds the certificate,
+#   NOTARY_PROFILE=<profile> scripts/sign-macos-release.sh vX.Y.Z
+# replaces the macOS tarballs with signed, notarized and stapled disk images
+# and publishes the draft (doc/RELEASING.md). Running the workflow by hand
+# builds the same files from the chosen branch and keeps them as a workflow
+# artifact without making a release.
 
 on:
   push:
@@ -101,7 +105,9 @@ jobs:
           path: dist
           merge-multiple: true
 
-      - name: Publish
+      # a draft until scripts/sign-macos-release.sh has put the signed,
+      # notarized and stapled disk images in place of the macOS tarballs
+      - name: Draft release
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
@@ -111,6 +117,7 @@ jobs:
           gh release create "$TAG" dist/* \
             --repo "$GITHUB_REPOSITORY" \
             --title "Ricochet Server $TAG" \
+            --draft \
             --generate-notes \
             --verify-tag \
             $prerelease
