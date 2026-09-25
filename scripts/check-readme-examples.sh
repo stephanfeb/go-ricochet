@@ -41,6 +41,7 @@ var (
     recipientID     peer.ID
     serverPeerID    peer.ID
     colleaguePeerID peer.ID
+    friendPeerID    peer.ID
     payload         []byte
     msg             = wire.NewMessage("", "", nil)
     cl              *client.Client
