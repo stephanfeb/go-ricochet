@@ -52,7 +52,7 @@ cd /path/to/ricochet
 ### Install
 
 ```bash
-sudo dpkg -i build/dist/ricochet-server_1.0.0.deb
+sudo dpkg -i build/dist/ricochet-server_1.0.0_amd64.deb
 sudo apt-get install -f  # Install any missing dependencies
 ```
 

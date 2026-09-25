@@ -120,6 +120,7 @@ to throwaway local runs.
 --pg-username       PostgreSQL username
 --pg-password       PostgreSQL password (prefer RICOCHET_PG_PASSWORD)
 --pg-sslmode        PostgreSQL SSL mode: require (default), disable
+--version           Print the version and exit
 ```
 
 ## Client Library

@@ -27,6 +27,10 @@ func init() {
 // read from. It is applied after the config file and before the CLI flags.
 const pgPasswordEnv = "RICOCHET_PG_PASSWORD"
 
+// version is set at build time by the release packaging:
+// go build -ldflags "-X main.version=1.0.0".
+var version = "dev"
+
 func main() {
 	// Flags
 	port := flag.Int("port", 0, "Listen port (default: 55223)")
@@ -46,8 +50,14 @@ func main() {
 	externalAddrs := flag.String("external-addrs", "", "Comma-separated external multiaddrs to advertise (e.g., /ip4/1.2.3.4/udp/55223/udx)")
 	configFile := flag.String("config", "", "Path to YAML config file (e.g., /etc/ricochet/config.yaml)")
 	debugDHT := flag.Bool("debug-dht", false, "Enable verbose DHT debug logging")
+	showVersion := flag.Bool("version", false, "Print the version and exit")
 
 	flag.Parse()
+
+	if *showVersion {
+		fmt.Printf("ricochet %s\n", version)
+		return
+	}
 
 	// Build configuration: preset → config file → CLI overrides
 	var cfg *core.ServerConfig
@@ -166,7 +176,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	fmt.Printf("Ricochet server running. Peer ID: %s\n", srv.PeerID())
+	fmt.Printf("Ricochet server %s running. Peer ID: %s\n", version, srv.PeerID())
 
 	// Wait for a signal. The buffer holds the second one that forces exit.
 	sigCh := make(chan os.Signal, 2)

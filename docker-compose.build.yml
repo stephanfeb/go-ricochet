@@ -10,23 +10,16 @@ services:
     image: go-ricochet-builder:latest
     container_name: go-ricochet-builder
     volumes:
-      # Mount this repo and only the sibling modules go.mod's replace
-      # directives point at. Mounting the whole parent directory would hand
-      # the build container every unrelated file beside this checkout.
-      - .:/workspace/IdeaProjects/agentic/go-ricochet:ro
-      - ../go-p2p-forge:/workspace/IdeaProjects/agentic/go-p2p-forge:ro
-      - ../go-udx:/workspace/IdeaProjects/agentic/go-udx:ro
-      - ../go-libp2p-udx-transport:/workspace/IdeaProjects/agentic/go-libp2p-udx-transport:ro
-      # Mount build output directory (read-write)
-      - ./build:/workspace/IdeaProjects/agentic/go-ricochet/build:rw
+      # The source is read-only; the build writes only to build/. Everything
+      # else comes from the module proxy, so no sibling checkout is mounted.
+      - .:/workspace/go-ricochet:ro
+      - ./build:/workspace/go-ricochet/build:rw
       # Cache Go modules
       - go-mod-cache:/home/builder/go/pkg/mod
       # Cache Go build cache
       - go-build-cache:/home/builder/.cache/go-build
-    working_dir: /workspace/IdeaProjects/agentic/go-ricochet
+    working_dir: /workspace/go-ricochet
     environment:
-      # Set version from environment or default
-      - VERSION=${VERSION:-1.0.0}
       - GOPATH=/home/builder/go
       - GOCACHE=/home/builder/.cache/go-build
       # Pass host user ID for fixing permissions later

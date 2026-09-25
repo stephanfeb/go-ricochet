@@ -38,13 +38,19 @@ func TestDeploymentGuideMatchesTheDeployFiles(t *testing.T) {
 	// Installed paths: produced by the package build, its maintainer scripts,
 	// or the supervisor config. The .bak the manual upgrade makes is its own.
 	installed := map[string]bool{}
-	build := repoFile(t, "docker-build.sh")
-	for _, m := range regexp.MustCompile(`cp ([^ ]+) "\$BUILD_DIR(/[^"]+)"`).FindAllStringSubmatch(build, -1) {
+	build := repoFile(t, "scripts/package-deb.sh")
+	for _, m := range regexp.MustCompile(`install -m [0-7]+ +([^ ]+) +"\$ROOT(/[^"]+)"`).FindAllStringSubmatch(build, -1) {
 		dest := m[2]
 		if strings.HasSuffix(dest, "/") {
 			dest += filepath.Base(m[1])
 		}
 		installed[dest] = true
+	}
+	for _, m := range regexp.MustCompile(`-o "\$ROOT(/[^"]+)"`).FindAllStringSubmatch(build, -1) {
+		installed[m[1]] = true
+	}
+	if len(installed) == 0 {
+		t.Fatal("found no installed files in scripts/package-deb.sh; has its install syntax changed?")
 	}
 	pathPattern := regexp.MustCompile(`/(?:opt|etc|var/lib|var/log)/ricochet/[A-Za-z0-9_.-]+`)
 	for _, rel := range []string{"deploy/debian/postinst", "deploy/supervisor/ricochet.conf"} {

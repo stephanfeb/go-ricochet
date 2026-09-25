@@ -1,49 +1,36 @@
 #!/bin/bash
-# Build Debian package for Ricochet Server (Go)
-# This script runs on the host (macOS) and uses Docker for the build
+# Build the Ricochet Server Debian packages on a non-Linux host (macOS),
+# inside the Docker build environment. On Linux, scripts/package-deb.sh runs
+# directly; releases are built by .github/workflows/release.yml.
+#
+#   ./build-deb.sh                          # version from the latest tag, amd64
+#   VERSION=1.0.1 ARCHES="amd64 arm64" ./build-deb.sh
 
-set -e
+set -euo pipefail
 
-VERSION="${VERSION:-1.0.0}"
+cd "$(dirname "$0")"
 
-echo "=========================================="
-echo "Ricochet Server (Go) — Debian Package Build"
-echo "Version: ${VERSION}"
-echo "=========================================="
-echo ""
+if [ -z "${VERSION:-}" ]; then
+    VERSION="$(git describe --tags --abbrev=0 2>/dev/null | sed 's/^v//')"
+    VERSION="${VERSION:-0.0.0~dev}"
+fi
+ARCHES="${ARCHES:-amd64}"
+# The package version, as scripts/package-deb.sh writes it: 1.0.0-rc1 -> 1.0.0~rc1.
+DEB_VERSION="$(printf %s "$VERSION" | tr - "~")"
 
-# Step 1: Build the Docker image
-echo "[1/3] Building Docker build environment..."
+echo "Ricochet Server package build: version ${VERSION}, arch ${ARCHES}"
+
 docker compose -f docker-compose.build.yml build
-echo "✓ Build environment ready"
-echo ""
-
-# Step 2: Run the build inside the container
-echo "[2/3] Building package inside container..."
 docker compose -f docker-compose.build.yml run --rm \
     -e VERSION="${VERSION}" \
+    -e ARCHES="${ARCHES}" \
     -e HOST_USER_ID="$(id -u)" \
     -e HOST_GROUP_ID="$(id -g)" \
     builder \
     /bin/bash docker-build.sh
-echo "✓ Container build complete"
-echo ""
 
-# Step 3: Verify output
-echo "[3/3] Verifying package..."
-if [ -f "build/dist/ricochet-server_${VERSION}.deb" ]; then
-    echo "✓ Package created: build/dist/ricochet-server_${VERSION}.deb"
-    echo ""
-    ls -lh "build/dist/ricochet-server_${VERSION}.deb"
-    echo ""
-    echo "Installation (on Ubuntu):"
-    echo "  sudo dpkg -i build/dist/ricochet-server_${VERSION}.deb"
-    echo ""
-    echo "Configuration:"
-    echo "  1. Edit /etc/ricochet/env: set DB_PASSWORD and EXTERNAL_IP"
-    echo "  2. Initialize database: psql -U ricochet -d ricochet -f /opt/ricochet/schema.sql"
-    echo "  3. Start: sudo supervisorctl start ricochet"
-else
-    echo "ERROR: Package not found at build/dist/ricochet-server_${VERSION}.deb"
-    exit 1
-fi
+echo ""
+ls -lh build/dist/ricochet-server_"${DEB_VERSION}"_*.deb
+echo ""
+echo "Install on Debian or Ubuntu:"
+echo "  sudo apt install ./build/dist/ricochet-server_${DEB_VERSION}_amd64.deb"
