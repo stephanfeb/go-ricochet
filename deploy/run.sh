@@ -17,6 +17,14 @@ if [ -z "$DB_PASSWORD" ]; then
     exit 1
 fi
 
+# LISTEN_PORT sets the port the server binds as well as the one it
+# advertises. Unset, neither flag names a port and the server listens where
+# config.yaml (or the preset) says, which is 55223 unless changed there.
+PORT_FLAG=""
+if [ -n "$LISTEN_PORT" ]; then
+    PORT_FLAG="--port $LISTEN_PORT"
+fi
+
 # Build external-addrs flag if EXTERNAL_IP is set.
 # This is critical: without it, Identify only reports the VM's private IP,
 # causing remote clients to lose the server's address from their peerstore.
@@ -32,6 +40,7 @@ export RICOCHET_PG_PASSWORD="$DB_PASSWORD"
 # Start the server with CLI flags
 exec /opt/ricochet/ricochet_server \
     --production \
+    $PORT_FLAG \
     --data-dir /var/lib/ricochet/sf_storage \
     --pg-host "${DB_HOST:-localhost}" \
     --pg-port "${DB_PORT:-5432}" \
