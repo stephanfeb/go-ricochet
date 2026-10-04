@@ -127,6 +127,8 @@ to throwaway local runs.
 
 The `pkg/client` package provides a full-featured client for interacting with Ricochet servers. The message model it speaks (messages, flags, priorities, mailbox types, acknowledgements, notifications, status codes) is in `pkg/wire`, so both packages are importable from any module. The snippets below compile as written; CI checks them.
 
+For a complete program, see [`examples/mailbox`](examples/mailbox/): a command-line client that sends end-to-end encrypted messages to offline peers, collects them, and receives push notifications, with a Docker setup that runs a server and two clients behind NAT routers on one machine.
+
 ### Creating a Client
 
 ```go
@@ -522,6 +524,7 @@ Between announcements, every `intervals.health_check_min` a server runs the read
 ```
 cmd/ricochet/           Server CLI entry point
 cmd/ricochet-bench/     Load testing tool
+examples/mailbox/       Example client: offline messages, push, and a Docker setup with NAT
 internal/
   admission/            Admission control (bounded work in flight) and the shutdown drain
   capacity/             Storage capacity sampling

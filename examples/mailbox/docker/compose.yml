@@ -1,0 +1,128 @@
+# The mailbox example on one machine: a Ricochet server (with PostgreSQL) on
+# a simulated internet, and two clients, alice and bob, each behind its own
+# NAT router.
+#
+#   internet 100.70.0.0/16:  server 100.70.3.10, nat-a 100.70.1.10, nat-b 100.70.1.20
+#   home-a   192.168.1.0/24: nat-a 192.168.1.10, alice
+#   home-b   192.168.2.0/24: nat-b 192.168.2.10, bob
+#   backend:                 server, postgres
+#
+# The clients only dial out to the server, so neither needs to be reachable.
+# ./demo.sh runs the whole scenario; or step by step:
+#
+#   docker compose up -d --build server nat-a nat-b
+#   BOB=$(docker compose run --rm bob id)
+#   docker compose run --rm alice send "$BOB" "hello bob"    # bob is offline
+#   docker compose run --rm bob inbox                        # bob collects it
+
+name: ricochet-mailbox
+
+x-client: &client
+  image: ricochet-mailbox-client
+  build:
+    context: ../../..
+    dockerfile: examples/mailbox/docker/client.Dockerfile
+  cap_add: [NET_ADMIN]
+  init: true
+  environment: &client-env
+    PUBLIC_NET: 100.70.0.0/16
+
+x-nat: &nat
+  image: ricochet-mailbox-nat
+  build: nat
+  cap_add: [NET_ADMIN]
+  sysctls:
+    net.ipv4.ip_forward: 1
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ricochet
+      POSTGRES_PASSWORD: ricochet
+      POSTGRES_DB: ricochet
+    volumes:
+      - ../../../schema.sql:/docker-entrypoint-initdb.d/schema.sql:ro
+      - pgdata:/var/lib/postgresql/data
+    networks: [backend]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ricochet -d ricochet"]
+      interval: 2s
+      retries: 20
+
+  server:
+    image: ricochet-mailbox-server
+    build:
+      context: ../../..
+      dockerfile: examples/mailbox/docker/server.Dockerfile
+    init: true
+    environment:
+      EXTERNAL_IP: 100.70.3.10
+      PG_HOST: postgres
+      PG_DB: ricochet
+      PG_USER: ricochet
+      RICOCHET_PG_PASSWORD: ricochet
+    volumes:
+      - server-data:/data
+      - shared:/shared
+    networks:
+      backend: {}
+      internet: { ipv4_address: 100.70.3.10 }
+    depends_on:
+      postgres: { condition: service_healthy }
+
+  nat-a:
+    <<: *nat
+    environment:
+      NAT_TYPE: ${NAT_TYPE:-cone}
+      INTERNAL_SUBNET: 192.168.1.0/24
+    networks:
+      internet: { ipv4_address: 100.70.1.10 }
+      home-a: { ipv4_address: 192.168.1.10 }
+
+  nat-b:
+    <<: *nat
+    environment:
+      NAT_TYPE: ${NAT_TYPE:-cone}
+      INTERNAL_SUBNET: 192.168.2.0/24
+    networks:
+      internet: { ipv4_address: 100.70.1.20 }
+      home-b: { ipv4_address: 192.168.2.10 }
+
+  alice:
+    <<: *client
+    environment:
+      <<: *client-env
+      NAT_GATEWAY: 192.168.1.10
+    volumes:
+      - alice-data:/data
+      - shared:/shared:ro
+    networks: [home-a]
+    command: listen
+
+  bob:
+    <<: *client
+    environment:
+      <<: *client-env
+      NAT_GATEWAY: 192.168.2.10
+    volumes:
+      - bob-data:/data
+      - shared:/shared:ro
+    networks: [home-b]
+    command: listen
+
+volumes:
+  pgdata:
+  server-data:
+  shared:
+  alice-data:
+  bob-data:
+
+networks:
+  backend: {}
+  internet:
+    ipam: { config: [{ subnet: 100.70.0.0/16 }] }
+  home-a:
+    ipam: { config: [{ subnet: 192.168.1.0/24 }] }
+  home-b:
+    ipam: { config: [{ subnet: 192.168.2.0/24 }] }
