@@ -433,6 +433,17 @@ opens. With `enable_forwarding` on it is the set of peers allowed to submit a
 message whose sender is not themselves: the message is marked forwarded, its
 hop count advanced, and it is refused past the hop limit.
 
+### Relayed Topics
+
+GossipSub forwards a topic only through peers that announce it. Two peers
+connected only through this server -- a service publishing on a topic and an
+app subscribed to it -- exchange nothing on a topic the server does not use.
+`pubsub.relay_topics` lists topics the server joins and relays without
+subscribing: it forwards their messages and never delivers them to itself. A
+bootstrap shared by OverMedia and the overnode app should relay
+`/overmedia/service-announce`. A listed topic the server already uses is
+skipped with a warning; it is forwarded anyway.
+
 ### Identity Is Free, So Per-Peer Limits Are Fairness Controls
 
 A peer identity is an Ed25519 key, which costs nothing to mint, so every
@@ -549,6 +560,7 @@ internal/
     protocoltest/       In-process pipeline harness for handler tests
   ratelimit/            Optional per-protocol rate limiters
   registry/             Service discovery via GossipSub
+  relay/                Relays GossipSub topics the server does not use (pubsub.relay_topics)
   server/               Server orchestration and lifecycle
   storage/              Storage interface and models
     postgres/           PostgreSQL backend

@@ -36,6 +36,7 @@ import (
 	"github.com/stephanfeb/go-ricochet/internal/protocol/sfa"
 	"github.com/stephanfeb/go-ricochet/internal/ratelimit"
 	"github.com/stephanfeb/go-ricochet/internal/registry"
+	"github.com/stephanfeb/go-ricochet/internal/relay"
 	"github.com/stephanfeb/go-ricochet/internal/storage"
 	"github.com/stephanfeb/go-ricochet/internal/storage/postgres"
 	"github.com/stephanfeb/go-ricochet/internal/trust"
@@ -68,6 +69,7 @@ type Server struct {
 	presenceMonitor *presence.Monitor
 	presenceService *presence.Service
 	notifier        *mda.Notifier
+	relay           *relay.Relay
 
 	// Shutdown. drain is the switch every pipeline checks before admitting
 	// a request; inFlight counts the streams the pipelines are handling, so
@@ -226,6 +228,9 @@ func (s *Server) teardown() {
 	}
 
 	// Stop services
+	if s.relay != nil {
+		s.relay.Stop()
+	}
 	if s.presenceService != nil {
 		if err := s.presenceService.Stop(); err != nil {
 			s.logger.Warn("error stopping presence service", "error", err)
@@ -547,6 +552,10 @@ func (s *Server) initializeServices(ctx context.Context) {
 		s.presenceService = presence.NewService(s.forgeServer.Host(), s.forgeServer.Node(), s.presenceCache, presCfg, s.logger)
 		s.logger.Info("presence broadcast service initialized")
 	}
+
+	if len(s.config.RelayTopics) > 0 {
+		s.relay = relay.New(s.forgeServer.Node().PubSub(), s.config.RelayTopics, s.logger)
+	}
 }
 
 func (s *Server) registerProtocolHandlers() {
@@ -616,6 +625,15 @@ func (s *Server) startServices(ctx context.Context) {
 	// Start the notifier's idle-topic sweep
 	if s.notifier != nil {
 		s.notifier.Start(ctx)
+	}
+
+	// Relay last, so a configured topic the services above already joined is
+	// reported as skipped rather than taken from them.
+	if s.relay != nil {
+		if err := s.relay.Start(); err != nil {
+			s.logger.Warn("some topics are not relayed", "error", err)
+		}
+		s.logger.Info("relaying pubsub topics", "topics", s.relay.Topics())
 	}
 
 	// Log host advertised addresses (confirms relay service)

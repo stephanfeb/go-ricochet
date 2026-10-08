@@ -373,3 +373,13 @@ admission_control:
 security:
   trusted_peers: []
   #  - 12D3KooW...
+
+# GossipSub topics this server forwards without using them itself. GossipSub
+# passes a topic only through peers that announce it, so a service and an app
+# connected only through this server cannot reach each other on a topic it
+# does not relay. A bootstrap that OverMedia and the overnode app both use
+# should relay OverMedia's service announcements, or the app does not learn
+# about OverMedia until a DHT lookup.
+pubsub:
+  relay_topics: []
+  #  - /overmedia/service-announce

@@ -10,6 +10,7 @@ import (
 	"os"
 	"regexp"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -96,6 +97,11 @@ type ServerConfig struct {
 	EnableAuthentication bool       `json:"enableAuthentication"`
 	TrustedPeers         []string   `json:"trustedPeers"`
 	RateLimits           RateLimits `json:"rateLimits"`
+
+	// RelayTopics are GossipSub topics this server forwards without using
+	// them, so peers connected only through it can reach each other on them
+	// (an app hearing OverMedia's /overmedia/service-announce, for one).
+	RelayTopics []string `json:"relayTopics"`
 
 	// Capacity
 	Admission AdmissionControl `json:"admissionControl"`
@@ -589,6 +595,16 @@ func (c *ServerConfig) Validate() error {
 			return fmt.Errorf("trusted_peers entry %q is not a peer ID: %w", p, err)
 		}
 	}
+	seenTopics := make(map[string]bool, len(c.RelayTopics))
+	for _, topic := range c.RelayTopics {
+		if strings.TrimSpace(topic) == "" {
+			return fmt.Errorf("relay_topics must not contain an empty topic")
+		}
+		if seenTopics[topic] {
+			return fmt.Errorf("relay_topics lists %q twice", topic)
+		}
+		seenTopics[topic] = true
+	}
 	if c.WorkerThreads < 0 {
 		return fmt.Errorf("worker_threads must not be negative")
 	}
@@ -732,6 +748,10 @@ type yamlFileConfig struct {
 	Security struct {
 		TrustedPeers []string `yaml:"trusted_peers"`
 	} `yaml:"security"`
+
+	PubSub struct {
+		RelayTopics []string `yaml:"relay_topics"`
+	} `yaml:"pubsub"`
 
 	RelayLimits struct {
 		MaxReservations        int   `yaml:"max_reservations"`
@@ -928,6 +948,11 @@ func LoadConfigFromFile(path string, base *ServerConfig) error {
 	// Security section
 	if len(yc.Security.TrustedPeers) > 0 {
 		base.TrustedPeers = yc.Security.TrustedPeers
+	}
+
+	// PubSub section
+	if len(yc.PubSub.RelayTopics) > 0 {
+		base.RelayTopics = yc.PubSub.RelayTopics
 	}
 
 	// Relay limits section

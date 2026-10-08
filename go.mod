@@ -9,6 +9,7 @@ require (
 	github.com/ipfs/go-log/v2 v2.9.2
 	github.com/jackc/pgx/v5 v5.9.2
 	github.com/libp2p/go-libp2p v0.49.0
+	github.com/libp2p/go-libp2p-pubsub v0.15.0
 	github.com/multiformats/go-multiaddr v0.16.1
 	github.com/pierrec/lz4/v4 v4.1.25
 	github.com/prometheus/client_golang v1.24.1
@@ -54,7 +55,6 @@ require (
 	github.com/libp2p/go-libp2p-asn-util v0.4.1 // indirect
 	github.com/libp2p/go-libp2p-kad-dht v0.42.2 // indirect
 	github.com/libp2p/go-libp2p-kbucket v0.9.0 // indirect
-	github.com/libp2p/go-libp2p-pubsub v0.15.0 // indirect
 	github.com/libp2p/go-libp2p-record v0.3.1 // indirect
 	github.com/libp2p/go-libp2p-routing-helpers v0.7.5 // indirect
 	github.com/libp2p/go-msgio v0.3.0 // indirect
