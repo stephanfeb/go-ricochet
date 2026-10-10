@@ -303,9 +303,13 @@ func (s *MailboxServer) DeliverLocal(ctx context.Context, msg *core.Message) (in
 		"mailbox", addr.FullPath(),
 	)
 
-	// Fire push notification (non-blocking).
+	// Fire push notification (non-blocking), by the mailbox's own type: addr
+	// was built private only to find it, and notifying with it sent a public
+	// or shared mailbox's news to its owner alone, never to its topic.
 	if s.notifier != nil {
-		s.notifier.NotifyNewMessage(ctx, addr, msg)
+		stored := *addr
+		stored.Type = mb.Record().Type
+		s.notifier.NotifyNewMessage(ctx, &stored, msg)
 	}
 
 	return int(msg.SequenceNumber), nil
