@@ -18,7 +18,6 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/p2p/muxer/yamux"
 	"github.com/libp2p/go-libp2p/p2p/security/noise"
-	udxtransport "github.com/stephanfeb/go-libp2p-udx-transport"
 
 	forge "github.com/stephanfeb/go-p2p-forge"
 	"github.com/stephanfeb/go-p2p-forge/codec"
@@ -38,6 +37,7 @@ import (
 	"github.com/stephanfeb/go-ricochet/internal/ratelimit"
 	"github.com/stephanfeb/go-ricochet/internal/storage"
 	"github.com/stephanfeb/go-ricochet/internal/storage/postgres"
+	"github.com/stephanfeb/go-ricochet/internal/transports"
 	"github.com/stephanfeb/go-ricochet/internal/trust"
 	client "github.com/stephanfeb/go-ricochet/pkg/client"
 )
@@ -102,7 +102,17 @@ func newTestServer(t *testing.T, configure ...func(*core.ServerConfig)) *testSer
 		t.Fatalf("generate key: %v", err)
 	}
 
-	h := createHost(t, priv)
+	// Server config. Rate limits are left at their defaults so the tests
+	// exercise the limits a deployment actually runs with.
+	cfg := core.DevelopmentConfig()
+	cfg.MaxMessagesPerMailbox = 10000
+	for _, apply := range configure {
+		apply(cfg)
+	}
+
+	// The host runs the configured transports, each on a loopback port of
+	// its own; the configured listen addresses would collide across tests.
+	h := createHost(t, priv, cfg.Transports...)
 
 	// Parse DSN into PostgresConfig.
 	pgCfg := parsePostgresDSN(t, dsn)
@@ -115,14 +125,6 @@ func newTestServer(t *testing.T, configure ...func(*core.ServerConfig)) *testSer
 	if err := store.InitializeWithConfig(ctx, pgCfg); err != nil {
 		h.Close()
 		t.Fatalf("initialize storage: %v", err)
-	}
-
-	// Server config. Rate limits are left at their defaults so the tests
-	// exercise the limits a deployment actually runs with.
-	cfg := core.DevelopmentConfig()
-	cfg.MaxMessagesPerMailbox = 10000
-	for _, apply := range configure {
-		apply(cfg)
 	}
 
 	limiters := ratelimit.New(cfg.RateLimits)
@@ -239,8 +241,15 @@ func newTestClient(t *testing.T, server *testServer) *client.Client {
 // client exists.
 func newTestClientWithKey(t *testing.T, server *testServer, priv crypto.PrivKey) *client.Client {
 	t.Helper()
+	return newTestClientOver(t, server, priv, transports.UDX)
+}
 
-	h := createHost(t, priv)
+// newTestClientOver creates a client whose host runs only the named
+// transport, so every connection it makes to the server uses it.
+func newTestClientOver(t *testing.T, server *testServer, priv crypto.PrivKey, transport string) *client.Client {
+	t.Helper()
+
+	h := createHost(t, priv, transport)
 
 	// Add server addresses to the peerstore so the client can dial it.
 	h.Peerstore().AddAddrs(server.PeerID, server.Host.Addrs(), time.Hour)
@@ -274,15 +283,37 @@ func generatePeerID(t *testing.T) peer.ID {
 	return id
 }
 
-// createHost builds a libp2p host with UDX transport on a random port.
-func createHost(t *testing.T, priv crypto.PrivKey) host.Host {
+// loopbackListen is a random loopback port for each transport.
+var loopbackListen = map[string]string{
+	transports.UDX:          "/ip4/127.0.0.1/udp/0/udx",
+	transports.TCP:          "/ip4/127.0.0.1/tcp/0",
+	transports.QUIC:         "/ip4/127.0.0.1/udp/0/quic-v1",
+	transports.WebSocket:    "/ip4/127.0.0.1/tcp/0/ws",
+	transports.WebTransport: "/ip4/127.0.0.1/udp/0/quic-v1/webtransport",
+}
+
+// createHost builds a libp2p host listening on a random loopback port for
+// each named transport, UDX when none is named.
+func createHost(t *testing.T, priv crypto.PrivKey, names ...string) host.Host {
 	t.Helper()
+
+	if len(names) == 0 {
+		names = []string{transports.UDX}
+	}
+	transportOpts, err := transports.Options(names)
+	if err != nil {
+		t.Fatalf("transports: %v", err)
+	}
+	listen := make([]string, 0, len(names))
+	for _, name := range names {
+		listen = append(listen, loopbackListen[name])
+	}
 
 	h, err := libp2p.New(
 		libp2p.Identity(priv),
 		libp2p.NoTransports,
-		libp2p.Transport(udxtransport.NewTransport),
-		libp2p.ListenAddrStrings("/ip4/127.0.0.1/udp/0/udx"),
+		libp2p.ChainOptions(transportOpts...),
+		libp2p.ListenAddrStrings(listen...),
 		libp2p.Security(noise.ID, noise.New),
 		libp2p.Muxer("/yamux/1.0.0", yamux.DefaultTransport),
 		libp2p.ResourceManager(&network.NullResourceManager{}),

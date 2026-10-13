@@ -112,6 +112,8 @@ to throwaway local runs.
 --config            YAML config file (default: /etc/ricochet/config.yaml when it exists)
 --data-dir          Data directory path
 --identity-file     Path to Ed25519 identity key file
+--transports        Comma-separated transports to run (default: udx; see Transports)
+--listen-addrs      Comma-separated multiaddrs to listen on
 --external-addrs    Comma-separated external multiaddrs to advertise
 --debug-dht         Verbose DHT logging
 --pg-host           PostgreSQL host
@@ -465,7 +467,7 @@ is known to be one client.
 
 ### Transport Security
 
-All P2P connections use the [Noise protocol framework](https://noiseprotocol.org/) for transport encryption and mutual authentication.
+UDX, TCP and WebSocket connections use the [Noise protocol framework](https://noiseprotocol.org/) for transport encryption and mutual authentication; QUIC and WebTransport use libp2p's TLS 1.3 handshake. Either way the peer ID is authenticated by the handshake.
 
 ### Identity
 
@@ -481,7 +483,8 @@ upstream fix, and neither reaches code this server runs:
 
 - **GO-2026-4479** (`pion/dtls/v2`, AES-GCM nonce reuse) is linked through
   go-libp2p's WebRTC transport. The host is built with `libp2p.NoTransports`
-  and only the UDX transport, so no DTLS handshake ever happens.
+  and only the transports in `server.transports`, and `webrtc-direct` is
+  refused there, so no DTLS handshake ever happens.
 - **GO-2024-3218** (`go-libp2p-kad-dht`, content censorship via Sybil peers)
   concerns IPFS content routing: provider records for a CID. Ricochet uses
   the DHT for peer routing only and never publishes or looks up provider
@@ -502,6 +505,31 @@ UDX (reliable UDP transport: ordered streams, congestion and flow control)
     |
 UDP
 ```
+
+That is the default stack, and the one the mobile clients speak. The server
+can run other go-libp2p transports beside it or instead of it, named in
+`server.transports` (or `--transports`):
+
+| Transport | Listen address | Notes |
+|---|---|---|
+| `udx` (default) | `/ip4/0.0.0.0/udp/55223/udx` | Noise + yamux over UDX. |
+| `tcp` | `/ip4/0.0.0.0/tcp/55223` | Noise + yamux over TCP. |
+| `quic-v1` | `/ip4/0.0.0.0/udp/55224/quic-v1` | TLS 1.3 and streams from QUIC itself. |
+| `websocket` | `/ip4/0.0.0.0/tcp/55225/ws` | Noise + yamux. Secure WebSocket is not listened for: terminate TLS in a reverse proxy and advertise its `/wss` address. |
+| `webtransport` | `/ip4/0.0.0.0/udp/55224/quic-v1/webtransport` | For browsers; certificate hashes, no CA. |
+
+Every listen and external address needs its transport in the list; a
+transport with no listen address only dials. UDX and the QUIC family
+(`quic-v1`, `webtransport`) each hold their own UDP socket, so they need
+different UDP ports; QUIC and WebTransport share one. TCP and UDP may use the
+same number. `--port` moves every listen address to one port, so a server
+running UDX beside QUIC sets its ports in `listen_addresses` instead. The
+server refuses at start a configuration that breaks any of these rules.
+`webrtc-direct` is refused (see Dependency Advisories).
+
+The yamux keepalive (15 s) and write timeout (10 s) apply to UDX, TCP and
+WebSocket. QUIC and WebTransport keep their connections alive on quic-go's own
+15-second period.
 
 ### DHT
 
@@ -565,6 +593,7 @@ internal/
   storage/              Storage interface and models
     postgres/           PostgreSQL backend
     storagetest/        In-memory Storage for unit tests
+  transports/           Transport names, constructors and address checks
   trust/                Trusted-peer set and connection gate
 pkg/client/             Public client library
   client.go             Messages, mailboxes, documents

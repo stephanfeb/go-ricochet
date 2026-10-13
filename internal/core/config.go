@@ -15,12 +15,18 @@ import (
 
 	"github.com/libp2p/go-libp2p/core/peer"
 	"gopkg.in/yaml.v3"
+
+	"github.com/stephanfeb/go-ricochet/internal/transports"
 )
 
 // ServerConfig holds all server configuration.
 type ServerConfig struct {
 	// Network
-	Port              int      `json:"port"`
+	Port int `json:"port"`
+	// Transports names the transports the host runs (see package
+	// transports). Every listen and external address needs its transport
+	// here; a transport with no listen address is dial-only.
+	Transports        []string `json:"transports"`
 	ListenAddresses   []string `json:"listenAddresses"`
 	ExternalAddresses []string `json:"externalAddresses"`
 	BootstrapPeers    []string `json:"bootstrapPeers"`
@@ -455,6 +461,7 @@ func (c *PostgresConfig) ConnectionURI() string {
 func DefaultConfig() *ServerConfig {
 	return &ServerConfig{
 		Port:                  55223,
+		Transports:            []string{transports.UDX},
 		ListenAddresses:       []string{"/ip4/0.0.0.0/udp/55223/udx"},
 		DataDirectory:         "./sf_storage",
 		MaxStorageBytes:       10 * 1024 * 1024 * 1024, // 10GB
@@ -552,19 +559,27 @@ func HighCapacityConfig() *ServerConfig {
 // defaults carry one. So a port set through Port alone was ignored, and
 // --port and the file's server.port changed nothing for the life of the
 // codebase. Setting the port here rewrites both.
+//
+// Every listen address moves to the one port, UDP and TCP alike. A server
+// that runs UDX beside QUIC needs two UDP ports, so it sets them in
+// listen_addresses instead; Validate refuses the clash a single port makes.
 func (c *ServerConfig) SetPort(port int) {
 	c.Port = port
 	for i, addr := range c.ListenAddresses {
-		c.ListenAddresses[i] = listenPortPattern.ReplaceAllString(addr, "/udp/"+strconv.Itoa(port)+"/")
+		c.ListenAddresses[i] = listenPortPattern.ReplaceAllString(addr, "/${1}/"+strconv.Itoa(port)+"${2}")
 	}
 }
 
-// listenPortPattern matches the port component of a UDP multiaddr.
-var listenPortPattern = regexp.MustCompile(`/udp/\d+/`)
+// listenPortPattern matches the port component of a UDP or TCP multiaddr,
+// which a plain TCP address ends on.
+var listenPortPattern = regexp.MustCompile(`/(udp|tcp)/\d+(/|$)`)
 
 func (c *ServerConfig) Validate() error {
 	if c.Port < 0 || c.Port > 65535 {
 		return fmt.Errorf("invalid port: %d", c.Port)
+	}
+	if err := transports.Validate(c.Transports, c.ListenAddresses, c.ExternalAddresses); err != nil {
+		return err
 	}
 	if c.MaxStorageBytes <= 0 {
 		return fmt.Errorf("max_storage_bytes must be positive")
@@ -683,6 +698,7 @@ type yamlFileConfig struct {
 		Port              int      `yaml:"port"`
 		Region            string   `yaml:"region"`
 		IdentityFile      string   `yaml:"identity_file"`
+		Transports        []string `yaml:"transports"`
 		ListenAddresses   []string `yaml:"listen_addresses"`
 		ExternalAddresses []string `yaml:"external_addresses"`
 		BootstrapPeers    []string `yaml:"bootstrap_peers"`
@@ -822,6 +838,9 @@ func LoadConfigFromFile(path string, base *ServerConfig) error {
 	}
 	if yc.Server.IdentityFile != "" {
 		base.IdentityFile = yc.Server.IdentityFile
+	}
+	if len(yc.Server.Transports) > 0 {
+		base.Transports = yc.Server.Transports
 	}
 	if len(yc.Server.ListenAddresses) > 0 {
 		base.ListenAddresses = yc.Server.ListenAddresses

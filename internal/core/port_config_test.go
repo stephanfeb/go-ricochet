@@ -57,3 +57,54 @@ func TestFilePortReachesTheListenAddresses(t *testing.T) {
 		t.Errorf("explicit listen_addresses lost to server.port: %v", got)
 	}
 }
+
+// The port reaches TCP addresses too, including a plain one, which ends on
+// its port with no trailing component.
+func TestSetPortRewritesTCPAddresses(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.ListenAddresses = []string{
+		"/ip4/0.0.0.0/udp/55223/udx",
+		"/ip4/0.0.0.0/tcp/55223",
+		"/ip4/0.0.0.0/tcp/55223/ws",
+	}
+
+	cfg.SetPort(56000)
+
+	want := []string{
+		"/ip4/0.0.0.0/udp/56000/udx",
+		"/ip4/0.0.0.0/tcp/56000",
+		"/ip4/0.0.0.0/tcp/56000/ws",
+	}
+	for i, addr := range cfg.ListenAddresses {
+		if addr != want[i] {
+			t.Errorf("ListenAddresses[%d] = %q, want %q", i, addr, want[i])
+		}
+	}
+}
+
+// server.transports in the file reaches the config, and a listen address
+// whose transport is not enabled fails validation rather than failing the
+// host at start.
+func TestFileTransportsAreValidated(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	body := "server:\n  transports: [udx, tcp]\n  listen_addresses:\n" +
+		"    - /ip4/0.0.0.0/udp/55223/udx\n    - /ip4/0.0.0.0/tcp/55223\n"
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := DefaultConfig()
+	if err := LoadConfigFromFile(path, cfg); err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if got := cfg.Transports; len(got) != 2 || got[0] != "udx" || got[1] != "tcp" {
+		t.Fatalf("transports = %v", got)
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+
+	cfg.Transports = []string{"udx"}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("a TCP listen address passed validation with only udx enabled")
+	}
+}

@@ -25,8 +25,8 @@ import (
 	"github.com/libp2p/go-libp2p/p2p/muxer/yamux"
 	"github.com/libp2p/go-libp2p/p2p/security/noise"
 	"github.com/multiformats/go-multiaddr"
-	udxtransport "github.com/stephanfeb/go-libp2p-udx-transport"
 
+	"github.com/stephanfeb/go-ricochet/internal/transports"
 	client "github.com/stephanfeb/go-ricochet/pkg/client"
 	"github.com/stephanfeb/go-ricochet/pkg/wire"
 )
@@ -148,7 +148,8 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Usage: ricochet-bench [flags] <server-multiaddr> <server-peer-id>\n\n")
 		fmt.Fprintf(os.Stderr, "Stress test tool for Ricochet servers (like Apache Bench for libp2p).\n\n")
 		fmt.Fprintf(os.Stderr, "Example:\n")
-		fmt.Fprintf(os.Stderr, "  ricochet-bench -n 5000 -c 20 -protocol sda /ip4/127.0.0.1/udp/55223/udx 12D3KooW...\n\n")
+		fmt.Fprintf(os.Stderr, "  ricochet-bench -n 5000 -c 20 -protocol sda /ip4/127.0.0.1/udp/55223/udx 12D3KooW...\n")
+		fmt.Fprintf(os.Stderr, "  (the transport follows the address: udx, tcp, quic-v1, ws or webtransport)\n\n")
 		fmt.Fprintf(os.Stderr, "Per-operation:  msa, maa, sda, sfa, sca, mma, mixed\n")
 		fmt.Fprintf(os.Stderr, "Batched:        sda-batch, msa-batch  (see -batch-size)\n")
 		fmt.Fprintf(os.Stderr, "Sync shapes:    sync-cold, sync-warm, sync-noop  (see -docs)\n\n")
@@ -378,11 +379,27 @@ func createWorker(cfg *benchConfig) (*workerState, error) {
 		return nil, fmt.Errorf("generate key: %w", err)
 	}
 
+	// The worker speaks whichever transport the server address names. UDX
+	// keeps its listener because it dials from the listen socket; the other
+	// transports only dial.
+	transport, err := transports.ForAddress(cfg.ServerAddr)
+	if err != nil {
+		return nil, err
+	}
+	transportOpts, err := transports.Options([]string{transport})
+	if err != nil {
+		return nil, err
+	}
+	listen := libp2p.NoListenAddrs
+	if transport == transports.UDX {
+		listen = libp2p.ListenAddrStrings("/ip4/0.0.0.0/udp/0/udx")
+	}
+
 	h, err := libp2p.New(
 		libp2p.Identity(priv),
 		libp2p.NoTransports,
-		libp2p.Transport(udxtransport.NewTransport),
-		libp2p.ListenAddrStrings("/ip4/0.0.0.0/udp/0/udx"),
+		libp2p.ChainOptions(transportOpts...),
+		listen,
 		libp2p.Security(noise.ID, noise.New),
 		libp2p.Muxer("/yamux/1.0.0", yamux.DefaultTransport),
 		libp2p.ResourceManager(&network.NullResourceManager{}),

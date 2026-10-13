@@ -10,10 +10,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/libp2p/go-libp2p"
 	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/peer"
-	udxtransport "github.com/stephanfeb/go-libp2p-udx-transport"
 
 	forge "github.com/stephanfeb/go-p2p-forge"
 	"github.com/stephanfeb/go-p2p-forge/codec"
@@ -39,6 +37,7 @@ import (
 	"github.com/stephanfeb/go-ricochet/internal/relay"
 	"github.com/stephanfeb/go-ricochet/internal/storage"
 	"github.com/stephanfeb/go-ricochet/internal/storage/postgres"
+	"github.com/stephanfeb/go-ricochet/internal/transports"
 	"github.com/stephanfeb/go-ricochet/internal/trust"
 )
 
@@ -373,13 +372,24 @@ func (s *Server) initializeP2P(ctx context.Context) error {
 	// Build forge config from ricochet config
 	forgeCfg := s.buildForgeConfig()
 
-	// Create forge server
-	s.forgeServer = forge.NewServer(
+	// The transports the config names, and only those: forge turns off
+	// go-libp2p's defaults once any transport is given.
+	transportOpts, err := transports.Options(s.config.Transports)
+	if err != nil {
+		return err
+	}
+	opts := []forge.Option{
 		forge.WithConfig(forgeCfg),
 		forge.WithIdentity(priv),
 		forge.WithLogger(s.logger),
-		forge.WithTransport(libp2p.Transport(udxtransport.NewTransport)),
-	)
+	}
+	for _, t := range transportOpts {
+		opts = append(opts, forge.WithTransport(t))
+	}
+	s.logger.Info("transports configured", "transports", s.config.Transports)
+
+	// Create forge server
+	s.forgeServer = forge.NewServer(opts...)
 
 	// Start forge server (creates host + node). A forge server that failed
 	// to start has already closed what it built, so it is dropped here

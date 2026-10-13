@@ -15,11 +15,22 @@ server:
   # then falls back to auto-generating identity in data_directory
   # identity_file: /etc/ricochet/keys/peer_identity.key
 
+  # Transports to run: udx, tcp, quic-v1, websocket, webtransport.
+  # The mobile clients speak UDX. Every listen and external address needs its
+  # transport here; one with no listen address only dials. UDX and quic-v1 /
+  # webtransport need different UDP ports. See README "Transport Stack".
+  transports:
+    - udx
+
   # Listen addresses (multiaddrs)
   # NOTE: On Linux, binding both IPv6 [::] and IPv4 0.0.0.0 on the same port
   # fails because the IPv6 dual-stack socket claims both families by default.
   listen_addresses:
     - /ip4/0.0.0.0/udp/55223/udx
+    # - /ip4/0.0.0.0/tcp/55223                     # needs tcp
+    # - /ip4/0.0.0.0/udp/55224/quic-v1             # needs quic-v1
+    # - /ip4/0.0.0.0/udp/55224/quic-v1/webtransport  # needs webtransport
+    # - /ip4/0.0.0.0/tcp/55225/ws                  # needs websocket
 
   # External addresses to advertise via Identify.
   # IMPORTANT: Set this to the server's public IP so remote clients can
