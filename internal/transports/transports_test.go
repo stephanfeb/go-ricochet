@@ -74,8 +74,7 @@ func TestValidate(t *testing.T) {
 			listen:  []string{"/ip4/0.0.0.0/udp/55223/udx", "/ip4/127.0.0.1/udp/55223/quic-v1/webtransport"},
 			wantErr: "udp port 55223"},
 		{name: "TCP and WebSocket share a port", names: []string{TCP, WebSocket},
-			listen:  []string{"/ip4/0.0.0.0/tcp/55223", "/ip4/0.0.0.0/tcp/55223/ws"},
-			wantErr: "tcp port 55223"},
+			listen: []string{"/ip4/0.0.0.0/tcp/55223", "/ip4/0.0.0.0/tcp/55223/ws"}},
 		{name: "secure WebSocket listener", names: []string{WebSocket},
 			listen: []string{"/ip4/0.0.0.0/tcp/443/wss"}, wantErr: "reverse proxy"},
 		{name: "webrtc-direct by name", names: []string{UDX, WebRTCDirect}, wantErr: "GO-2026-4479"},
@@ -104,8 +103,12 @@ func TestOptionsCoverEveryKnownTransport(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(opts) != len(Known()) {
+	// One per transport, and one more to share TCP listeners with WebSocket.
+	if len(opts) != len(Known())+1 {
 		t.Fatalf("got %d options for %d transports", len(opts), len(Known()))
+	}
+	if opts, _ := Options([]string{UDX, TCP}); len(opts) != 2 {
+		t.Fatalf("got %d options for udx and tcp; sharing needs WebSocket", len(opts))
 	}
 	if _, err := Options([]string{"smoke-signals"}); err == nil {
 		t.Fatal("an unknown transport produced an option")

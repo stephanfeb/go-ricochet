@@ -64,14 +64,24 @@ func Known() []string {
 
 // Options returns one libp2p transport option per name. The names must
 // already have passed Validate.
+//
+// With both TCP and WebSocket enabled, the two share their TCP listeners,
+// so they may listen on one port: go-libp2p tells the connections apart by
+// their first bytes. go-libp2p means to make this its default.
 func Options(names []string) ([]libp2p.Option, error) {
-	opts := make([]libp2p.Option, 0, len(names))
+	opts := make([]libp2p.Option, 0, len(names)+1)
+	hasTCP, hasWS := false, false
 	for _, name := range names {
+		hasTCP = hasTCP || name == TCP
+		hasWS = hasWS || name == WebSocket
 		ctor, ok := constructorFor(name)
 		if !ok {
 			return nil, fmt.Errorf("unknown transport %q (known: %s)", name, strings.Join(Known(), ", "))
 		}
 		opts = append(opts, libp2p.Transport(ctor))
+	}
+	if hasTCP && hasWS {
+		opts = append(opts, libp2p.ShareTCPListener())
 	}
 	return opts, nil
 }
@@ -138,7 +148,8 @@ func isSecureWebSocket(addr ma.Multiaddr) bool {
 // while QUIC and WebTransport share one through go-libp2p's
 // quicreuse; with SO_REUSEPORT on both, the kernel would split one port's
 // datagrams between two transports that cannot read each other's. TCP and
-// WebSocket likewise each bind their port. TCP and UDP may share a number.
+// WebSocket share a listener (see Options), and TCP and UDP may share a
+// number.
 func Validate(names, listen, external []string) error {
 	if len(names) == 0 {
 		return fmt.Errorf("server.transports must name at least one transport (known: %s)", strings.Join(Known(), ", "))
@@ -254,6 +265,8 @@ func socketGroup(transport string) string {
 	switch transport {
 	case QUIC, WebTransport:
 		return "quic"
+	case TCP, WebSocket:
+		return "tcp"
 	}
 	return transport
 }

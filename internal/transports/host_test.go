@@ -3,8 +3,11 @@ package transports
 import (
 	"context"
 	"crypto/rand"
+	"fmt"
 	"io"
 	"log/slog"
+	"net"
+	"strings"
 	"testing"
 	"time"
 
@@ -92,4 +95,70 @@ func TestEveryTransportCarriesAStream(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TCP and WebSocket listen on one port, and a client of each reaches the
+// server through it.
+func TestTCPAndWebSocketShareAPort(t *testing.T) {
+	priv, _, err := crypto.GenerateEd25519Key(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	opts, err := Options([]string{TCP, WebSocket})
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := freeTCPPort(t)
+	cfg := forgehost.DefaultConfig()
+	cfg.ListenAddresses = []string{
+		fmt.Sprintf("/ip4/127.0.0.1/tcp/%d", port),
+		fmt.Sprintf("/ip4/127.0.0.1/tcp/%d/ws", port),
+	}
+	cfg.EnableRelay = false
+	cfg.EnableAutoNAT = false
+	server, err := forgehost.Create(cfg, priv, slog.New(slog.DiscardHandler), opts...)
+	if err != nil {
+		t.Fatalf("create host: %v", err)
+	}
+	t.Cleanup(func() { server.Close() })
+	server.SetStreamHandler(echoProtocol, func(s network.Stream) {
+		defer s.Close()
+		io.Copy(s, s)
+	})
+
+	for _, transport := range []string{TCP, WebSocket} {
+		client := newHost(t, transport, map[string]string{TCP: "/ip4/127.0.0.1/tcp/0", WebSocket: "/ip4/127.0.0.1/tcp/0/ws"}[transport])
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		if err := client.Connect(ctx, peer.AddrInfo{ID: server.ID(), Addrs: server.Addrs()}); err != nil {
+			cancel()
+			t.Fatalf("connect over %s: %v", transport, err)
+		}
+		s, err := client.NewStream(ctx, server.ID(), echoProtocol)
+		cancel()
+		if err != nil {
+			t.Fatalf("stream over %s: %v", transport, err)
+		}
+		s.Write([]byte("ping"))
+		s.CloseWrite()
+		if got, _ := io.ReadAll(s); string(got) != "ping" {
+			t.Fatalf("echo over %s = %q", transport, got)
+		}
+		remote := client.Network().ConnsToPeer(server.ID())[0].RemoteMultiaddr()
+		if got, _ := ForAddress(remote); got != transport {
+			t.Fatalf("connection over %s reached %s", transport, remote)
+		}
+		if !strings.Contains(remote.String(), fmt.Sprintf("/tcp/%d", port)) {
+			t.Fatalf("connection over %s reached %s, not the shared port", transport, remote)
+		}
+	}
+}
+
+func freeTCPPort(t *testing.T) int {
+	t.Helper()
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	return l.Addr().(*net.TCPAddr).Port
 }

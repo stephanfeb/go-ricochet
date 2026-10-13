@@ -525,8 +525,9 @@ transport with no listen address only dials. `server.external_ip` (or
 a server behind a 1:1 NAT or a cloud VM's private interface needs one setting
 whatever transports it runs. UDX and the QUIC family
 (`quic-v1`, `webtransport`) each hold their own UDP socket, so they need
-different UDP ports; QUIC and WebTransport share one. TCP and UDP may use the
-same number. `--port` moves every listen address to one port, so a server
+different UDP ports; QUIC and WebTransport share one, and so do TCP and
+WebSocket (go-libp2p's shared TCP listener, turned on when both run). TCP and
+UDP may use the same number. `--port` moves every listen address to one port, so a server
 running UDX beside QUIC sets its ports in `listen_addresses` instead. The
 server refuses at start a configuration that breaks any of these rules.
 `webrtc-direct` is refused (see Dependency Advisories).
