@@ -394,6 +394,50 @@ from here. This is the last collection-specific cost the profiling named; the
 rest of the `sca`-vs-`sda` difference is the legitimate size of a 50-item
 page, now a quarter smaller after N12.
 
+## Session of 2026-10-13: every transport, one server (multi-transport)
+
+One server ran all five supported transports at once (`server.transports`,
+`feat/multi-transport` at `a3b0537`), and the same bench drove it over each,
+interleaved: every scenario ran over all five transports before the next
+scenario started, then the whole matrix a second time. Linux in Docker
+(arm64, 12 cores, `golang:1.25-bookworm`), server and bench in one container
+on loopback, PostgreSQL 16 in a second container on a Docker network,
+default preset, 1,000 requests at 10 workers per cell.
+
+**The host was not idle**: about ten containers of another project's stack
+(including an autominer) were running, load average 6 to 8. The figures are
+for comparing transports within this table, which shared those conditions
+cell by cell; they are not absolute baselines, and the UDX column is not
+comparable with the N13 session above.
+
+| Scenario | `udx` req/s (p1 / p2) | `tcp` | `quic-v1` | `websocket` | `webtransport` |
+|---|---:|---:|---:|---:|---:|
+| `msa` submit | 4,707 / 5,209 | 6,838 / 7,004 | 7,009 / 5,237 | 6,092 / 7,727 | 7,020 / 6,370 |
+| `maa` retrieve | 3,750 / 4,564 | 6,421 / 7,785 | 6,088 / 7,174 | 4,815 / 6,751 | 6,096 / 7,150 |
+| `sda` put + get | 3,905 / 4,145 | 4,523 / 5,313 | 5,096 / 4,761 | 5,090 / 4,662 | 4,459 / 4,289 |
+| `sfa` append + get | 3,139 / 3,458 | 4,069 / 3,851 | 4,074 / 3,754 | 4,018 / 3,323 | 3,943 / 3,482 |
+| `sca` put item + query | 970 / 1,258 | 1,990 / 1,975 | 1,807 / 1,858 | 1,966 / 1,943 | 1,741 / 1,658 |
+| `mma` create + delete | 3,851 / 3,994 | 4,524 / 4,749 | 3,819 / 4,325 | 4,713 / 4,509 | 4,369 / 4,267 |
+| `mixed` (all six) | 3,353 / 3,217 | 4,203 / 4,239 | 4,077 / 4,110 | 4,300 / 4,335 | 4,044 / 4,207 |
+
+No failures in any of the 70 runs.
+
+**UDX is the slowest transport on every row.** The others sit within noise
+of each other; UDX trails them by roughly a quarter on the small operations
+and by about half on `sca`, the 137 KB reply, where TCP and QUIC reach about
+twice its rate. Loopback flatters kernel TCP and quic-go (no loss, no
+reordering, an MTU UDX does not use: it still chunks at `MaxDatagramSize -
+100`), so this says where UDX's own cost is, not how the transports compare
+on a phone's network. It does say the transport, not the server, is the
+ceiling on the large-reply operations under UDX (backlog N17).
+
+To reproduce: build both binaries with `GOOS=linux`, start the server in the
+container with listen addresses on five ports (UDX `udp/55223`, TCP
+`tcp/55223`, QUIC and WebTransport `udp/55224`, WebSocket `tcp/55225`), take
+the WebTransport address with its `certhash` components from the `server
+started` log line, and run `ricochet-bench -n 1000 -c 10 -protocol <p>
+<addr> <peer>` per cell; the bench takes its transport from the address.
+
 ## Batched
 
 One request carries 100 items. Requests per second is not the interesting
