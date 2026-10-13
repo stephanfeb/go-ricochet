@@ -47,7 +47,7 @@ func main() {
 	pgUsername := flag.String("pg-username", "", "PostgreSQL username")
 	pgPassword := flag.String("pg-password", "", "PostgreSQL password (prefer the "+pgPasswordEnv+" environment variable: a flag is visible to every local user in the process list)")
 	pgSSLMode := flag.String("pg-sslmode", "", "PostgreSQL SSL mode")
-	transportList := flag.String("transports", "", "Comma-separated transports to run: udx, tcp, quic-v1, websocket, webtransport, webrtc-direct (default: udx)")
+	transportList := flag.String("transports", "", "Comma-separated transports to run: udx, tcp, quic-v1, websocket, webtransport (default: udx)")
 	listenAddrs := flag.String("listen-addrs", "", "Comma-separated multiaddrs to listen on (e.g., /ip4/0.0.0.0/udp/55223/udx,/ip4/0.0.0.0/tcp/55223)")
 	externalIP := flag.String("external-ip", "", "Public IP of this host; every listen address is advertised on it (e.g., 203.0.113.10)")
 	externalAddrs := flag.String("external-addrs", "", "Comma-separated external multiaddrs to advertise (e.g., /ip4/1.2.3.4/udp/55223/udx)")
