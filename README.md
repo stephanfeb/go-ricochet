@@ -516,7 +516,7 @@ can run other go-libp2p transports beside it or instead of it, named in
 | `udx` (default) | `/ip4/0.0.0.0/udp/55223/udx` | Noise + yamux over UDX. |
 | `tcp` | `/ip4/0.0.0.0/tcp/55223` | Noise + yamux over TCP. |
 | `quic-v1` | `/ip4/0.0.0.0/udp/55224/quic-v1` | TLS 1.3 and streams from QUIC itself. |
-| `websocket` | `/ip4/0.0.0.0/tcp/55225/ws` | Noise + yamux. Secure WebSocket is not listened for: terminate TLS in a reverse proxy and advertise its `/wss` address. |
+| `websocket` | `/ip4/0.0.0.0/tcp/55225/ws`, `/ip4/0.0.0.0/tcp/443/tls/ws` | Noise + yamux. Secure WebSocket needs `server.websocket_tls` (a PEM certificate and key, reloaded when the file changes), or TLS terminated in a reverse proxy that the `/ws` listener sits behind. |
 | `webtransport` | `/ip4/0.0.0.0/udp/55224/quic-v1/webtransport` | For browsers; certificate hashes, no CA. |
 
 Every listen and external address needs its transport in the list; a

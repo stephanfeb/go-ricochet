@@ -34,6 +34,7 @@ func TestValidate(t *testing.T) {
 		names    []string
 		listen   []string
 		external []string
+		wssCert  bool
 		wantErr  string // empty: must pass
 	}{
 		{name: "the default", names: []string{UDX},
@@ -75,8 +76,10 @@ func TestValidate(t *testing.T) {
 			wantErr: "udp port 55223"},
 		{name: "TCP and WebSocket share a port", names: []string{TCP, WebSocket},
 			listen: []string{"/ip4/0.0.0.0/tcp/55223", "/ip4/0.0.0.0/tcp/55223/ws"}},
-		{name: "secure WebSocket listener", names: []string{WebSocket},
-			listen: []string{"/ip4/0.0.0.0/tcp/443/wss"}, wantErr: "reverse proxy"},
+		{name: "secure WebSocket listener without a certificate", names: []string{WebSocket},
+			listen: []string{"/ip4/0.0.0.0/tcp/443/wss"}, wantErr: "server.websocket_tls"},
+		{name: "secure WebSocket listener with a certificate", names: []string{WebSocket},
+			listen: []string{"/ip4/0.0.0.0/tcp/443/tls/ws"}, wssCert: true},
 		{name: "webrtc-direct by name", names: []string{UDX, WebRTCDirect}, wantErr: "GO-2026-4479"},
 		{name: "webrtc-direct by address", names: []string{UDX},
 			listen: []string{"/ip4/0.0.0.0/udp/55225/webrtc-direct"}, wantErr: "GO-2026-4479"},
@@ -85,7 +88,7 @@ func TestValidate(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			err := Validate(tc.names, tc.listen, tc.external)
+			err := Validate(tc.names, tc.listen, tc.external, tc.wssCert)
 			switch {
 			case tc.wantErr == "" && err != nil:
 				t.Fatalf("unexpected error: %v", err)

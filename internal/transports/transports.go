@@ -10,6 +10,7 @@
 package transports
 
 import (
+	"crypto/tls"
 	"fmt"
 	"net"
 	"strings"
@@ -62,13 +63,37 @@ func Known() []string {
 	return names
 }
 
+// Option adjusts the transports Options builds.
+type Option func(*settings)
+
+type settings struct {
+	wsServerTLS *tls.Config
+	wsClientTLS *tls.Config
+}
+
+// WebSocketServerTLS is the TLS configuration the WebSocket transport
+// listens for secure WebSocket (/tls/ws, /wss) with.
+func WebSocketServerTLS(c *tls.Config) Option {
+	return func(s *settings) { s.wsServerTLS = c }
+}
+
+// WebSocketClientTLS is the TLS configuration the WebSocket transport dials
+// secure WebSocket with; unset, the system roots verify the server.
+func WebSocketClientTLS(c *tls.Config) Option {
+	return func(s *settings) { s.wsClientTLS = c }
+}
+
 // Options returns one libp2p transport option per name. The names must
 // already have passed Validate.
 //
 // With both TCP and WebSocket enabled, the two share their TCP listeners,
 // so they may listen on one port: go-libp2p tells the connections apart by
 // their first bytes. go-libp2p means to make this its default.
-func Options(names []string) ([]libp2p.Option, error) {
+func Options(names []string, with ...Option) ([]libp2p.Option, error) {
+	var set settings
+	for _, o := range with {
+		o(&set)
+	}
 	opts := make([]libp2p.Option, 0, len(names)+1)
 	hasTCP, hasWS := false, false
 	for _, name := range names {
@@ -78,7 +103,16 @@ func Options(names []string) ([]libp2p.Option, error) {
 		if !ok {
 			return nil, fmt.Errorf("unknown transport %q (known: %s)", name, strings.Join(Known(), ", "))
 		}
-		opts = append(opts, libp2p.Transport(ctor))
+		var ctorOpts []any
+		if name == WebSocket {
+			if set.wsServerTLS != nil {
+				ctorOpts = append(ctorOpts, websocket.WithTLSConfig(set.wsServerTLS))
+			}
+			if set.wsClientTLS != nil {
+				ctorOpts = append(ctorOpts, websocket.WithTLSClientConfig(set.wsClientTLS))
+			}
+		}
+		opts = append(opts, libp2p.Transport(ctor, ctorOpts...))
 	}
 	if hasTCP && hasWS {
 		opts = append(opts, libp2p.ShareTCPListener())
@@ -137,7 +171,8 @@ func isSecureWebSocket(addr ma.Multiaddr) bool {
 }
 
 // Validate checks a transport list against the addresses the host will
-// listen on and advertise.
+// listen on and advertise. secureWebSocket says whether the server holds a
+// certificate to listen for secure WebSocket with.
 //
 // Every listen address needs its transport enabled, or the host fails to
 // start; every external address needs its transport enabled, or the server
@@ -150,7 +185,7 @@ func isSecureWebSocket(addr ma.Multiaddr) bool {
 // datagrams between two transports that cannot read each other's. TCP and
 // WebSocket share a listener (see Options), and TCP and UDP may share a
 // number.
-func Validate(names, listen, external []string) error {
+func Validate(names, listen, external []string, secureWebSocket bool) error {
 	if len(names) == 0 {
 		return fmt.Errorf("server.transports must name at least one transport (known: %s)", strings.Join(Known(), ", "))
 	}
@@ -187,9 +222,9 @@ func Validate(names, listen, external []string) error {
 		if !enabled[name] {
 			return fmt.Errorf("listen address %q needs transport %q; add it to server.transports", s, name)
 		}
-		if name == WebSocket && isSecureWebSocket(addr) {
-			return fmt.Errorf("listen address %q: listening for secure WebSocket is not supported yet; "+
-				"terminate TLS in a reverse proxy, listen on /ws and advertise the /wss address in external_addresses", s)
+		if name == WebSocket && isSecureWebSocket(addr) && !secureWebSocket {
+			return fmt.Errorf("listen address %q: secure WebSocket needs a certificate; set server.websocket_tls, "+
+				"or terminate TLS in a reverse proxy, listen on /ws and advertise the /wss address in external_addresses", s)
 		}
 		b, ok := bindingOf(addr, name)
 		if !ok {

@@ -32,8 +32,11 @@ type ServerConfig struct {
 	// ExternalIP is the public address of the host. When set, the server
 	// advertises every listen address on it besides ExternalAddresses, so
 	// one setting covers every transport the server runs.
-	ExternalIP     string   `json:"externalIP"`
-	BootstrapPeers []string `json:"bootstrapPeers"`
+	ExternalIP string `json:"externalIP"`
+	// WebSocketTLS holds the certificate the server listens for secure
+	// WebSocket (/tls/ws, /wss) with. Unset, those addresses are refused.
+	WebSocketTLS   WebSocketTLSConfig `json:"websocketTLS"`
+	BootstrapPeers []string           `json:"bootstrapPeers"`
 
 	// Storage
 	Storage               StorageBackendConfig `json:"storage"`
@@ -574,6 +577,13 @@ func (c *ServerConfig) SetPort(port int) {
 	}
 }
 
+// WebSocketTLSConfig names the PEM certificate chain and private key for
+// secure WebSocket. The certificate is reloaded when its file changes.
+type WebSocketTLSConfig struct {
+	CertFile string `json:"certFile"`
+	KeyFile  string `json:"keyFile"`
+}
+
 // AdvertisedAddresses returns the external addresses the server announces:
 // ExternalAddresses as given, then every listen address on ExternalIP.
 func (c *ServerConfig) AdvertisedAddresses() ([]string, error) {
@@ -617,7 +627,10 @@ func (c *ServerConfig) Validate() error {
 	if err != nil {
 		return err
 	}
-	if err := transports.Validate(c.Transports, c.ListenAddresses, advertised); err != nil {
+	if (c.WebSocketTLS.CertFile == "") != (c.WebSocketTLS.KeyFile == "") {
+		return fmt.Errorf("server.websocket_tls needs both cert_file and key_file")
+	}
+	if err := transports.Validate(c.Transports, c.ListenAddresses, advertised, c.WebSocketTLS.CertFile != ""); err != nil {
 		return err
 	}
 	if c.MaxStorageBytes <= 0 {
@@ -741,7 +754,12 @@ type yamlFileConfig struct {
 		ListenAddresses   []string `yaml:"listen_addresses"`
 		ExternalAddresses []string `yaml:"external_addresses"`
 		ExternalIP        string   `yaml:"external_ip"`
-		BootstrapPeers    []string `yaml:"bootstrap_peers"`
+
+		WebSocketTLS *struct {
+			CertFile string `yaml:"cert_file"`
+			KeyFile  string `yaml:"key_file"`
+		} `yaml:"websocket_tls"`
+		BootstrapPeers []string `yaml:"bootstrap_peers"`
 	} `yaml:"server"`
 
 	Storage struct {
@@ -890,6 +908,12 @@ func LoadConfigFromFile(path string, base *ServerConfig) error {
 	}
 	if yc.Server.ExternalIP != "" {
 		base.ExternalIP = yc.Server.ExternalIP
+	}
+	if yc.Server.WebSocketTLS != nil {
+		base.WebSocketTLS = WebSocketTLSConfig{
+			CertFile: yc.Server.WebSocketTLS.CertFile,
+			KeyFile:  yc.Server.WebSocketTLS.KeyFile,
+		}
 	}
 	if len(yc.Server.BootstrapPeers) > 0 {
 		base.BootstrapPeers = yc.Server.BootstrapPeers

@@ -31,6 +31,14 @@ server:
     # - /ip4/0.0.0.0/udp/55224/quic-v1             # needs quic-v1
     # - /ip4/0.0.0.0/udp/55224/quic-v1/webtransport  # needs webtransport
     # - /ip4/0.0.0.0/tcp/55225/ws                  # needs websocket
+    # - /ip4/0.0.0.0/tcp/443/tls/ws                # needs websocket and websocket_tls
+
+  # Certificate for secure WebSocket listen addresses (/tls/ws, /wss). PEM
+  # chain and key; the certificate is reloaded when its file changes, so a
+  # renewal needs no restart. Without it, terminate TLS in a reverse proxy.
+  # websocket_tls:
+  #   cert_file: /etc/letsencrypt/live/example.com/fullchain.pem
+  #   key_file: /etc/letsencrypt/live/example.com/privkey.pem
 
   # External addresses to advertise via Identify.
   # IMPORTANT: Set this to the server's public IP so remote clients can

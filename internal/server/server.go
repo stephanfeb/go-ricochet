@@ -374,7 +374,15 @@ func (s *Server) initializeP2P(ctx context.Context) error {
 
 	// The transports the config names, and only those: forge turns off
 	// go-libp2p's defaults once any transport is given.
-	transportOpts, err := transports.Options(s.config.Transports)
+	var with []transports.Option
+	if c := s.config.WebSocketTLS; c.CertFile != "" {
+		tlsConf, err := transports.LoadServerTLS(c.CertFile, c.KeyFile)
+		if err != nil {
+			return err
+		}
+		with = append(with, transports.WebSocketServerTLS(tlsConf))
+	}
+	transportOpts, err := transports.Options(s.config.Transports, with...)
 	if err != nil {
 		return err
 	}

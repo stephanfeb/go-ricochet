@@ -136,3 +136,38 @@ func TestExternalIPAdvertisesEveryListener(t *testing.T) {
 		t.Fatal("an external_ip that is not an IP passed validation")
 	}
 }
+
+// A secure WebSocket listener needs a certificate, and the certificate
+// needs both of its files.
+func TestSecureWebSocketNeedsACertificate(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Transports = []string{"udx", "websocket"}
+	cfg.ListenAddresses = []string{"/ip4/0.0.0.0/udp/55223/udx", "/ip4/0.0.0.0/tcp/443/tls/ws"}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("a /tls/ws listener passed without websocket_tls")
+	}
+	cfg.WebSocketTLS = WebSocketTLSConfig{CertFile: "/etc/ricochet/cert.pem"}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("websocket_tls passed with no key_file")
+	}
+	cfg.WebSocketTLS.KeyFile = "/etc/ricochet/key.pem"
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+}
+
+// server.websocket_tls in the file reaches the config.
+func TestFileWebSocketTLSIsLoaded(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	body := "server:\n  websocket_tls:\n    cert_file: /c.pem\n    key_file: /k.pem\n"
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := DefaultConfig()
+	if err := LoadConfigFromFile(path, cfg); err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if cfg.WebSocketTLS != (WebSocketTLSConfig{CertFile: "/c.pem", KeyFile: "/k.pem"}) {
+		t.Fatalf("websocket_tls = %+v", cfg.WebSocketTLS)
+	}
+}
