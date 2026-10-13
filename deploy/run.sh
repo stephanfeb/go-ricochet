@@ -25,12 +25,13 @@ if [ -n "$LISTEN_PORT" ]; then
     PORT_FLAG="--port $LISTEN_PORT"
 fi
 
-# Build external-addrs flag if EXTERNAL_IP is set.
-# This is critical: without it, Identify only reports the VM's private IP,
-# causing remote clients to lose the server's address from their peerstore.
-EXTERNAL_ADDRS_FLAG=""
+# Advertise every listen address on EXTERNAL_IP, whichever transports
+# config.yaml enables. This is critical: without it, Identify only reports
+# the VM's private IP, causing remote clients to lose the server's address
+# from their peerstore.
+EXTERNAL_IP_FLAG=""
 if [ -n "$EXTERNAL_IP" ]; then
-    EXTERNAL_ADDRS_FLAG="--external-addrs /ip4/${EXTERNAL_IP}/udp/${LISTEN_PORT:-55223}/udx"
+    EXTERNAL_IP_FLAG="--external-ip $EXTERNAL_IP"
 fi
 
 # The password travels in the environment, not on argv: the command line of
@@ -47,4 +48,4 @@ exec /opt/ricochet/ricochet_server \
     --pg-database "${DB_NAME:-ricochet}" \
     --pg-username "${DB_USER:-ricochet}" \
     --pg-sslmode "${DB_SSLMODE:-require}" \
-    $EXTERNAL_ADDRS_FLAG
+    $EXTERNAL_IP_FLAG

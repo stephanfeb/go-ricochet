@@ -530,7 +530,7 @@ sudo supervisorctl start ricochet
 - [ ] Logs are being written
 - [ ] Health checks configured
 - [ ] Monitoring alerts set up
-- [ ] Firewall allows UDP 55223 in (or `LISTEN_PORT` from `/etc/ricochet/env`), and does not expose the operator port 9090, which stays on loopback
+- [ ] Firewall allows UDP 55223 in (or `LISTEN_PORT` from `/etc/ricochet/env`), plus the port of every other listen address `server.transports` adds in `config.yaml` (TCP for `tcp` and `websocket`, UDP for `quic-v1` and `webtransport`), and does not expose the operator port 9090, which stays on loopback
 - [ ] Backup strategy in place
 
 ## Comparison: Supervisord vs Systemd

@@ -114,6 +114,7 @@ to throwaway local runs.
 --identity-file     Path to Ed25519 identity key file
 --transports        Comma-separated transports to run (default: udx; see Transports)
 --listen-addrs      Comma-separated multiaddrs to listen on
+--external-ip       Public IP of this host; every listen address is advertised on it
 --external-addrs    Comma-separated external multiaddrs to advertise
 --debug-dht         Verbose DHT logging
 --pg-host           PostgreSQL host
@@ -519,7 +520,10 @@ can run other go-libp2p transports beside it or instead of it, named in
 | `webtransport` | `/ip4/0.0.0.0/udp/55224/quic-v1/webtransport` | For browsers; certificate hashes, no CA. |
 
 Every listen and external address needs its transport in the list; a
-transport with no listen address only dials. UDX and the QUIC family
+transport with no listen address only dials. `server.external_ip` (or
+`--external-ip`) advertises every listen address on the host's public IP, so
+a server behind a 1:1 NAT or a cloud VM's private interface needs one setting
+whatever transports it runs. UDX and the QUIC family
 (`quic-v1`, `webtransport`) each hold their own UDP socket, so they need
 different UDP ports; QUIC and WebTransport share one. TCP and UDP may use the
 same number. `--port` moves every listen address to one port, so a server

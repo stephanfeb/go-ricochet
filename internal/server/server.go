@@ -409,7 +409,8 @@ func (s *Server) buildForgeConfig() *forge.Config {
 	// Network
 	cfg.Host.Port = s.config.Port
 	cfg.Host.ListenAddresses = s.config.ListenAddresses
-	cfg.Host.ExternalAddresses = s.config.ExternalAddresses
+	// Validate has already parsed these, so the error cannot occur here.
+	cfg.Host.ExternalAddresses, _ = s.config.AdvertisedAddresses()
 	cfg.Host.BootstrapPeers = s.config.BootstrapPeers
 
 	// Yamux tuning for mobile clients.

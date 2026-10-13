@@ -29,7 +29,11 @@ type ServerConfig struct {
 	Transports        []string `json:"transports"`
 	ListenAddresses   []string `json:"listenAddresses"`
 	ExternalAddresses []string `json:"externalAddresses"`
-	BootstrapPeers    []string `json:"bootstrapPeers"`
+	// ExternalIP is the public address of the host. When set, the server
+	// advertises every listen address on it besides ExternalAddresses, so
+	// one setting covers every transport the server runs.
+	ExternalIP     string   `json:"externalIP"`
+	BootstrapPeers []string `json:"bootstrapPeers"`
 
 	// Storage
 	Storage               StorageBackendConfig `json:"storage"`
@@ -570,6 +574,34 @@ func (c *ServerConfig) SetPort(port int) {
 	}
 }
 
+// AdvertisedAddresses returns the external addresses the server announces:
+// ExternalAddresses as given, then every listen address on ExternalIP.
+func (c *ServerConfig) AdvertisedAddresses() ([]string, error) {
+	out := append([]string(nil), c.ExternalAddresses...)
+	if c.ExternalIP == "" {
+		return out, nil
+	}
+	ip := net.ParseIP(c.ExternalIP)
+	if ip == nil {
+		return nil, fmt.Errorf("server.external_ip %q is not an IP address", c.ExternalIP)
+	}
+	onIP, err := transports.OnIP(c.ListenAddresses, ip)
+	if err != nil {
+		return nil, err
+	}
+	seen := make(map[string]bool, len(out))
+	for _, a := range out {
+		seen[a] = true
+	}
+	for _, a := range onIP {
+		if !seen[a] {
+			seen[a] = true
+			out = append(out, a)
+		}
+	}
+	return out, nil
+}
+
 // listenPortPattern matches the port component of a UDP or TCP multiaddr,
 // which a plain TCP address ends on.
 var listenPortPattern = regexp.MustCompile(`/(udp|tcp)/\d+(/|$)`)
@@ -578,7 +610,14 @@ func (c *ServerConfig) Validate() error {
 	if c.Port < 0 || c.Port > 65535 {
 		return fmt.Errorf("invalid port: %d", c.Port)
 	}
-	if err := transports.Validate(c.Transports, c.ListenAddresses, c.ExternalAddresses); err != nil {
+	if len(c.ListenAddresses) == 0 {
+		return fmt.Errorf("server.listen_addresses must name at least one address")
+	}
+	advertised, err := c.AdvertisedAddresses()
+	if err != nil {
+		return err
+	}
+	if err := transports.Validate(c.Transports, c.ListenAddresses, advertised); err != nil {
 		return err
 	}
 	if c.MaxStorageBytes <= 0 {
@@ -701,6 +740,7 @@ type yamlFileConfig struct {
 		Transports        []string `yaml:"transports"`
 		ListenAddresses   []string `yaml:"listen_addresses"`
 		ExternalAddresses []string `yaml:"external_addresses"`
+		ExternalIP        string   `yaml:"external_ip"`
 		BootstrapPeers    []string `yaml:"bootstrap_peers"`
 	} `yaml:"server"`
 
@@ -847,6 +887,9 @@ func LoadConfigFromFile(path string, base *ServerConfig) error {
 	}
 	if len(yc.Server.ExternalAddresses) > 0 {
 		base.ExternalAddresses = yc.Server.ExternalAddresses
+	}
+	if yc.Server.ExternalIP != "" {
+		base.ExternalIP = yc.Server.ExternalIP
 	}
 	if len(yc.Server.BootstrapPeers) > 0 {
 		base.BootstrapPeers = yc.Server.BootstrapPeers

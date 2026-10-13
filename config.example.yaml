@@ -36,8 +36,12 @@ server:
   # IMPORTANT: Set this to the server's public IP so remote clients can
   # reconnect after a connection drop. Without this, clients only see
   # private IPs and lose the server's address from their peerstore.
-  # The package sets this from EXTERNAL_IP in /etc/ricochet/env (run.sh passes
-  # --external-addrs, which overrides this file); set it here for a manual run.
+  # external_ip advertises every listen address on the host's public IP, one
+  # address per transport, and is the simpler of the two; external_addresses
+  # names addresses one by one (a DNS name, a proxy's /wss address). Both may
+  # be set. The package sets external_ip from EXTERNAL_IP in /etc/ricochet/env
+  # (run.sh passes --external-ip, which overrides this file).
+  # external_ip: 203.0.113.10
   # external_addresses:
   #   - /ip4/203.0.113.10/udp/55223/udx
 

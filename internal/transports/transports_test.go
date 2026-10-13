@@ -1,6 +1,7 @@
 package transports
 
 import (
+	"net"
 	"strings"
 	"testing"
 
@@ -108,5 +109,35 @@ func TestOptionsCoverEveryKnownTransport(t *testing.T) {
 	}
 	if _, err := Options([]string{"smoke-signals"}); err == nil {
 		t.Fatal("an unknown transport produced an option")
+	}
+}
+
+func TestOnIPAdvertisesEveryReachableListener(t *testing.T) {
+	listen := []string{
+		"/ip4/0.0.0.0/udp/55223/udx",
+		"/ip4/0.0.0.0/tcp/55223",
+		"/ip4/10.0.0.5/udp/55224/quic-v1/webtransport",
+		"/ip4/127.0.0.1/tcp/55225/ws",
+		"/ip6/::/udp/55223/udx",
+	}
+	got, err := OnIP(listen, net.ParseIP("203.0.113.10"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"/ip4/203.0.113.10/udp/55223/udx",
+		"/ip4/203.0.113.10/tcp/55223",
+		"/ip4/203.0.113.10/udp/55224/quic-v1/webtransport",
+	}
+	if strings.Join(got, " ") != strings.Join(want, " ") {
+		t.Fatalf("OnIP = %v\nwant %v", got, want)
+	}
+
+	got, err = OnIP(listen, net.ParseIP("2001:db8::1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0] != "/ip6/2001:db8::1/udp/55223/udx" {
+		t.Fatalf("OnIP over IPv6 = %v", got)
 	}
 }

@@ -267,3 +267,31 @@ func (b binding) clashes(o binding) bool {
 	}
 	return socketGroup(b.transport) != socketGroup(o.transport)
 }
+
+// OnIP returns each listen address as reached on ip: the address a peer
+// outside the host dials for it. Listen addresses of the other IP family,
+// and those bound to loopback, are left out, since nothing outside the
+// host reaches them; so are DNS addresses, which already name the host.
+func OnIP(listen []string, ip net.IP) ([]string, error) {
+	family := ma.P_IP6
+	if ip.To4() != nil {
+		family = ma.P_IP4
+	}
+	ipComp, err := ma.NewComponent(ma.ProtocolWithCode(family).Name, ip.String())
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	for _, s := range listen {
+		addr, err := ma.NewMultiaddr(s)
+		if err != nil {
+			return nil, fmt.Errorf("listen address %q: %w", s, err)
+		}
+		if len(addr) == 0 || addr[0].Protocol().Code != family || net.IP(addr[0].RawValue()).IsLoopback() {
+			continue
+		}
+		onIP := append(ma.Multiaddr{*ipComp}, addr[1:]...)
+		out = append(out, onIP.String())
+	}
+	return out, nil
+}

@@ -108,3 +108,31 @@ func TestFileTransportsAreValidated(t *testing.T) {
 		t.Fatal("a TCP listen address passed validation with only udx enabled")
 	}
 }
+
+// external_ip advertises every reachable listen address on the public IP,
+// after the explicit external addresses and without repeating them, and a
+// value that is not an IP fails validation.
+func TestExternalIPAdvertisesEveryListener(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Transports = []string{"udx", "tcp"}
+	cfg.ListenAddresses = []string{"/ip4/0.0.0.0/udp/55223/udx", "/ip4/0.0.0.0/tcp/55223", "/ip4/127.0.0.1/tcp/55299"}
+	cfg.ExternalAddresses = []string{"/ip4/203.0.113.10/udp/55223/udx"}
+	cfg.ExternalIP = "203.0.113.10"
+
+	got, err := cfg.AdvertisedAddresses()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"/ip4/203.0.113.10/udp/55223/udx", "/ip4/203.0.113.10/tcp/55223"}
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("advertised = %v, want %v", got, want)
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+
+	cfg.ExternalIP = "my-server"
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("an external_ip that is not an IP passed validation")
+	}
+}

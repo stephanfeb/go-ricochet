@@ -49,6 +49,7 @@ func main() {
 	pgSSLMode := flag.String("pg-sslmode", "", "PostgreSQL SSL mode")
 	transportList := flag.String("transports", "", "Comma-separated transports to run: udx, tcp, quic-v1, websocket, webtransport, webrtc-direct (default: udx)")
 	listenAddrs := flag.String("listen-addrs", "", "Comma-separated multiaddrs to listen on (e.g., /ip4/0.0.0.0/udp/55223/udx,/ip4/0.0.0.0/tcp/55223)")
+	externalIP := flag.String("external-ip", "", "Public IP of this host; every listen address is advertised on it (e.g., 203.0.113.10)")
 	externalAddrs := flag.String("external-addrs", "", "Comma-separated external multiaddrs to advertise (e.g., /ip4/1.2.3.4/udp/55223/udx)")
 	configFile := flag.String("config", "", "Path to YAML config file (e.g., /etc/ricochet/config.yaml)")
 	debugDHT := flag.Bool("debug-dht", false, "Enable verbose DHT debug logging")
@@ -148,6 +149,9 @@ func main() {
 	}
 	if *externalAddrs != "" {
 		cfg.ExternalAddresses = strings.Split(*externalAddrs, ",")
+	}
+	if *externalIP != "" {
+		cfg.ExternalIP = *externalIP
 	}
 
 	// Enable DHT debug logging if requested
