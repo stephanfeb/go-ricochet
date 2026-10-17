@@ -405,6 +405,16 @@ security:
   moderators: []
   #  - 12D3KooW...   # the Trust & Safety client
 
+# The connection log: for every connection, the peer ID, the IP it came from
+# (the relay's for a relayed connection), the remote multiaddr, the transport,
+# the direction, and when it opened and closed. Kept in the peer_connections
+# table (run schema.sql after upgrading) for connection_log_days, then purged,
+# so an abuse report or a child-safety referral can tie a peer to an IP at a
+# time. Only moderators read it, through the moderation protocol's
+# `connections` operation. 0 turns it off: nothing is recorded or purged.
+audit:
+  connection_log_days: 90
+
 # GossipSub topics this server forwards without using them itself. GossipSub
 # passes a topic only through peers that announce it, so a service and an app
 # connected only through this server cannot reach each other on a topic it

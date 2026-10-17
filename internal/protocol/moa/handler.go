@@ -1,6 +1,7 @@
 // Package moa is the Moderator Operations Agent: the protocol a moderator
 // (a peer named in security.moderators, such as the Trust & Safety client)
-// uses to ban and unban peers and to remove a microblog post.
+// uses to ban and unban peers, to remove a microblog post, and to read the
+// connection log (which IPs a peer connected from, see internal/audit).
 //
 // Every call is refused unless the connection's peer is a moderator, and
 // every call that changes something is logged at WARN with the moderator,
@@ -22,6 +23,7 @@ import (
 	"github.com/stephanfeb/go-p2p-forge/codec"
 	"github.com/stephanfeb/go-p2p-forge/middleware"
 
+	"github.com/stephanfeb/go-ricochet/internal/core"
 	"github.com/stephanfeb/go-ricochet/internal/metrics"
 	"github.com/stephanfeb/go-ricochet/internal/moderation"
 	"github.com/stephanfeb/go-ricochet/internal/protocol/wire"
@@ -33,11 +35,19 @@ const ProtocolID = protocol.ID("/ricochet/moderation/1.0.0")
 
 // Operations.
 const (
-	OpBan        = "ban"
-	OpUnban      = "unban"
-	OpGetBan     = "getBan"
-	OpListBans   = "listBans"
-	OpRemovePost = "removePost"
+	OpBan         = "ban"
+	OpUnban       = "unban"
+	OpGetBan      = "getBan"
+	OpListBans    = "listBans"
+	OpRemovePost  = "removePost"
+	OpConnections = "connections"
+)
+
+// The connections operation's page size: the default, and the most a
+// request may ask for.
+const (
+	defaultConnectionsLimit = 500
+	maxConnectionsLimit     = 2000
 )
 
 // The microblog layout OverNode uses (overnode_v2 MicroblogService): a
@@ -55,7 +65,8 @@ const (
 type Request struct {
 	Operation string `json:"operation"`
 
-	// ban, unban, getBan: the peer. removePost: the post's author.
+	// ban, unban, getBan, connections: the peer. removePost: the post's
+	// author.
 	PeerID string `json:"peerId,omitempty"`
 
 	// ban: why, for the record.
@@ -63,6 +74,11 @@ type Request struct {
 
 	// removePost: the post's id (the "id" of its feed entry).
 	PostID string `json:"postId,omitempty"`
+
+	// connections: only those made at or after this time (RFC 3339), and
+	// at most this many (default 500, at most 2000).
+	Since string `json:"since,omitempty"`
+	Limit int    `json:"limit,omitempty"`
 }
 
 // Response is the response envelope.
@@ -83,6 +99,12 @@ type Response struct {
 
 	// removePost: what went.
 	Removal *PostRemoval `json:"removal,omitempty"`
+
+	// connections: the peer's connections, newest first (an empty list
+	// when there are none), and how many days the log keeps (0 when it is
+	// off, so the list is empty because nothing is recorded).
+	Connections   []*storage.PeerConnection `json:"connections,omitzero"`
+	RetentionDays *int                      `json:"retentionDays,omitempty"`
 }
 
 // PostRemoval is what removePost removed.
@@ -124,11 +146,12 @@ func NewPipeline(logger *slog.Logger, pool *codec.BufferPool, reg *forge.Registr
 		return middleware.Chain(forge.JSONDeserialize[Request](), h)
 	}
 	routes := map[string]forge.Middleware{
-		OpBan:        route(handleBan),
-		OpUnban:      route(handleUnban),
-		OpGetBan:     route(handleGetBan),
-		OpListBans:   route(handleListBans),
-		OpRemovePost: route(handleRemovePost),
+		OpBan:         route(handleBan),
+		OpUnban:       route(handleUnban),
+		OpGetBan:      route(handleGetBan),
+		OpListBans:    route(handleListBans),
+		OpRemovePost:  route(handleRemovePost),
+		OpConnections: route(handleConnections),
 	}
 	return wire.Bounded(forge.NewPipeline(logger,
 		metrics.Middleware(metrics.FromRegistry(reg), "moa", ""),
@@ -259,6 +282,55 @@ func handleGetBan(sc *forge.StreamContext, _ func()) {
 
 func handleListBans(sc *forge.StreamContext, _ func()) {
 	sc.Response = &Response{Success: true, Bans: moderation.FromStream(sc).List()}
+}
+
+// handleConnections answers which IPs a peer connected from, and when:
+// the evidence an abuse report or a child-safety referral needs. Reading it
+// changes nothing, but it is logged at WARN like the changes, so the server
+// log shows which moderator looked up whom.
+func handleConnections(sc *forge.StreamContext, _ func()) {
+	req := sc.Request.(*Request)
+	id, bad := target(req)
+	if bad != nil {
+		sc.Response = bad
+		return
+	}
+	var since *time.Time
+	if req.Since != "" {
+		t, err := time.Parse(time.RFC3339, req.Since)
+		if err != nil {
+			sc.Response = refuse(wire.StatusBadRequest, "since is not an RFC 3339 time")
+			return
+		}
+		since = &t
+	}
+	limit := req.Limit
+	switch {
+	case limit < 0:
+		sc.Response = refuse(wire.StatusBadRequest, "limit must not be negative")
+		return
+	case limit == 0:
+		limit = defaultConnectionsLimit
+	case limit > maxConnectionsLimit:
+		limit = maxConnectionsLimit
+	}
+	days := 0
+	if cfg, ok := forge.ServiceFrom[*core.ServerConfig](sc, "config"); ok && cfg != nil {
+		days = cfg.ConnectionLogDays
+	}
+	store, _ := forge.ServiceFrom[storage.Storage](sc, "storage")
+	conns, err := store.ListPeerConnections(sc.Ctx, id.String(), since, limit)
+	if err != nil {
+		sc.Logger.Error("connection log not read", "target", id.String(), "error", err)
+		sc.Response = refuse(wire.StatusInternalError, "could not read the connection log")
+		return
+	}
+	if conns == nil {
+		conns = []*storage.PeerConnection{}
+	}
+	sc.Logger.Warn("moderation: connection log read",
+		"moderator", sc.PeerID.String(), "target", id.String(), "rows", len(conns))
+	sc.Response = &Response{Success: true, Connections: conns, RetentionDays: &days}
 }
 
 // handleRemovePost removes a microblog post: its entry in its author's

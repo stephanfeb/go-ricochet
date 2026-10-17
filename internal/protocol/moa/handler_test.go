@@ -32,12 +32,13 @@ type harness struct {
 	closed    *closed
 	moderator peer.ID
 	call      func(from peer.ID, req moa.Request) *moa.Response
+	raw       func(from peer.ID, req moa.Request) []byte
 	feed      func(from peer.ID, req sfa.FeedRequest) *sfa.FeedResponse
 }
 
-func setup(t *testing.T) *harness {
+func setup(t *testing.T, configure ...func(*core.ServerConfig)) *harness {
 	t.Helper()
-	env := protocoltest.New(t)
+	env := protocoltest.New(t, configure...)
 	h := &harness{env: env, bans: moderation.NewBans(env.Store), closed: &closed{}, moderator: protocoltest.PeerID(t)}
 	mods, err := moderation.ParseModerators([]string{h.moderator.String()})
 	if err != nil {
@@ -49,6 +50,9 @@ func setup(t *testing.T) *harness {
 	p := moa.NewPipeline(env.Logger, env.Pool, env.Registry)
 	h.call = func(from peer.ID, req moa.Request) *moa.Response {
 		return protocoltest.Decode[moa.Response](t, protocoltest.Exchange(t, p, from, req))
+	}
+	h.raw = func(from peer.ID, req moa.Request) []byte {
+		return protocoltest.Exchange(t, p, from, req)
 	}
 	fp := sfa.NewPipeline(env.Logger, env.Pool, env.Registry)
 	h.feed = func(from peer.ID, req sfa.FeedRequest) *sfa.FeedResponse {
@@ -271,4 +275,111 @@ func TestABannedPeerReadsOnlyItsTrustSafetyFolderAndIsToldItIsBanned(t *testing.
 	banned("expunging", ask(maaPipe, map[string]any{"operationType": "expunge", "folderPath": wire.NoticesFolder}))
 	banned("reading a feed", ask(sfa.NewPipeline(h.env.Logger, h.env.Pool, h.env.Registry),
 		map[string]any{"operation": sfa.OpLIST, "ownerPeerId": h.moderator.String()}))
+}
+
+func TestConnectionsIsForModeratorsOnly(t *testing.T) {
+	h := setup(t)
+	resp := h.call(protocoltest.PeerID(t), moa.Request{Operation: moa.OpConnections, PeerID: protocoltest.PeerID(t).String()})
+	if resp.Success || resp.Status != wire.StatusForbidden || resp.Connections != nil {
+		t.Fatalf("connections by a stranger = %+v, want 403", resp)
+	}
+}
+
+func TestConnectionsListsAPeersConnectionsNewestFirstInTheClientsShape(t *testing.T) {
+	h := setup(t)
+	ctx := context.Background()
+	mallory, other := protocoltest.PeerID(t), protocoltest.PeerID(t)
+	base := time.Date(2026, 10, 16, 9, 0, 0, 0, time.UTC)
+	closedAt := base.Add(time.Hour)
+	for _, c := range []*storage.PeerConnection{
+		{PeerID: mallory.String(), IP: "203.0.113.7", RemoteAddr: "/ip4/203.0.113.7/udp/55223/udx", Transport: "udx", Direction: "inbound", ConnectedAt: base, DisconnectedAt: &closedAt},
+		{PeerID: mallory.String(), IP: "198.51.100.2", RemoteAddr: "/ip4/198.51.100.2/udp/55223/udx/p2p/x/p2p-circuit", Transport: "p2p-circuit", Direction: "inbound", ConnectedAt: base.Add(2 * time.Hour)},
+		{PeerID: other.String(), IP: "192.0.2.1", Transport: "tcp", Direction: "inbound", ConnectedAt: base.Add(3 * time.Hour)},
+	} {
+		if _, err := h.env.Store.InsertPeerConnection(ctx, c); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	var got struct {
+		Success       bool             `json:"success"`
+		RetentionDays *int             `json:"retentionDays"`
+		Connections   []map[string]any `json:"connections"`
+	}
+	if err := json.Unmarshal(h.raw(h.moderator, moa.Request{Operation: moa.OpConnections, PeerID: mallory.String()}), &got); err != nil {
+		t.Fatal(err)
+	}
+	if !got.Success || got.RetentionDays == nil || *got.RetentionDays != 90 || len(got.Connections) != 2 {
+		t.Fatalf("connections = %+v, want mallory's two and retentionDays 90", got)
+	}
+	open, closed := got.Connections[0], got.Connections[1]
+	for _, key := range []string{"peerId", "ip", "remoteAddr", "transport", "direction", "connectedAt", "disconnectedAt"} {
+		if _, ok := open[key]; !ok {
+			t.Errorf("a connection has no %q: %v", key, open)
+		}
+	}
+	if len(open) != 7 {
+		t.Errorf("a connection has fields beyond the seven: %v", open)
+	}
+	if open["ip"] != "198.51.100.2" || open["transport"] != "p2p-circuit" || open["disconnectedAt"] != nil {
+		t.Errorf("newest = %v, want the relayed one, still open (disconnectedAt null)", open)
+	}
+	if closed["peerId"] != mallory.String() || closed["direction"] != "inbound" ||
+		closed["connectedAt"] != "2026-10-16T09:00:00Z" || closed["disconnectedAt"] != "2026-10-16T10:00:00Z" {
+		t.Errorf("older = %v", closed)
+	}
+
+	since := h.call(h.moderator, moa.Request{Operation: moa.OpConnections, PeerID: mallory.String(), Since: base.Add(time.Minute).Format(time.RFC3339)})
+	if len(since.Connections) != 1 || since.Connections[0].Transport != "p2p-circuit" {
+		t.Errorf("since = %+v, want the later one only", since.Connections)
+	}
+	one := h.call(h.moderator, moa.Request{Operation: moa.OpConnections, PeerID: mallory.String(), Limit: 1})
+	if len(one.Connections) != 1 || one.Connections[0].IP != "198.51.100.2" {
+		t.Errorf("limit 1 = %+v, want the newest", one.Connections)
+	}
+
+	// A peer never seen: an empty list, not a missing one.
+	if body := string(h.raw(h.moderator, moa.Request{Operation: moa.OpConnections, PeerID: protocoltest.PeerID(t).String()})); !strings.Contains(body, `"connections":[]`) {
+		t.Errorf("no connections = %s, want an empty list", body)
+	}
+}
+
+func TestConnectionsRefusesABadPeerIDOrSince(t *testing.T) {
+	h := setup(t)
+	for _, req := range []moa.Request{
+		{Operation: moa.OpConnections},
+		{Operation: moa.OpConnections, PeerID: "not-a-peer"},
+		{Operation: moa.OpConnections, PeerID: protocoltest.PeerID(t).String(), Since: "yesterday"},
+		{Operation: moa.OpConnections, PeerID: protocoltest.PeerID(t).String(), Limit: -1},
+	} {
+		if resp := h.call(h.moderator, req); resp.Success || resp.Status != wire.StatusBadRequest {
+			t.Errorf("%+v = %+v, want 400", req, resp)
+		}
+	}
+}
+
+func TestConnectionsReportsTheLogOff(t *testing.T) {
+	h := setup(t, func(c *core.ServerConfig) { c.ConnectionLogDays = 0 })
+	resp := h.call(h.moderator, moa.Request{Operation: moa.OpConnections, PeerID: protocoltest.PeerID(t).String()})
+	if !resp.Success || resp.RetentionDays == nil || *resp.RetentionDays != 0 {
+		t.Fatalf("connections with the log off = %+v, want retentionDays 0", resp)
+	}
+}
+
+func TestConnectionsCapsTheLimit(t *testing.T) {
+	h := setup(t)
+	ctx := context.Background()
+	who := protocoltest.PeerID(t)
+	at := time.Now().UTC()
+	for i := 0; i < 2001; i++ {
+		if _, err := h.env.Store.InsertPeerConnection(ctx, &storage.PeerConnection{PeerID: who.String(), ConnectedAt: at.Add(time.Duration(i) * time.Second)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if resp := h.call(h.moderator, moa.Request{Operation: moa.OpConnections, PeerID: who.String(), Limit: 5000}); len(resp.Connections) != 2000 {
+		t.Errorf("limit 5000 gave %d, want the cap of 2000", len(resp.Connections))
+	}
+	if resp := h.call(h.moderator, moa.Request{Operation: moa.OpConnections, PeerID: who.String()}); len(resp.Connections) != 500 {
+		t.Errorf("no limit gave %d, want the default of 500", len(resp.Connections))
+	}
 }

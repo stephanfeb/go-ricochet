@@ -23,6 +23,7 @@ import (
 	"github.com/stephanfeb/go-p2p-forge/node"
 
 	"github.com/stephanfeb/go-ricochet/internal/admission"
+	"github.com/stephanfeb/go-ricochet/internal/audit"
 	"github.com/stephanfeb/go-ricochet/internal/capacity"
 	"github.com/stephanfeb/go-ricochet/internal/core"
 	"github.com/stephanfeb/go-ricochet/internal/mda"
@@ -64,6 +65,7 @@ type Server struct {
 	trusted     *trust.Peers
 	moderators  *moderation.Moderators
 	bans        *moderation.Bans
+	connLog     *audit.Recorder
 	opsSrv      *opsapi.Server
 
 	// bufferPool is shared by every pipeline. It is a field rather than a
@@ -166,6 +168,14 @@ func (s *Server) Start(parentCtx context.Context) (err error) {
 	if err := s.initializeP2P(s.ctx); err != nil {
 		return fmt.Errorf("initialize p2p: %w", err)
 	}
+
+	// The connection log watches the host from here on, the connections
+	// already open included. Nil when it is off.
+	s.connLog = audit.New(s.storage, s.config.ConnectionLogDays, s.logger)
+	if s.connLog == nil {
+		s.logger.Warn("connection log off (audit.connection_log_days is 0)")
+	}
+	s.connLog.Start(s.forgeServer.Host().Network())
 
 	// Initialize services (MDA, MTA, registry, presence) — needs Host/Node
 	s.initializeServices(s.ctx)
@@ -290,6 +300,10 @@ func (s *Server) teardown() {
 	if s.forgeServer != nil {
 		s.forgeServer.Stop()
 	}
+
+	// Stop the connection log after the host, so the closing connections
+	// are recorded, and before storage closes.
+	s.connLog.Stop()
 
 	// Stop rate limiter eviction goroutines
 	if s.limiters != nil {

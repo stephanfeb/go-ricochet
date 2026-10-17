@@ -52,7 +52,7 @@ The system follows an email-inspired agent separation:
 | **SDA** (Store-Document) | `/ricochet/store/doc/1.0.0` | Document CRUD operations |
 | **SFA** (Store-Feed) | `/ricochet/store/feed/1.0.0` | Append-only feeds |
 | **SCA** (Store-Collection) | `/ricochet/store/collection/1.0.0` | Keyed collections with queries |
-| **MOA** (Moderator Operations) | `/ricochet/moderation/1.0.0` | Ban and unban peers, remove posts; moderators only |
+| **MOA** (Moderator Operations) | `/ricochet/moderation/1.0.0` | Ban and unban peers, remove posts, read the connection log; moderators only |
 | Notify | `/ricochet/mailbox-notify/1.0.0` | Push notifications, server to client |
 | **MTA** (Mail Transfer) | Internal | Message routing and validation |
 | **MDA** (Mail Delivery) | Internal | Local storage and push notifications |
@@ -441,7 +441,7 @@ hop count advanced, and it is refused past the hop limit.
 
 `security.moderators` names the peers that may use the moderation protocol,
 `/ricochet/moderation/1.0.0` (operations `ban`, `unban`, `getBan`,
-`listBans`, `removePost`); anyone else is refused before the request is read.
+`listBans`, `removePost`, `connections`); anyone else is refused before the request is read.
 A banned peer's open connections are closed and the server never dials it
 again. It may connect, but only to learn it is banned and why: it reaches
 only the Ricochet protocols (no DHT, GossipSub or relay), and every request
@@ -454,6 +454,37 @@ loaded at start. `removePost` deletes one microblog post by its id: the
 author's entry and their edits and reactions of it, the post's replies
 thread, and its images. Every change a moderator makes is logged at WARN
 with the moderator's peer ID.
+
+### Connection Log
+
+The server records every connection: the peer ID, the IP it came from, the
+remote multiaddr, the transport (`udx`, `tcp`, `quic-v1`, `ws`, ...), the
+direction (`inbound` or `outbound`), and when it connected and disconnected.
+A relayed connection records the relay's IP, with transport `p2p-circuit`.
+Rows are kept in `peer_connections` for `audit.connection_log_days` (90 by
+default) and purged hourly after that; `0` turns the log off. It exists so
+an abuse report or a child-safety referral can tie a peer to an IP address
+at a time. Nobody reads it but moderators, through the moderation protocol:
+
+```json
+{"operation": "connections", "peerId": "12D3KooW...", "since": "2026-10-01T00:00:00Z", "limit": 500}
+```
+
+`since` (RFC 3339) and `limit` (default 500, at most 2000) are optional. The
+answer lists the peer's connections newest first, with the retention in
+force (`0` when the log is off):
+
+```json
+{"success": true, "retentionDays": 90, "connections": [
+  {"peerId": "12D3KooW...", "ip": "203.0.113.7", "remoteAddr": "/ip4/203.0.113.7/udp/55223/udx",
+   "transport": "udx", "direction": "inbound",
+   "connectedAt": "2026-10-16T09:12:03Z", "disconnectedAt": null}]}
+```
+
+`disconnectedAt` is null while the connection is open, or when the server
+stopped without seeing it close. Recording never holds up a connection: the
+rows are written in the background, and dropped with a warning if the
+database falls behind.
 
 ### Relayed Topics
 
@@ -590,6 +621,7 @@ cmd/ricochet-bench/     Load testing tool
 examples/mailbox/       Example client: offline messages, push, and a Docker setup with NAT
 internal/
   admission/            Admission control (bounded work in flight) and the shutdown drain
+  audit/                Connection log: which IP each peer connected from, and when
   capacity/             Storage capacity sampling
   core/                 Message types, config, mailbox addressing
   metrics/              Prometheus collectors
@@ -606,7 +638,7 @@ internal/
     msa/                Mail Submission Agent (write path, single and batch)
     maa/                Mail Access Agent (read path)
     mma/                Mailbox Management Agent (admin)
-    moa/                Moderator Operations Agent (bans, post removal)
+    moa/                Moderator Operations Agent (bans, post removal, connection log)
     sda/                Store-Document Agent (documents)
     sfa/                Store-Feed Agent (feeds)
     sca/                Store-Collection Agent (collections)
@@ -800,6 +832,7 @@ The PostgreSQL schema (`schema.sql`) includes:
 | `document_acls` | Reader list of a shared document |
 | `directory_listings` | Peer directory entries for search |
 | `peer_bans` | Peers a moderator banned, loaded at start |
+| `peer_connections` | The connection log: peer, IP, transport, connect and disconnect times |
 | `feeds` | Append-only feeds, with a visibility |
 | `feed_entries` | Feed entries with sequence numbers |
 | `feed_acls` | Reader list of a shared feed |

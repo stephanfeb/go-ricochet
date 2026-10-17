@@ -54,6 +54,7 @@ type Fake struct {
 
 	directory map[string]*storage.DirectoryEntry
 	bans      map[string]*storage.PeerBan
+	conns     []*storage.PeerConnection // in insert order
 
 	readers map[storage.StoreKind]map[int64]map[string]time.Time // reader lists by store and row id
 }
@@ -1429,6 +1430,73 @@ func (f *Fake) ListPeerBans(_ context.Context) ([]*storage.PeerBan, error) {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].BannedAt.Before(out[j].BannedAt) })
 	return out, nil
+}
+
+// =============================================================================
+// Connection log
+// =============================================================================
+
+func (f *Fake) InsertPeerConnection(_ context.Context, c *storage.PeerConnection) (int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.nextID++
+	r := *c
+	r.ID = f.nextID
+	f.conns = append(f.conns, &r)
+	return r.ID, nil
+}
+
+func (f *Fake) MarkPeerDisconnected(_ context.Context, id int64, at time.Time) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, c := range f.conns {
+		if c.ID == id && c.DisconnectedAt == nil {
+			t := at
+			c.DisconnectedAt = &t
+		}
+	}
+	return nil
+}
+
+func (f *Fake) ListPeerConnections(_ context.Context, peerID string, since *time.Time, limit int) ([]*storage.PeerConnection, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []*storage.PeerConnection
+	for _, c := range f.conns {
+		if c.PeerID != peerID || (since != nil && c.ConnectedAt.Before(*since)) {
+			continue
+		}
+		r := *c
+		if c.DisconnectedAt != nil {
+			t := *c.DisconnectedAt
+			r.DisconnectedAt = &t
+		}
+		out = append(out, &r)
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if !out[i].ConnectedAt.Equal(out[j].ConnectedAt) {
+			return out[i].ConnectedAt.After(out[j].ConnectedAt)
+		}
+		return out[i].ID > out[j].ID
+	})
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
+func (f *Fake) PurgePeerConnections(_ context.Context, cutoff time.Time) (int, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	kept := f.conns[:0]
+	for _, c := range f.conns {
+		if !c.ConnectedAt.Before(cutoff) {
+			kept = append(kept, c)
+		}
+	}
+	n := len(f.conns) - len(kept)
+	f.conns = kept
+	return n, nil
 }
 
 func (f *Fake) FeedEntriesContaining(_ context.Context, peerID peer.ID, pathPrefix string, needle []byte) ([]*storage.FeedEntryMatch, error) {

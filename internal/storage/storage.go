@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"time"
 
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/stephanfeb/go-ricochet/internal/core"
@@ -180,6 +181,22 @@ type Storage interface {
 	// DeleteDocumentsWithPrefix removes the owner's documents whose path
 	// starts with prefix, and reports how many went.
 	DeleteDocumentsWithPrefix(ctx context.Context, ownerID peer.ID, prefix string) (int, error)
+
+	// Connection log (internal/audit)
+	//
+	// Which IP each peer connected from, and when, for abuse reports and
+	// child-safety referrals. Written by the recorder, read by moderators
+	// through the moderation protocol, purged past the retention period.
+	InsertPeerConnection(ctx context.Context, conn *PeerConnection) (int64, error)
+	// MarkPeerDisconnected sets the row's disconnected_at; a row that is
+	// gone (purged) is not an error.
+	MarkPeerDisconnected(ctx context.Context, id int64, at time.Time) error
+	// ListPeerConnections returns peerID's connections newest first, at
+	// most limit of them, only those at or after since when it is set.
+	ListPeerConnections(ctx context.Context, peerID string, since *time.Time, limit int) ([]*PeerConnection, error)
+	// PurgePeerConnections removes the connections made before cutoff and
+	// reports how many went.
+	PurgePeerConnections(ctx context.Context, cutoff time.Time) (int, error)
 
 	// Operator views
 	//

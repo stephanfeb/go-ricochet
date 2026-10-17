@@ -119,6 +119,11 @@ type ServerConfig struct {
 	// (an app hearing OverMedia's /overmedia/service-announce, for one).
 	RelayTopics []string `json:"relayTopics"`
 
+	// ConnectionLogDays is how long the connection log (internal/audit)
+	// keeps which IP each peer connected from: the evidence an abuse report
+	// or a child-safety referral needs. Zero turns the log off.
+	ConnectionLogDays int `json:"connectionLogDays"`
+
 	// Capacity
 	Admission AdmissionControl `json:"admissionControl"`
 
@@ -523,6 +528,8 @@ func DefaultConfig() *ServerConfig {
 		EnableRelay:        true,
 		EnableRelayService: true,
 
+		ConnectionLogDays: 90,
+
 		RateLimits: DefaultRateLimits(),
 		Admission:  DefaultAdmissionControl(),
 		Ops:        DefaultOpsConfig(),
@@ -679,6 +686,9 @@ func (c *ServerConfig) Validate() error {
 			return fmt.Errorf("relay_topics lists %q twice", topic)
 		}
 		seenTopics[topic] = true
+	}
+	if c.ConnectionLogDays < 0 {
+		return fmt.Errorf("audit.connection_log_days must not be negative (0 turns the log off)")
 	}
 	if c.WorkerThreads < 0 {
 		return fmt.Errorf("worker_threads must not be negative")
@@ -875,6 +885,11 @@ type yamlFileConfig struct {
 		ShutdownTimeout  string `yaml:"shutdown_timeout"`
 		DrainDelay       string `yaml:"drain_delay"`
 	} `yaml:"ops"`
+
+	// A pointer because 0 is meaningful: it turns the log off.
+	Audit struct {
+		ConnectionLogDays *int `yaml:"connection_log_days"`
+	} `yaml:"audit"`
 }
 
 // LoadConfigFromFile reads a YAML config file and applies its values on top of
@@ -1046,6 +1061,11 @@ func LoadConfigFromFile(path string, base *ServerConfig) error {
 	}
 	if len(yc.Security.Moderators) > 0 {
 		base.Moderators = yc.Security.Moderators
+	}
+
+	// Audit section
+	if yc.Audit.ConnectionLogDays != nil {
+		base.ConnectionLogDays = *yc.Audit.ConnectionLogDays
 	}
 
 	// PubSub section

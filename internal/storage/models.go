@@ -160,6 +160,23 @@ type PeerBan struct {
 	BannedAt time.Time `json:"bannedAt"`
 }
 
+// PeerConnection is one connection a peer made to this server (or the
+// server to it), kept for the connection log (audit.connection_log_days):
+// the evidence a moderator needs to tie a peer to an IP address at a time.
+// For a relayed connection the IP is the relay's, and Transport is
+// "p2p-circuit". DisconnectedAt is nil while the connection is open, or
+// when the server stopped without seeing it close.
+type PeerConnection struct {
+	ID             int64      `json:"-"`
+	PeerID         string     `json:"peerId"`
+	IP             string     `json:"ip"`
+	RemoteAddr     string     `json:"remoteAddr"`
+	Transport      string     `json:"transport"`
+	Direction      string     `json:"direction"`
+	ConnectedAt    time.Time  `json:"connectedAt"`
+	DisconnectedAt *time.Time `json:"disconnectedAt"`
+}
+
 // FeedEntryMatch is a feed entry with the feed it is in.
 type FeedEntryMatch struct {
 	FeedEntryRecord

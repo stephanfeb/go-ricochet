@@ -288,6 +288,35 @@ CREATE TABLE IF NOT EXISTS peer_bans (
 );
 
 -- =============================================================================
+-- PEER CONNECTIONS
+-- =============================================================================
+-- The connection log (audit.connection_log_days): which IP each peer
+-- connected from, over what, and when, kept for abuse reports and
+-- child-safety referrals. Moderators read it through the moderation
+-- protocol; the server purges rows older than the retention period hourly.
+-- A relayed connection records the relay's IP with transport 'p2p-circuit'.
+-- disconnected_at stays NULL while the connection is open, or when the
+-- server stopped without seeing it close.
+CREATE TABLE IF NOT EXISTS peer_connections (
+    id              BIGSERIAL PRIMARY KEY,
+    peer_id         TEXT NOT NULL,
+    ip              TEXT NOT NULL DEFAULT '',
+    remote_addr     TEXT NOT NULL DEFAULT '',
+    transport       TEXT NOT NULL DEFAULT '',
+    direction       TEXT NOT NULL DEFAULT '',
+    connected_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    disconnected_at TIMESTAMPTZ
+);
+
+-- A moderator's lookup: one peer, newest first
+CREATE INDEX IF NOT EXISTS idx_peer_connections_peer
+    ON peer_connections(peer_id, connected_at DESC);
+
+-- The retention purge
+CREATE INDEX IF NOT EXISTS idx_peer_connections_connected
+    ON peer_connections(connected_at);
+
+-- =============================================================================
 -- COLLECTIONS
 -- =============================================================================
 CREATE TABLE IF NOT EXISTS collections (
