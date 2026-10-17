@@ -18,6 +18,7 @@ import (
 
 	"github.com/stephanfeb/go-ricochet/internal/core"
 	"github.com/stephanfeb/go-ricochet/internal/protocol/frame"
+	"github.com/stephanfeb/go-ricochet/internal/protocol/maa"
 	"github.com/stephanfeb/go-ricochet/internal/protocol/msa"
 	"github.com/stephanfeb/go-ricochet/internal/protocol/notify"
 	"github.com/stephanfeb/go-ricochet/internal/protocol/sca"
@@ -291,5 +292,42 @@ func TestCloseRefusesFurtherRequestsAndUnregistersHandlers(t *testing.T) {
 	// The host is the caller's and stays usable.
 	if h.Network().ListenAddresses() == nil {
 		t.Error("Close took the caller's host down")
+	}
+}
+
+// MarkDeliveredInFolder names the folder, which a banned peer needs for its
+// trust-safety folder; MarkDelivered names none, as before.
+func TestMarkDeliveredNamesTheFolderWhenAsked(t *testing.T) {
+	srv := newHost(t)
+	var got []*core.MarkDeliveredRequest
+	serve(srv, maa.ProtocolID, func(req []byte) []byte {
+		r, err := frame.DecodeMarkDelivered(req)
+		if err != nil {
+			t.Errorf("server decode: %v", err)
+			return nil
+		}
+		got = append(got, r)
+		ack, _ := frame.EncodeMarkDeliveredAck(&core.MarkDeliveredAck{Success: true, UpdatedCount: len(r.MessageIDs)})
+		return ack
+	})
+	cl, _ := newClient(t, srv)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	ack, err := cl.MarkDeliveredInFolder(ctx, "trust-safety", []string{"m1", "m2"})
+	if err != nil || !ack.Success || ack.UpdatedCount != 2 {
+		t.Fatalf("in folder: %+v, %v", ack, err)
+	}
+	if _, err := cl.MarkDelivered(ctx, []string{"m3"}); err != nil {
+		t.Fatalf("without folder: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("server saw %d requests", len(got))
+	}
+	if got[0].FolderPath != "trust-safety" || len(got[0].MessageIDs) != 2 {
+		t.Errorf("in folder sent %+v", got[0])
+	}
+	if got[1].FolderPath != "" || got[1].MessageIDs[0] != "m3" {
+		t.Errorf("without folder sent %+v", got[1])
 	}
 }

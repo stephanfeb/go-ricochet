@@ -492,8 +492,9 @@ func (s *Server) buildForgeConfig() *forge.Config {
 	cfg.Host.MaxConnections = s.config.MaxConcurrentConnections
 	cfg.Host.MaxConnectionsPerIP = s.config.MaxConnectionsPerIP
 
-	// Banned peers are refused on every connection, in and out. With
-	// authentication on, only trusted peers may connect at all as well.
+	// The server never dials a banned peer. A banned peer may still connect
+	// in, to read its ban notice; RestrictStreams (in Start) limits what it
+	// reaches. With authentication on, only trusted peers may connect at all.
 	var trustGater connmgr.ConnectionGater
 	if s.config.EnableAuthentication {
 		trustGater = trust.NewGater(s.trusted, s.logger)

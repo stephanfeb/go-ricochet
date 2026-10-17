@@ -397,11 +397,14 @@ security:
   trusted_peers: []
   #  - 12D3KooW...
   # Peers that may use the moderation protocol (/ricochet/moderation/1.0.0):
-  # ban and unban peers, remove microblog posts. A banned peer is refused on
-  # every protocol, its directory listing removed, and its documents, feeds
-  # and collections hidden from others until it is unbanned. Bans are kept
-  # in the peer_bans table (run schema.sql after upgrading). Every moderator
-  # action is logged at WARN. Empty: nobody may moderate.
+  # ban and unban peers, remove microblog posts, read the connection log. A
+  # banned peer may still connect, but only to read its own trust-safety
+  # folder (where its ban notice is): every other request is refused with a
+  # "banned" answer, and the server never dials it. Its directory listing is
+  # removed, and its documents, feeds and collections are hidden from others
+  # until it is unbanned. Bans are kept in the peer_bans table (run
+  # schema.sql after upgrading). Every moderator action is logged at WARN.
+  # Empty: nobody may moderate.
   moderators: []
   #  - 12D3KooW...   # the Trust & Safety client
 

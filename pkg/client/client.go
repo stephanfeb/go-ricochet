@@ -557,9 +557,18 @@ func (c *Client) RetrievePage(ctx context.Context, opts ...RetrieveOption) (*Ret
 
 // MarkDelivered marks the given message IDs as delivered (seen) on the server.
 func (c *Client) MarkDelivered(ctx context.Context, messageIDs []string) (*wire.MarkDeliveredAck, error) {
+	return c.MarkDeliveredInFolder(ctx, "", messageIDs)
+}
+
+// MarkDeliveredInFolder is MarkDelivered naming the folder the messages are
+// in. The server marks them by ID either way; the folder matters to a peer a
+// moderator banned, which may mark messages delivered only in its
+// "trust-safety" folder, where its ban notice is.
+func (c *Client) MarkDeliveredInFolder(ctx context.Context, folderPath string, messageIDs []string) (*wire.MarkDeliveredAck, error) {
 	req := &wire.MarkDeliveredRequest{
 		OperationType: "markDelivered",
 		MessageIDs:    messageIDs,
+		FolderPath:    folderPath,
 	}
 
 	reqData, err := frame.EncodeMarkDelivered(req)

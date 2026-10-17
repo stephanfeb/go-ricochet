@@ -447,7 +447,9 @@ again. It may connect, but only to learn it is banned and why: it reaches
 only the Ricochet protocols (no DHT, GossipSub or relay), and every request
 there is refused with a `banned` answer except reading, acknowledging and
 deleting the messages in its own `trust-safety` folder, where Trust &
-Safety's ban notice is. Its directory listing is removed, and its
+Safety's ban notice is (with `pkg/client`, `RetrieveMessages` with
+`WithRetrieveFolderPath("trust-safety")`, `MarkDeliveredInFolder` and
+`DeleteMessages`). Its directory listing is removed, and its
 documents, feeds and collections are hidden from everyone else. Nothing of theirs is
 deleted, so `unban` brings it all back. Bans are kept in `peer_bans` and
 loaded at start. `removePost` deletes one microblog post by its id: the
