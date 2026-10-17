@@ -586,6 +586,9 @@ func listHandler(sc *forge.StreamContext, next func()) {
 
 	ctx := sc.Ctx
 	feeds, err := store.ListFeeds(ctx, ownerID.(peer.ID), sc.PeerID)
+	if wire.HiddenOwner(sc, ownerID.(peer.ID)) {
+		feeds = nil
+	}
 	if err != nil {
 		sc.Logger.Error("failed to list feeds", "error", err)
 		sc.Response = &FeedResponse{Status: StatusInternalError}

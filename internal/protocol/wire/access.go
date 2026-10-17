@@ -8,6 +8,7 @@ import (
 	forge "github.com/stephanfeb/go-p2p-forge"
 
 	"github.com/stephanfeb/go-ricochet/internal/core"
+	"github.com/stephanfeb/go-ricochet/internal/moderation"
 	"github.com/stephanfeb/go-ricochet/internal/storage"
 )
 
@@ -25,6 +26,12 @@ func RequireReader(ctx context.Context, sc *forge.StreamContext, store storage.S
 	if sc.PeerID.String() == ownerPeerID {
 		return nil
 	}
+	// A banned owner's resources are hidden from everyone else, whatever
+	// their visibility, and come back when the ban is lifted. The refusal
+	// is the private one, so it says nothing about the ban.
+	if moderation.FromStream(sc).IsBannedString(ownerPeerID) {
+		return Forbidden("read operations require owner access or a read grant")
+	}
 	switch visibility {
 	case core.VisibilityPublic:
 		return nil
@@ -38,6 +45,13 @@ func RequireReader(ctx context.Context, sc *forge.StreamContext, store storage.S
 		}
 	}
 	return Forbidden("read operations require owner access or a read grant")
+}
+
+// HiddenOwner reports whether owner's resources are hidden from the caller
+// because owner is banned. The lists of documents, feeds and collections
+// answer empty for such an owner.
+func HiddenOwner(sc *forge.StreamContext, owner peer.ID) bool {
+	return sc.PeerID != owner && moderation.FromStream(sc).IsBanned(owner)
 }
 
 // ACCESS operation actions, shared by the three store protocols.

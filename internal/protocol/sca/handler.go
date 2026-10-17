@@ -605,6 +605,9 @@ func handleListCollections(sc *forge.StreamContext, next func()) {
 
 	ctx := sc.Ctx
 	collections, err := store.ListCollections(ctx, ownerID, sc.PeerID)
+	if wire.HiddenOwner(sc, ownerID) {
+		collections = nil
+	}
 	if err != nil {
 		sc.Logger.Error("failed to list collections", "error", err)
 		sc.Response = &CollectionResponse{Status: StatusInternalError}

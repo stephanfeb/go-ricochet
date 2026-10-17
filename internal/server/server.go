@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/libp2p/go-libp2p/core/connmgr"
 	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/peer"
 
@@ -23,11 +24,13 @@ import (
 	"github.com/stephanfeb/go-ricochet/internal/core"
 	"github.com/stephanfeb/go-ricochet/internal/mda"
 	"github.com/stephanfeb/go-ricochet/internal/metrics"
+	"github.com/stephanfeb/go-ricochet/internal/moderation"
 	"github.com/stephanfeb/go-ricochet/internal/mta"
 	"github.com/stephanfeb/go-ricochet/internal/opsapi"
 	"github.com/stephanfeb/go-ricochet/internal/presence"
 	"github.com/stephanfeb/go-ricochet/internal/protocol/maa"
 	"github.com/stephanfeb/go-ricochet/internal/protocol/mma"
+	"github.com/stephanfeb/go-ricochet/internal/protocol/moa"
 	"github.com/stephanfeb/go-ricochet/internal/protocol/msa"
 	"github.com/stephanfeb/go-ricochet/internal/protocol/sca"
 	"github.com/stephanfeb/go-ricochet/internal/protocol/sda"
@@ -56,6 +59,8 @@ type Server struct {
 	metrics     *metrics.Metrics
 	capacity    *capacity.Sampler
 	trusted     *trust.Peers
+	moderators  *moderation.Moderators
+	bans        *moderation.Bans
 	opsSrv      *opsapi.Server
 
 	// bufferPool is shared by every pipeline. It is a field rather than a
@@ -135,6 +140,25 @@ func (s *Server) Start(parentCtx context.Context) (err error) {
 		s.logger.Warn("enable_forwarding is on but trusted_peers is empty; no peer may forward")
 	}
 
+	// Moderators and bans: the bans are loaded before the host exists, since
+	// the gater that refuses them is installed at host creation.
+	moderators, err := moderation.ParseModerators(s.config.Moderators)
+	if err != nil {
+		return fmt.Errorf("moderators: %w", err)
+	}
+	s.moderators = moderators
+	s.bans = moderation.NewBans(s.storage)
+	if skipped, err := s.bans.Load(s.ctx); err != nil {
+		// The table may be missing on a database not yet upgraded: serve,
+		// and let a ban fail loudly when someone tries one.
+		s.logger.Error("bans not loaded; run schema.sql to create peer_bans", "error", err)
+	} else {
+		if len(skipped) > 0 {
+			s.logger.Warn("bans with an unreadable peer ID skipped", "peers", skipped)
+		}
+		s.logger.Info("moderation", "moderators", moderators.Len(), "bans", len(s.bans.List()))
+	}
+
 	// Build and start forge server (host + node)
 	if err := s.initializeP2P(s.ctx); err != nil {
 		return fmt.Errorf("initialize p2p: %w", err)
@@ -154,6 +178,9 @@ func (s *Server) Start(parentCtx context.Context) (err error) {
 	s.forgeServer.Provide(metrics.RegistryKey, s.metrics)
 	s.forgeServer.Provide(capacity.RegistryKey, s.capacity)
 	s.forgeServer.Provide(trust.RegistryKey, s.trusted)
+	s.forgeServer.Provide(moderation.RegistryKey, s.bans)
+	s.forgeServer.Provide(moderation.ModeratorsKey, s.moderators)
+	s.forgeServer.Provide(moa.DisconnectorKey, moa.Disconnector(s.forgeServer.Host().Network()))
 
 	// Register protocol handlers
 	s.registerProtocolHandlers()
@@ -436,12 +463,15 @@ func (s *Server) buildForgeConfig() *forge.Config {
 	cfg.Host.MaxConnections = s.config.MaxConcurrentConnections
 	cfg.Host.MaxConnectionsPerIP = s.config.MaxConnectionsPerIP
 
-	// Authentication: with it on, only trusted peers may connect at all.
+	// Banned peers are refused on every connection, in and out. With
+	// authentication on, only trusted peers may connect at all as well.
+	var trustGater connmgr.ConnectionGater
 	if s.config.EnableAuthentication {
-		cfg.Host.ConnectionGater = trust.NewGater(s.trusted, s.logger)
+		trustGater = trust.NewGater(s.trusted, s.logger)
 		s.logger.Info("authentication enabled: inbound connections limited to trusted peers",
 			"trusted_peers", s.trusted.Len())
 	}
+	cfg.Host.ConnectionGater = moderation.NewGater(s.bans, trustGater, s.logger)
 
 	// Relay
 	cfg.Host.EnableRelay = s.config.EnableRelay
@@ -617,6 +647,11 @@ func (s *Server) registerProtocolHandlers() {
 	sfaPipeline := sfa.NewPipeline(s.logger, pool, reg).WithActiveStreams(&s.inFlight)
 	h.SetStreamHandler(sfa.ProtocolID, sfaPipeline.StreamHandler())
 	s.logger.Info("registered SFA handler", "protocol", sfa.ProtocolID)
+
+	// MOA — Moderator Operations Agent (moderators only)
+	moaPipeline := moa.NewPipeline(s.logger, pool, reg).WithActiveStreams(&s.inFlight)
+	h.SetStreamHandler(moa.ProtocolID, moaPipeline.StreamHandler())
+	s.logger.Info("registered MOA handler", "protocol", moa.ProtocolID)
 
 	// SCA — Store Collection Agent (collection path)
 	scaPipeline := sca.NewPipeline(s.logger, pool, reg).WithActiveStreams(&s.inFlight)

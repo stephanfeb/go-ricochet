@@ -109,6 +109,9 @@ type ServerConfig struct {
 	// Security
 	EnableAuthentication bool       `json:"enableAuthentication"`
 	TrustedPeers         []string   `json:"trustedPeers"`
+	// Moderators may use the moderation protocol (internal/protocol/moa):
+	// ban and unban peers, remove posts. Empty: nobody may.
+	Moderators []string `json:"moderators"`
 	RateLimits           RateLimits `json:"rateLimits"`
 
 	// RelayTopics are GossipSub topics this server forwards without using
@@ -662,6 +665,11 @@ func (c *ServerConfig) Validate() error {
 			return fmt.Errorf("trusted_peers entry %q is not a peer ID: %w", p, err)
 		}
 	}
+	for _, p := range c.Moderators {
+		if _, err := peer.Decode(p); err != nil {
+			return fmt.Errorf("moderators entry %q is not a peer ID: %w", p, err)
+		}
+	}
 	seenTopics := make(map[string]bool, len(c.RelayTopics))
 	for _, topic := range c.RelayTopics {
 		if strings.TrimSpace(topic) == "" {
@@ -821,6 +829,7 @@ type yamlFileConfig struct {
 
 	Security struct {
 		TrustedPeers []string `yaml:"trusted_peers"`
+		Moderators   []string `yaml:"moderators"`
 	} `yaml:"security"`
 
 	PubSub struct {
@@ -1034,6 +1043,9 @@ func LoadConfigFromFile(path string, base *ServerConfig) error {
 	// Security section
 	if len(yc.Security.TrustedPeers) > 0 {
 		base.TrustedPeers = yc.Security.TrustedPeers
+	}
+	if len(yc.Security.Moderators) > 0 {
+		base.Moderators = yc.Security.Moderators
 	}
 
 	// PubSub section

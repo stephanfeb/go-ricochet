@@ -747,6 +747,9 @@ func handleList(sc *forge.StreamContext, next func()) {
 	}
 
 	docs, hasMore, err := store.ListDocuments(ctx, ownerID.(peer.ID), sc.PeerID, req.ListCursor, limit)
+	if wire.HiddenOwner(sc, ownerID.(peer.ID)) {
+		docs, hasMore = nil, false
+	}
 	if err != nil {
 		sc.Logger.Error("failed to list documents", "error", err)
 		sc.Response = &DocResponse{Status: StatusInternalError}

@@ -275,6 +275,19 @@ CREATE INDEX IF NOT EXISTS idx_feed_entries_created
     ON feed_entries(feed_id, created_at);
 
 -- =============================================================================
+-- PEER BANS
+-- =============================================================================
+-- Peers a moderator banned through the moderation protocol: refused on every
+-- protocol, their listing removed, their documents, feeds and collections
+-- hidden from others. The server loads them at start and keeps them in memory.
+CREATE TABLE IF NOT EXISTS peer_bans (
+    peer_id    TEXT PRIMARY KEY,
+    reason     TEXT NOT NULL DEFAULT '',
+    banned_by  TEXT NOT NULL,
+    banned_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- =============================================================================
 -- COLLECTIONS
 -- =============================================================================
 CREATE TABLE IF NOT EXISTS collections (

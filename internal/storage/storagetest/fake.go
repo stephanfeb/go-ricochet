@@ -11,6 +11,7 @@
 package storagetest
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/json"
@@ -52,6 +53,7 @@ type Fake struct {
 	items       map[int64]map[string]*storage.CollectionItemRecord
 
 	directory map[string]*storage.DirectoryEntry
+	bans      map[string]*storage.PeerBan
 
 	readers map[storage.StoreKind]map[int64]map[string]time.Time // reader lists by store and row id
 }
@@ -71,6 +73,7 @@ func New() *Fake {
 		collections: map[string]*storage.CollectionRecord{},
 		items:       map[int64]map[string]*storage.CollectionItemRecord{},
 		directory:   map[string]*storage.DirectoryEntry{},
+		bans:        map[string]*storage.PeerBan{},
 		readers:     map[storage.StoreKind]map[int64]map[string]time.Time{},
 	}
 }
@@ -1394,4 +1397,100 @@ func (f *Fake) IsStoreReader(_ context.Context, kind storage.StoreKind, id int64
 	defer f.mu.Unlock()
 	_, ok := f.readers[kind][id][reader.String()]
 	return ok, nil
+}
+
+// =============================================================================
+// Moderation
+// =============================================================================
+
+func (f *Fake) PutPeerBan(_ context.Context, ban *storage.PeerBan) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	b := *ban
+	f.bans[ban.PeerID] = &b
+	return nil
+}
+
+func (f *Fake) DeletePeerBan(_ context.Context, peerID string) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	_, ok := f.bans[peerID]
+	delete(f.bans, peerID)
+	return ok, nil
+}
+
+func (f *Fake) ListPeerBans(_ context.Context) ([]*storage.PeerBan, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]*storage.PeerBan, 0, len(f.bans))
+	for _, b := range f.bans {
+		c := *b
+		out = append(out, &c)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].BannedAt.Before(out[j].BannedAt) })
+	return out, nil
+}
+
+func (f *Fake) FeedEntriesContaining(_ context.Context, peerID peer.ID, pathPrefix string, needle []byte) ([]*storage.FeedEntryMatch, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []*storage.FeedEntryMatch
+	for _, feed := range f.feeds {
+		if feed.Path != pathPrefix && !strings.HasPrefix(feed.Path, pathPrefix+"/") {
+			continue
+		}
+		for _, e := range f.entries[feed.ID] {
+			if feed.OwnerPeerID != peerID.String() && e.CreatedByPeerID != peerID.String() {
+				continue
+			}
+			if !bytes.Contains(e.Content, needle) {
+				continue
+			}
+			out = append(out, &storage.FeedEntryMatch{FeedEntryRecord: *e, FeedOwnerPeerID: feed.OwnerPeerID, FeedPath: feed.Path})
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].FeedID != out[j].FeedID {
+			return out[i].FeedID < out[j].FeedID
+		}
+		return out[i].SequenceNumber < out[j].SequenceNumber
+	})
+	return out, nil
+}
+
+func (f *Fake) DeleteFeedEntries(_ context.Context, ids []int64) (int, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	drop := make(map[int64]bool, len(ids))
+	for _, id := range ids {
+		drop[id] = true
+	}
+	n := 0
+	for feedID, entries := range f.entries {
+		kept := entries[:0]
+		for _, e := range entries {
+			if drop[e.ID] {
+				n++
+				continue
+			}
+			kept = append(kept, e)
+		}
+		f.entries[feedID] = kept
+	}
+	return n, nil
+}
+
+func (f *Fake) DeleteDocumentsWithPrefix(_ context.Context, owner peer.ID, prefix string) (int, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	n := 0
+	for k, doc := range f.documents {
+		if doc.OwnerPeerID == owner.String() && strings.HasPrefix(doc.Path, prefix) {
+			delete(f.documents, k)
+			delete(f.versions, k)
+			delete(f.readers[storage.StoreDocument], doc.ID)
+			n++
+		}
+	}
+	return n, nil
 }

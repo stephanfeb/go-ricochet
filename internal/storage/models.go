@@ -151,6 +151,22 @@ type DocumentPutResult struct {
 	UpdatedAt   time.Time `json:"updatedAt"`
 }
 
+// PeerBan is a peer a moderator banned: refused on every protocol, its
+// listing removed, its documents, feeds and collections hidden from others.
+type PeerBan struct {
+	PeerID   string    `json:"peerId"`
+	Reason   string    `json:"reason,omitempty"`
+	BannedBy string    `json:"bannedBy"`
+	BannedAt time.Time `json:"bannedAt"`
+}
+
+// FeedEntryMatch is a feed entry with the feed it is in.
+type FeedEntryMatch struct {
+	FeedEntryRecord
+	FeedOwnerPeerID string `json:"feedOwnerPeerId"`
+	FeedPath        string `json:"feedPath"`
+}
+
 // DirectoryEntry represents a user's listing in the public directory.
 type DirectoryEntry struct {
 	ID          int64          `json:"id"`

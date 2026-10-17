@@ -162,6 +162,25 @@ type Storage interface {
 	// result is a bug to look into, not routine housekeeping.
 	ReconcileMessageCounts(ctx context.Context) (int, error)
 
+	// Moderation (the moderation protocol, internal/protocol/moa)
+	//
+	// Bans are kept here so they outlast a restart; the server holds them in
+	// memory as well (internal/moderation) and consults that copy.
+	PutPeerBan(ctx context.Context, ban *PeerBan) error
+	// DeletePeerBan reports false when the peer was not banned.
+	DeletePeerBan(ctx context.Context, peerID string) (bool, error)
+	ListPeerBans(ctx context.Context) ([]*PeerBan, error)
+	// FeedEntriesContaining returns the entries whose content holds needle,
+	// in feeds whose path is pathPrefix or starts with pathPrefix + "/",
+	// that peerID owns or wrote. A byte search, so the caller checks each
+	// match; it is how a moderator finds a post by its id.
+	FeedEntriesContaining(ctx context.Context, peerID peer.ID, pathPrefix string, needle []byte) ([]*FeedEntryMatch, error)
+	// DeleteFeedEntries removes entries by row id and reports how many went.
+	DeleteFeedEntries(ctx context.Context, ids []int64) (int, error)
+	// DeleteDocumentsWithPrefix removes the owner's documents whose path
+	// starts with prefix, and reports how many went.
+	DeleteDocumentsWithPrefix(ctx context.Context, ownerID peer.ID, prefix string) (int, error)
+
 	// Operator views
 	//
 	// These are the only methods here that are not owner- or mailbox-scoped.

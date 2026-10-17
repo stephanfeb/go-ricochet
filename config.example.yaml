@@ -396,6 +396,14 @@ admission_control:
 security:
   trusted_peers: []
   #  - 12D3KooW...
+  # Peers that may use the moderation protocol (/ricochet/moderation/1.0.0):
+  # ban and unban peers, remove microblog posts. A banned peer is refused on
+  # every protocol, its directory listing removed, and its documents, feeds
+  # and collections hidden from others until it is unbanned. Bans are kept
+  # in the peer_bans table (run schema.sql after upgrading). Every moderator
+  # action is logged at WARN. Empty: nobody may moderate.
+  moderators: []
+  #  - 12D3KooW...   # the Trust & Safety client
 
 # GossipSub topics this server forwards without using them itself. GossipSub
 # passes a topic only through peers that announce it, so a service and an app

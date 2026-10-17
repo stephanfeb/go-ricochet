@@ -52,6 +52,7 @@ The system follows an email-inspired agent separation:
 | **SDA** (Store-Document) | `/ricochet/store/doc/1.0.0` | Document CRUD operations |
 | **SFA** (Store-Feed) | `/ricochet/store/feed/1.0.0` | Append-only feeds |
 | **SCA** (Store-Collection) | `/ricochet/store/collection/1.0.0` | Keyed collections with queries |
+| **MOA** (Moderator Operations) | `/ricochet/moderation/1.0.0` | Ban and unban peers, remove posts; moderators only |
 | Notify | `/ricochet/mailbox-notify/1.0.0` | Push notifications, server to client |
 | **MTA** (Mail Transfer) | Internal | Message routing and validation |
 | **MDA** (Mail Delivery) | Internal | Local storage and push notifications |
@@ -436,6 +437,21 @@ opens. With `enable_forwarding` on it is the set of peers allowed to submit a
 message whose sender is not themselves: the message is marked forwarded, its
 hop count advanced, and it is refused past the hop limit.
 
+### Moderation
+
+`security.moderators` names the peers that may use the moderation protocol,
+`/ricochet/moderation/1.0.0` (operations `ban`, `unban`, `getBan`,
+`listBans`, `removePost`); anyone else is refused before the request is read.
+A banned peer is refused on every connection, in and out, by a connection
+gater (so no protocol, DHT and GossipSub included, serves it), its open
+connections are closed, its directory listing is removed, and its documents,
+feeds and collections are hidden from everyone else. Nothing of theirs is
+deleted, so `unban` brings it all back. Bans are kept in `peer_bans` and
+loaded at start. `removePost` deletes one microblog post by its id: the
+author's entry and their edits and reactions of it, the post's replies
+thread, and its images. Every change a moderator makes is logged at WARN
+with the moderator's peer ID.
+
 ### Relayed Topics
 
 GossipSub forwards a topic only through peers that announce it. Two peers
@@ -574,6 +590,7 @@ internal/
   capacity/             Storage capacity sampling
   core/                 Message types, config, mailbox addressing
   metrics/              Prometheus collectors
+  moderation/           Banned peers, the moderators, and the gater that refuses bans
   mda/                  Mail Delivery Agent + push notifier
     mailboxes/          Mailbox types, ACL and retention rules
   mta/                  Mail Transfer Agent (routing, forwarding)
@@ -586,6 +603,7 @@ internal/
     msa/                Mail Submission Agent (write path, single and batch)
     maa/                Mail Access Agent (read path)
     mma/                Mailbox Management Agent (admin)
+    moa/                Moderator Operations Agent (bans, post removal)
     sda/                Store-Document Agent (documents)
     sfa/                Store-Feed Agent (feeds)
     sca/                Store-Collection Agent (collections)
@@ -778,6 +796,7 @@ The PostgreSQL schema (`schema.sql`) includes:
 | `document_versions` | Document version history |
 | `document_acls` | Reader list of a shared document |
 | `directory_listings` | Peer directory entries for search |
+| `peer_bans` | Peers a moderator banned, loaded at start |
 | `feeds` | Append-only feeds, with a visibility |
 | `feed_entries` | Feed entries with sequence numbers |
 | `feed_acls` | Reader list of a shared feed |
