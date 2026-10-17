@@ -7,10 +7,13 @@
 // gater and the read checks consult it on every connection and read.
 //
 // A ban is meant to take someone off this server, not to cap abuse:
-// identities cost nothing to make (see README "Rate limiting"). It refuses
-// the peer on every protocol, removes its directory listing, and hides its
-// documents, feeds and collections from everyone else. Nothing is deleted,
-// so an unban puts it all back.
+// identities cost nothing to make (see README "Rate limiting"). A banned
+// peer may connect, but only to read its own trust-safety folder, where
+// Trust & Safety's ban notice is; everything else refuses it with a
+// "banned" answer (wire.BanGate), so it knows why it is cut off. Its
+// directory listing is removed and its documents, feeds and collections
+// are hidden from everyone else. Nothing is deleted, so an unban puts it
+// all back.
 package moderation
 
 import (
@@ -23,8 +26,10 @@ import (
 
 	"github.com/libp2p/go-libp2p/core/connmgr"
 	"github.com/libp2p/go-libp2p/core/control"
+	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
+	"github.com/libp2p/go-libp2p/core/protocol"
 	multiaddr "github.com/multiformats/go-multiaddr"
 
 	forge "github.com/stephanfeb/go-p2p-forge"
@@ -208,14 +213,14 @@ func ModeratorsFromStream(sc *forge.StreamContext) *Moderators {
 	return m
 }
 
-// Gater refuses banned peers on every connection, in and out, then defers
-// to inner (the trust gater under enable_authentication) when there is one.
+// Gater keeps the server from dialling banned peers, then defers to inner
+// (the trust gater under enable_authentication) when there is one.
 //
-// Inbound, it decides at InterceptSecured, the first point the remote
-// identity is proven, so a banned peer never reaches the multiplexer and
-// so no protocol (DHT, GossipSub, relay, identify) serves it. Outbound, it
-// refuses to dial a banned peer at all, so push notifications and the relay
-// never reach it either.
+// A banned peer may still connect: RestrictStreams lets it reach only the
+// Ricochet protocols, which refuse it (wire.BanGate) except for reading its
+// own trust-safety folder, where its ban notice is. That is how it learns it
+// is banned, and why. The server never dials it, so the relay and the push
+// notifier do not reach it on their own initiative.
 type Gater struct {
 	bans   *Bans
 	inner  connmgr.ConnectionGater
@@ -248,11 +253,56 @@ func (g *Gater) InterceptAccept(addrs network.ConnMultiaddrs) bool {
 }
 
 func (g *Gater) InterceptSecured(dir network.Direction, id peer.ID, addrs network.ConnMultiaddrs) bool {
-	if g.bans.IsBanned(id) {
-		g.logger.Debug("refused banned peer", "peer", id.String(), "addr", addrs.RemoteMultiaddr(), "direction", dir)
+	if dir == network.DirOutbound && g.bans.IsBanned(id) {
 		return false
 	}
 	return g.inner == nil || g.inner.InterceptSecured(dir, id, addrs)
+}
+
+// streamHandlerSource is the swarm's view of the handler it gives each new
+// stream (basichost's protocol negotiation).
+type streamHandlerSource interface {
+	StreamHandler() network.StreamHandler
+}
+
+// RestrictStreams makes h's banned peers reach only the protocols allowed
+// says yes to; any other stream of theirs is reset once its protocol is
+// known. Others' streams go to h's own handling as before.
+func RestrictStreams(h host.Host, bans *Bans, allowed func(protocol.ID) bool, logger *slog.Logger) error {
+	src, ok := h.Network().(streamHandlerSource)
+	if !ok {
+		return fmt.Errorf("the host's network does not expose its stream handler")
+	}
+	normal := src.StreamHandler()
+	if normal == nil {
+		return fmt.Errorf("the host has no stream handler yet")
+	}
+	log := logger.With("component", "moderation")
+	h.Network().SetStreamHandler(func(s network.Stream) {
+		remote := s.Conn().RemotePeer()
+		if !bans.IsBanned(remote) {
+			normal(s)
+			return
+		}
+		_ = s.SetDeadline(time.Now().Add(10 * time.Second))
+		proto, handle, err := h.Mux().Negotiate(s)
+		if err != nil {
+			_ = s.Reset()
+			return
+		}
+		if !allowed(protocol.ID(proto)) {
+			log.Debug("banned peer's stream refused", "peer", remote.String(), "protocol", proto)
+			_ = s.Reset()
+			return
+		}
+		_ = s.SetDeadline(time.Time{})
+		if err := s.SetProtocol(protocol.ID(proto)); err != nil {
+			_ = s.Reset()
+			return
+		}
+		handle(proto, s)
+	})
+	return nil
 }
 
 func (g *Gater) InterceptUpgraded(conn network.Conn) (bool, control.DisconnectReason) {

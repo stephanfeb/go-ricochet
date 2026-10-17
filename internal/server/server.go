@@ -13,6 +13,9 @@ import (
 	"github.com/libp2p/go-libp2p/core/connmgr"
 	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/peer"
+	"github.com/libp2p/go-libp2p/core/protocol"
+	"github.com/libp2p/go-libp2p/p2p/protocol/identify"
+	"github.com/libp2p/go-libp2p/p2p/protocol/ping"
 
 	forge "github.com/stephanfeb/go-p2p-forge"
 	"github.com/stephanfeb/go-p2p-forge/codec"
@@ -184,6 +187,18 @@ func (s *Server) Start(parentCtx context.Context) (err error) {
 
 	// Register protocol handlers
 	s.registerProtocolHandlers()
+
+	// Banned peers reach only the Ricochet protocols (which refuse them but
+	// for their trust-safety folder) and what a connection needs to work.
+	ricochetProtocols := map[protocol.ID]bool{
+		msa.ProtocolID: true, msa.BatchProtocolID: true, maa.ProtocolID: true, mma.ProtocolID: true,
+		sda.ProtocolID: true, sfa.ProtocolID: true, sca.ProtocolID: true, moa.ProtocolID: true,
+		identify.ID: true, identify.IDPush: true, ping.ID: true,
+	}
+	if err := moderation.RestrictStreams(s.forgeServer.Host(), s.bans,
+		func(p protocol.ID) bool { return ricochetProtocols[p] }, s.logger); err != nil {
+		return fmt.Errorf("restrict banned peers: %w", err)
+	}
 
 	// Start background services
 	s.startServices(s.ctx)

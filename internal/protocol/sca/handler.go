@@ -124,6 +124,7 @@ func NewPipeline(logger *slog.Logger, pool *codec.BufferPool, reg *forge.Registr
 		middleware.Recovery(),
 		collectionResponseWriter(),
 		forge.FrameDecodeMiddleware(pool),
+		wire.BanGate(nil),
 		wire.RequestDeadline(reg),
 		middleware.DualRateLimitMiddleware(limiter, isWriteClassifier),
 		admission.DrainGate(admission.DrainFromRegistry(reg)),

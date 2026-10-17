@@ -2,13 +2,18 @@ package moa_test
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/libp2p/go-libp2p/core/peer"
+	forge "github.com/stephanfeb/go-p2p-forge"
 
 	"github.com/stephanfeb/go-ricochet/internal/core"
 	"github.com/stephanfeb/go-ricochet/internal/moderation"
+	"github.com/stephanfeb/go-ricochet/internal/protocol/maa"
 	"github.com/stephanfeb/go-ricochet/internal/protocol/moa"
 	"github.com/stephanfeb/go-ricochet/internal/protocol/protocoltest"
 	"github.com/stephanfeb/go-ricochet/internal/protocol/sfa"
@@ -229,4 +234,41 @@ func TestRemovePostRefusesAPath(t *testing.T) {
 	if resp.Success || resp.Status != wire.StatusBadRequest {
 		t.Fatalf("removePost with a path = %+v, want 400", resp)
 	}
+}
+
+func TestABannedPeerReadsOnlyItsTrustSafetyFolderAndIsToldItIsBanned(t *testing.T) {
+	h := setup(t)
+	mallory := protocoltest.PeerID(t)
+	if _, err := h.bans.Ban(context.Background(), mallory, h.moderator, "spam", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	maaPipe := maa.NewPipeline(h.env.Logger, h.env.Pool, h.env.Registry)
+	ask := func(p *forge.Pipeline, req map[string]any) map[string]any {
+		t.Helper()
+		reply := protocoltest.Exchange(t, p, mallory, req)
+		var out map[string]any
+		if json.Unmarshal(reply, &out) != nil {
+			return map[string]any{"compound": true} // a retrieve answers with a compound frame
+		}
+		return out
+	}
+	banned := func(what string, r map[string]any) {
+		t.Helper()
+		// Each protocol has its own envelope (errorMessage, error, headers.Error).
+		if !strings.Contains(fmt.Sprint(r), wire.BannedMessage) {
+			t.Errorf("%s = %v, want a 'banned' refusal", what, r)
+		}
+	}
+
+	if r := ask(maaPipe, map[string]any{"operationType": "retrieve", "peerId": mallory.String(), "folderPath": wire.NoticesFolder}); r["compound"] != true {
+		t.Errorf("reading its trust-safety folder = %v, want the messages", r)
+	}
+	if r := ask(maaPipe, map[string]any{"operationType": "markDelivered", "folderPath": wire.NoticesFolder, "messageIds": []string{"x"}}); r["success"] == false && strings.Contains(fmt.Sprint(r), "banned") {
+		t.Errorf("acknowledging its notices was refused: %v", r)
+	}
+	banned("reading its inbox", ask(maaPipe, map[string]any{"operationType": "retrieve", "peerId": mallory.String(), "folderPath": "inbox"}))
+	banned("reading someone else's folder", ask(maaPipe, map[string]any{"operationType": "retrieve", "peerId": h.moderator.String(), "folderPath": wire.NoticesFolder}))
+	banned("expunging", ask(maaPipe, map[string]any{"operationType": "expunge", "folderPath": wire.NoticesFolder}))
+	banned("reading a feed", ask(sfa.NewPipeline(h.env.Logger, h.env.Pool, h.env.Registry),
+		map[string]any{"operation": sfa.OpLIST, "ownerPeerId": h.moderator.String()}))
 }

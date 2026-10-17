@@ -49,6 +49,7 @@ func NewPipeline(logger *slog.Logger, pool *codec.BufferPool, reg *forge.Registr
 		middleware.Recovery(),
 		maaResponseWriter(),
 		forge.FrameDecodeMiddleware(pool),
+		wire.BanGate(wire.BannedMayAccess),
 		wire.RequestDeadline(reg),
 		middleware.RateLimitMiddleware(limiter),
 		admission.DrainGate(admission.DrainFromRegistry(reg)),

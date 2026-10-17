@@ -107,12 +107,12 @@ type ServerConfig struct {
 	PresenceBatchWindow       time.Duration `json:"presenceBatchWindow"`
 
 	// Security
-	EnableAuthentication bool       `json:"enableAuthentication"`
-	TrustedPeers         []string   `json:"trustedPeers"`
+	EnableAuthentication bool     `json:"enableAuthentication"`
+	TrustedPeers         []string `json:"trustedPeers"`
 	// Moderators may use the moderation protocol (internal/protocol/moa):
 	// ban and unban peers, remove posts. Empty: nobody may.
-	Moderators []string `json:"moderators"`
-	RateLimits           RateLimits `json:"rateLimits"`
+	Moderators []string   `json:"moderators"`
+	RateLimits RateLimits `json:"rateLimits"`
 
 	// RelayTopics are GossipSub topics this server forwards without using
 	// them, so peers connected only through it can reach each other on them

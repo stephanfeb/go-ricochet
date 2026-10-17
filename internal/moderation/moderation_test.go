@@ -20,8 +20,12 @@ import (
 
 type addrs struct{}
 
-func (addrs) LocalMultiaddr() multiaddr.Multiaddr  { return multiaddr.StringCast("/ip4/127.0.0.1/tcp/1") }
-func (addrs) RemoteMultiaddr() multiaddr.Multiaddr { return multiaddr.StringCast("/ip4/127.0.0.1/tcp/2") }
+func (addrs) LocalMultiaddr() multiaddr.Multiaddr {
+	return multiaddr.StringCast("/ip4/127.0.0.1/tcp/1")
+}
+func (addrs) RemoteMultiaddr() multiaddr.Multiaddr {
+	return multiaddr.StringCast("/ip4/127.0.0.1/tcp/2")
+}
 
 // refuseAll stands in for the trust gater with nobody trusted.
 type refuseAll struct{}
@@ -38,7 +42,7 @@ func (refuseAll) InterceptUpgraded(network.Conn) (bool, control.DisconnectReason
 
 var quiet = slog.New(slog.NewTextHandler(io.Discard, nil))
 
-func TestABannedPeerIsRefusedEveryWayAndOthersAreNot(t *testing.T) {
+func TestTheServerNeverDialsABannedPeerButLetsItConnect(t *testing.T) {
 	ctx := context.Background()
 	bans := moderation.NewBans(storagetest.New())
 	mallory, bob, mod := protocoltest.PeerID(t), protocoltest.PeerID(t), protocoltest.PeerID(t)
@@ -47,26 +51,25 @@ func TestABannedPeerIsRefusedEveryWayAndOthersAreNot(t *testing.T) {
 	}
 	g := moderation.NewGater(bans, nil, quiet)
 
-	for _, dir := range []network.Direction{network.DirInbound, network.DirOutbound} {
-		if g.InterceptSecured(dir, mallory, addrs{}) {
-			t.Errorf("banned peer admitted %v", dir)
-		}
-		if !g.InterceptSecured(dir, bob, addrs{}) {
-			t.Errorf("other peer refused %v", dir)
-		}
+	// It may connect, to read its ban notice; RestrictStreams limits what it reaches.
+	if !g.InterceptSecured(network.DirInbound, mallory, addrs{}) {
+		t.Error("a banned peer cannot connect to read its notice")
+	}
+	if g.InterceptSecured(network.DirOutbound, mallory, addrs{}) {
+		t.Error("an outbound connection to a banned peer was allowed")
 	}
 	if g.InterceptPeerDial(mallory) || g.InterceptAddrDial(mallory, addrs{}.RemoteMultiaddr()) {
 		t.Error("the server would dial a banned peer")
 	}
-	if !g.InterceptPeerDial(bob) {
+	if !g.InterceptPeerDial(bob) || !g.InterceptSecured(network.DirOutbound, bob, addrs{}) {
 		t.Error("the server would not dial another peer")
 	}
 
 	if _, err := bans.Unban(ctx, mallory); err != nil {
 		t.Fatal(err)
 	}
-	if !g.InterceptSecured(network.DirInbound, mallory, addrs{}) {
-		t.Error("unbanned peer still refused")
+	if !g.InterceptPeerDial(mallory) {
+		t.Error("an unbanned peer is still not dialled")
 	}
 }
 

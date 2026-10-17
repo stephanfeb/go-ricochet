@@ -442,10 +442,13 @@ hop count advanced, and it is refused past the hop limit.
 `security.moderators` names the peers that may use the moderation protocol,
 `/ricochet/moderation/1.0.0` (operations `ban`, `unban`, `getBan`,
 `listBans`, `removePost`); anyone else is refused before the request is read.
-A banned peer is refused on every connection, in and out, by a connection
-gater (so no protocol, DHT and GossipSub included, serves it), its open
-connections are closed, its directory listing is removed, and its documents,
-feeds and collections are hidden from everyone else. Nothing of theirs is
+A banned peer's open connections are closed and the server never dials it
+again. It may connect, but only to learn it is banned and why: it reaches
+only the Ricochet protocols (no DHT, GossipSub or relay), and every request
+there is refused with a `banned` answer except reading, acknowledging and
+deleting the messages in its own `trust-safety` folder, where Trust &
+Safety's ban notice is. Its directory listing is removed, and its
+documents, feeds and collections are hidden from everyone else. Nothing of theirs is
 deleted, so `unban` brings it all back. Bans are kept in `peer_bans` and
 loaded at start. `removePost` deletes one microblog post by its id: the
 author's entry and their edits and reactions of it, the post's replies
