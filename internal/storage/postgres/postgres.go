@@ -891,8 +891,11 @@ func (s *PostgresStorage) ListDocuments(ctx context.Context, ownerID, readerID p
 
 func (s *PostgresStorage) GetDocumentHistory(ctx context.Context, ownerID peer.ID, path string, maxVersions *int) ([]*storage.DocumentVersionRecord, error) {
 	doc, err := s.HeadDocument(ctx, ownerID, path)
-	if err != nil || doc == nil {
+	if err != nil {
 		return nil, err
+	}
+	if doc == nil {
+		return nil, storage.ErrDocumentNotFound
 	}
 
 	// A listing reports sizes, so the size is measured in the database and
@@ -931,8 +934,11 @@ func (s *PostgresStorage) GetDocumentHistory(ctx context.Context, ownerID peer.I
 
 func (s *PostgresStorage) GetDocumentAtVersion(ctx context.Context, ownerID peer.ID, path string, versionNumber int) (*storage.DocumentVersionRecord, error) {
 	doc, err := s.HeadDocument(ctx, ownerID, path)
-	if err != nil || doc == nil {
+	if err != nil {
 		return nil, err
+	}
+	if doc == nil {
+		return nil, storage.ErrDocumentNotFound
 	}
 
 	var r storage.DocumentVersionRecord
@@ -946,7 +952,7 @@ func (s *PostgresStorage) GetDocumentAtVersion(ctx context.Context, ownerID peer
 		&r.ContentHash, &r.ContentType, &r.CreatedAt, &r.CreatedByPeerID)
 
 	if err == pgx.ErrNoRows {
-		return nil, nil
+		return nil, storage.ErrDocumentNotFound
 	}
 	if err != nil {
 		return nil, err

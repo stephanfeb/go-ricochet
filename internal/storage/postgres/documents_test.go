@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -294,6 +295,30 @@ func TestPutDocumentArchivesPreviousVersion(t *testing.T) {
 	}
 	if string(current.Content) != "v2-body" {
 		t.Fatalf("current body is %q, want %q", current.Content, "v2-body")
+	}
+}
+
+// TestDocumentHistoryNotFound pins the not-found contract the SDA handler
+// maps to 404: a version that is not stored, and a document that does not
+// exist, are ErrDocumentNotFound. A nil record with no error once reached the
+// HISTORY handler, which dereferenced it and closed the stream with no reply.
+func TestDocumentHistoryNotFound(t *testing.T) {
+	store := newTestStorage(t)
+	ctx := context.Background()
+	owner := newTestPeer(t)
+	const path = "vault/unversioned"
+
+	if _, err := store.PutDocument(ctx, owner, path, []byte("body"), "text/plain", owner, nil, nil); err != nil {
+		t.Fatalf("put: %v", err)
+	}
+	if v, err := store.GetDocumentAtVersion(ctx, owner, path, 7); !errors.Is(err, storage.ErrDocumentNotFound) {
+		t.Errorf("unstored version = %+v, %v; want ErrDocumentNotFound", v, err)
+	}
+	if v, err := store.GetDocumentAtVersion(ctx, owner, "vault/missing", 1); !errors.Is(err, storage.ErrDocumentNotFound) {
+		t.Errorf("version of a missing document = %+v, %v; want ErrDocumentNotFound", v, err)
+	}
+	if vs, err := store.GetDocumentHistory(ctx, owner, "vault/missing", nil); !errors.Is(err, storage.ErrDocumentNotFound) {
+		t.Errorf("history of a missing document = %+v, %v; want ErrDocumentNotFound", vs, err)
 	}
 }
 

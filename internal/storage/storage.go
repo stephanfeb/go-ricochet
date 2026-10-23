@@ -91,6 +91,8 @@ type Storage interface {
 	// afterPath is a keyset cursor ("" for the first page); the bool reports
 	// whether more rows follow the returned page.
 	ListDocuments(ctx context.Context, ownerID, readerID peer.ID, afterPath string, limit int) ([]*DocumentSummary, bool, error)
+	// GetDocumentHistory and GetDocumentAtVersion return ErrDocumentNotFound
+	// when the document, or the requested version of it, is not stored.
 	GetDocumentHistory(ctx context.Context, ownerID peer.ID, path string, maxVersions *int) ([]*DocumentVersionRecord, error)
 	GetDocumentAtVersion(ctx context.Context, ownerID peer.ID, path string, versionNumber int) (*DocumentVersionRecord, error)
 

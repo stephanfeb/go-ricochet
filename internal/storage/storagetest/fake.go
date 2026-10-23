@@ -662,7 +662,7 @@ func (f *Fake) GetDocumentAtVersion(_ context.Context, owner peer.ID, path strin
 			return &cp, nil
 		}
 	}
-	return nil, nil
+	return nil, storage.ErrDocumentNotFound
 }
 
 // ---------------------------------------------------------------------------

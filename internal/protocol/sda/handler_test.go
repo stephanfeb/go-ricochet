@@ -163,6 +163,24 @@ func TestListAndHistory(t *testing.T) {
 	}
 }
 
+// TestHistoryNotFound is N18: HISTORY for a version that is not stored
+// dereferenced a nil record, and the stream closed with no reply.
+func TestHistoryNotFound(t *testing.T) {
+	_, call, owner := setup(t)
+	call(owner, sda.DocRequest{Operation: sda.OpPUT, Path: "a", Body: protocoltest.Base64([]byte("a"))})
+
+	seven, one := 7, 1
+	for name, req := range map[string]sda.DocRequest{
+		"unstored version":              {Operation: sda.OpHISTORY, Path: "a", VersionNumber: &seven},
+		"version of a missing document": {Operation: sda.OpHISTORY, Path: "missing", VersionNumber: &one},
+		"history of a missing document": {Operation: sda.OpHISTORY, Path: "missing"},
+	} {
+		if resp := call(owner, req); resp == nil || resp.Status != sda.StatusNotFound {
+			t.Errorf("%s = %+v, want 404", name, resp)
+		}
+	}
+}
+
 func TestBatchPutReportsPerDocument(t *testing.T) {
 	_, call, owner := setup(t)
 	call(owner, sda.DocRequest{Operation: sda.OpPUT, Path: "existing", Body: protocoltest.Base64([]byte("v1"))})
