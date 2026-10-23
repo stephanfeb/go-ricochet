@@ -242,8 +242,8 @@ github.com/stephanfeb/go-libp2p-udx-transport v0.1.8 h1:o94n6WTgTPpclOOKXtVGfZqB
 github.com/stephanfeb/go-libp2p-udx-transport v0.1.8/go.mod h1:Yc82b1+NwNqF+6wi4Fywl5EMMscZfT9Ys+cf98KhFVo=
 github.com/stephanfeb/go-p2p-forge v0.2.1 h1:YSG5y8txtrjt6si1zBvDY9jhE/XZ3sNfNoyAUZLrr9M=
 github.com/stephanfeb/go-p2p-forge v0.2.1/go.mod h1:HNAFLBi6m5z5VhDqvlTeR/XLihugMVlpQeYEpIPrrcQ=
-github.com/stephanfeb/go-udx v0.1.4 h1:mr4IBOy+KWX5+sVYijoACw89oZ1Tg6vcd54Bw/kSH/M=
-github.com/stephanfeb/go-udx v0.1.4/go.mod h1:ahxeJ/BeoSpJBJL/pQB9MWV9nGT7QW+iAeYY7D98E1Y=
+github.com/stephanfeb/go-udx v0.2.0 h1:TmC2QTbJgjXmeMRM/ajK/nVLUtP2cllr8q95nTg6Ryc=
+github.com/stephanfeb/go-udx v0.2.0/go.mod h1:ahxeJ/BeoSpJBJL/pQB9MWV9nGT7QW+iAeYY7D98E1Y=
 github.com/stretchr/objx v0.1.0/go.mod h1:HFkY916IF+rwdDfMAkV7OtwuqBVzrE8GR6GFx+wExME=
 github.com/stretchr/testify v1.3.0/go.mod h1:M5WIy9Dh21IEIfnGCwXGc5bZfKNJtfHm1UVUgZn+9EI=
 github.com/stretchr/testify v1.4.0/go.mod h1:j7eGeouHqKxXV5pUuKE4zz7dFj8WfuZ+81PSLYec5m4=
