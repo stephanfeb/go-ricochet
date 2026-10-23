@@ -23,3 +23,10 @@ config.local.yaml
 # Claude Code local state (shared .claude/settings.json stays tracked).
 /.claude/settings.local.json
 /.claude/worktrees/
+
+# Beads / Dolt files (added by bd init)
+.dolt/
+*.db
+.beads-credential-key
+.beads/proxieddb/
+*.gate.lock*

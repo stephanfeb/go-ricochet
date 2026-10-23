@@ -1,0 +1,7 @@
+{
+  "database": "dolt",
+  "backend": "dolt",
+  "dolt_mode": "embedded",
+  "dolt_database": "ricochet",
+  "project_id": "50b8e88f-72a7-4acd-9311-fb5683e68c0b"
+}
