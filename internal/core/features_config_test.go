@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 func writeConfig(t *testing.T, body string) string {
@@ -113,5 +115,22 @@ func TestConnectionURIEscapesEveryField(t *testing.T) {
 	got = cfg.ConnectionURI()
 	if want := "postgresql://ricochet@db.example.com:5432/ricochet?sslmode=require"; got != want {
 		t.Errorf("empty password: got %s, want %s", got, want)
+	}
+}
+
+// N25: a Unix-socket directory as the host went into the URL's authority,
+// and pgx refused it at startup ("invalid URL escape %2F").
+func TestConnectionURIWithASocketDirectory(t *testing.T) {
+	cfg := &PostgresConfig{
+		Host: "/var/run/postgresql", Port: 5433, Database: "ricochet",
+		Username: "ricochet", Password: "p@ss:w/rd", SSLMode: "disable",
+	}
+	pc, err := pgconn.ParseConfig(cfg.ConnectionURI())
+	if err != nil {
+		t.Fatalf("pgx refused %s: %v", cfg.ConnectionURI(), err)
+	}
+	if pc.Host != "/var/run/postgresql" || pc.Port != 5433 || pc.Database != "ricochet" ||
+		pc.User != "ricochet" || pc.Password != "p@ss:w/rd" {
+		t.Errorf("parsed host %q port %d db %q user %q password %q", pc.Host, pc.Port, pc.Database, pc.User, pc.Password)
 	}
 }

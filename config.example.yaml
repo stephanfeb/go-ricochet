@@ -119,7 +119,7 @@ storage:
 
 # PostgreSQL configuration
 database:
-  host: localhost
+  host: localhost  # or a Unix-socket directory, e.g. /var/run/postgresql
   port: 5432
   name: ricochet
   username: ricochet

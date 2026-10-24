@@ -453,18 +453,27 @@ type PostgresConfig struct {
 // reserved characters, or no password at all, cannot shift the fields that
 // follow it. Formatting "password=%s sslmode=%s" with an empty password once
 // produced a password of "sslmode=disable" and a default sslmode.
+//
+// A host starting with "/" is a Unix-socket directory. It cannot be the URL's
+// authority (pgx refuses the escaped slashes), so it travels as the host and
+// port query parameters, which libpq and pgx both read.
 func (c *PostgresConfig) ConnectionURI() string {
 	u := url.URL{
 		Scheme: "postgresql",
-		Host:   net.JoinHostPort(c.Host, strconv.Itoa(c.Port)),
 		Path:   "/" + c.Database,
+	}
+	q := url.Values{}
+	if strings.HasPrefix(c.Host, "/") {
+		q.Set("host", c.Host)
+		q.Set("port", strconv.Itoa(c.Port))
+	} else {
+		u.Host = net.JoinHostPort(c.Host, strconv.Itoa(c.Port))
 	}
 	if c.Password != "" {
 		u.User = url.UserPassword(c.Username, c.Password)
 	} else {
 		u.User = url.User(c.Username)
 	}
-	q := url.Values{}
 	if c.SSLMode != "" {
 		q.Set("sslmode", c.SSLMode)
 	}
