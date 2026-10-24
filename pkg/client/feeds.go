@@ -250,11 +250,22 @@ func (c *Client) GetFeedEntry(ctx context.Context, ownerPeerID peer.ID, path str
 	return entry, nil
 }
 
-// GetFeedEntries retrieves a range of feed entries.
+// defaultFeedEntryLimit is the page size the server applies to a range with
+// no limit of its own.
+const defaultFeedEntryLimit = 50
+
+// GetFeedEntries retrieves a range of feed entries. With no from, to or limit
+// it returns the first page of the feed.
 func (c *Client) GetFeedEntries(ctx context.Context, ownerPeerID peer.ID, path string, opts ...FeedEntryOption) ([]*FeedEntry, bool, error) {
 	cfg := feedEntryConfig{}
 	for _, o := range opts {
 		o(&cfg)
+	}
+	// A GET naming no sequence and no range is the feed-metadata request, so
+	// a range with no bounds of its own carries the default limit.
+	if cfg.FromSequence == nil && cfg.ToSequence == nil && cfg.Limit == nil {
+		limit := defaultFeedEntryLimit
+		cfg.Limit = &limit
 	}
 
 	req := &sfa.FeedRequest{
