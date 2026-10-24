@@ -155,6 +155,10 @@ func TestHeadDocument(t *testing.T) {
 	if meta.ContentType != "application/json" {
 		t.Errorf("content type: got %s, want application/json", meta.ContentType)
 	}
+	// N20: the client read HEAD's RFC 3339 Last-Modified as 0.
+	if since := time.Since(time.UnixMilli(meta.LastModified)); since < 0 || since > time.Minute {
+		t.Errorf("last modified: got %d, want the put's time in Unix milliseconds", meta.LastModified)
+	}
 }
 
 func TestDeleteDocument(t *testing.T) {

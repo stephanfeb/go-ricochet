@@ -62,6 +62,7 @@ func TestPutGetHeadDelete(t *testing.T) {
 		t.Errorf("get headers = %+v, want ETag %s, content type, version 2", resp.Headers, etag)
 	}
 
+	got := resp
 	resp = call(owner, sda.DocRequest{Operation: sda.OpGET, Path: "notes/a", Headers: map[string]string{"If-None-Match": etag}})
 	if resp.Status != sda.StatusNotModified || resp.Body != "" {
 		t.Errorf("conditional get: %+v, want 304 with no body", resp)
@@ -70,6 +71,13 @@ func TestPutGetHeadDelete(t *testing.T) {
 	resp = call(owner, sda.DocRequest{Operation: sda.OpHEAD, Path: "notes/a"})
 	if resp.Status != sda.StatusOK || resp.Body != "" || header(resp, "ETag") != etag {
 		t.Errorf("head: %+v, want 200, no body, the ETag", resp)
+	}
+	// N20: HEAD sent Last-Modified as RFC 3339 and Version as a string, so
+	// clients reading GET's Unix milliseconds and number read nothing.
+	for _, k := range []string{"Last-Modified", "Version"} {
+		if resp.Headers[k] != got.Headers[k] {
+			t.Errorf("head %s = %#v, want %#v as GET sends it", k, resp.Headers[k], got.Headers[k])
+		}
 	}
 	if resp.Headers["Content-Length"] != float64(len(`{"name":"second"}`)) {
 		t.Errorf("head Content-Length = %v", resp.Headers["Content-Length"])

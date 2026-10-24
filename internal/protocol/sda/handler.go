@@ -532,8 +532,8 @@ func handleHead(sc *forge.StreamContext, next func()) {
 			"ETag":           doc.ContentHash,
 			"Content-Type":   doc.ContentType,
 			"Content-Length": doc.ContentLength,
-			"Last-Modified":  doc.UpdatedAt.Format(time.RFC3339),
-			"Version":        fmt.Sprintf("%d", doc.VersionNumber),
+			"Last-Modified":  doc.UpdatedAt.UnixMilli(),
+			"Version":        doc.VersionNumber,
 			"Visibility":     doc.Visibility.String(),
 		},
 	}
