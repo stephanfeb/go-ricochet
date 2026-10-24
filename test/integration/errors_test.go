@@ -305,3 +305,24 @@ func TestAdminFailuresAreTyped(t *testing.T) {
 		t.Errorf("status = %d, want 429", client.Status(err))
 	}
 }
+
+// N24: the admin handler's own refusals carried no status, so the client read
+// a missing mailbox or a missing field as a 500, and GetMailboxInfo returned
+// an untyped error.
+func TestAdminRefusalsCarryTheirStatus(t *testing.T) {
+	server := newTestServer(t)
+	cl := newTestClient(t, server)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	if _, err := cl.GetMailboxInfo(ctx, "never-created"); !errors.Is(err, client.ErrNotFound) {
+		t.Errorf("info of a missing mailbox: err = %v (%T), want ErrNotFound", err, err)
+	}
+	if err := cl.GrantAccess(ctx, "never-created", cl.PeerID(), core.AccessReadOnly); !errors.Is(err, client.ErrNotFound) {
+		t.Errorf("grant on a missing mailbox: err = %v (%T), want ErrNotFound", err, err)
+	}
+	if err := cl.CreateMailbox(ctx, "", core.MailboxPrivate); client.Status(err) != 400 {
+		t.Errorf("create with no folder: err = %v, status %d, want 400", err, client.Status(err))
+	}
+}

@@ -238,6 +238,13 @@ func failed(sc *forge.StreamContext, prefix string, err error) *AdminResponse {
 	}
 }
 
+// refusal answers a request the handler itself rejects, before any storage
+// error is involved. The status is what the client types the error by: with
+// none, it read every refusal as a 500.
+func refusal(status int, message string) *AdminResponse {
+	return &AdminResponse{Success: false, ErrorMessage: message, Status: status}
+}
+
 // handleCreateMailbox creates a new mailbox for the caller.
 func handleCreateMailbox(sc *forge.StreamContext, next func()) {
 	req := sc.Request.(*AdminRequest)
@@ -256,20 +263,20 @@ func handleCreateMailbox(sc *forge.StreamContext, next func()) {
 		var err error
 		mbType, err = core.MailboxTypeFromString(req.MailboxType)
 		if err != nil {
-			sc.Response = &AdminResponse{Success: false, ErrorMessage: fmt.Sprintf("invalid mailbox type: %s", req.MailboxType)}
+			sc.Response = refusal(wire.StatusBadRequest, fmt.Sprintf("invalid mailbox type: %s", req.MailboxType))
 			return
 		}
 	}
 
 	folderPath := req.FolderPath
 	if folderPath == "" {
-		sc.Response = &AdminResponse{Success: false, ErrorMessage: "folderPath is required"}
+		sc.Response = refusal(wire.StatusBadRequest, "folderPath is required")
 		return
 	}
 
 	addr, err := core.NewMailboxAddress(callerID, folderPath, mbType)
 	if err != nil {
-		sc.Response = &AdminResponse{Success: false, ErrorMessage: fmt.Sprintf("invalid mailbox address: %v", err)}
+		sc.Response = refusal(wire.StatusBadRequest, fmt.Sprintf("invalid mailbox address: %v", err))
 		return
 	}
 
@@ -278,7 +285,7 @@ func handleCreateMailbox(sc *forge.StreamContext, next func()) {
 		req.MaxMessages, req.RetentionDays, req.RetentionCount,
 		defaults.MaxMessages, defaults.RetentionDays, nil)
 	if err != nil {
-		sc.Response = &AdminResponse{Success: false, ErrorMessage: err.Error()}
+		sc.Response = refusal(wire.StatusBadRequest, err.Error())
 		return
 	}
 
@@ -309,7 +316,7 @@ func handleDeleteMailbox(sc *forge.StreamContext, next func()) {
 	}
 
 	if req.FolderPath == "" {
-		sc.Response = &AdminResponse{Success: false, ErrorMessage: "folderPath is required"}
+		sc.Response = refusal(wire.StatusBadRequest, "folderPath is required")
 		return
 	}
 
@@ -344,18 +351,18 @@ func handleGrantAccess(sc *forge.StreamContext, next func()) {
 	}
 
 	if req.FolderPath == "" {
-		sc.Response = &AdminResponse{Success: false, ErrorMessage: "folderPath is required"}
+		sc.Response = refusal(wire.StatusBadRequest, "folderPath is required")
 		return
 	}
 
 	if req.GranteePeerID == "" {
-		sc.Response = &AdminResponse{Success: false, ErrorMessage: "granteePeerId is required"}
+		sc.Response = refusal(wire.StatusBadRequest, "granteePeerId is required")
 		return
 	}
 
 	granteePeerID, err := peer.Decode(req.GranteePeerID)
 	if err != nil {
-		sc.Response = &AdminResponse{Success: false, ErrorMessage: fmt.Sprintf("invalid grantee peer ID: %v", err)}
+		sc.Response = refusal(wire.StatusBadRequest, fmt.Sprintf("invalid grantee peer ID: %v", err))
 		return
 	}
 
@@ -363,7 +370,7 @@ func handleGrantAccess(sc *forge.StreamContext, next func()) {
 	if req.AccessMode != "" {
 		accessMode, err = core.AccessModeFromString(req.AccessMode)
 		if err != nil {
-			sc.Response = &AdminResponse{Success: false, ErrorMessage: fmt.Sprintf("invalid access mode: %v", err)}
+			sc.Response = refusal(wire.StatusBadRequest, fmt.Sprintf("invalid access mode: %v", err))
 			return
 		}
 	}
@@ -377,7 +384,7 @@ func handleGrantAccess(sc *forge.StreamContext, next func()) {
 		return
 	}
 	if record == nil {
-		sc.Response = &AdminResponse{Success: false, ErrorMessage: "mailbox not found"}
+		sc.Response = refusal(wire.StatusNotFound, "mailbox not found")
 		return
 	}
 
@@ -407,18 +414,18 @@ func handleRevokeAccess(sc *forge.StreamContext, next func()) {
 	}
 
 	if req.FolderPath == "" {
-		sc.Response = &AdminResponse{Success: false, ErrorMessage: "folderPath is required"}
+		sc.Response = refusal(wire.StatusBadRequest, "folderPath is required")
 		return
 	}
 
 	if req.GranteePeerID == "" {
-		sc.Response = &AdminResponse{Success: false, ErrorMessage: "granteePeerId is required"}
+		sc.Response = refusal(wire.StatusBadRequest, "granteePeerId is required")
 		return
 	}
 
 	granteePeerID, err := peer.Decode(req.GranteePeerID)
 	if err != nil {
-		sc.Response = &AdminResponse{Success: false, ErrorMessage: fmt.Sprintf("invalid grantee peer ID: %v", err)}
+		sc.Response = refusal(wire.StatusBadRequest, fmt.Sprintf("invalid grantee peer ID: %v", err))
 		return
 	}
 
@@ -431,7 +438,7 @@ func handleRevokeAccess(sc *forge.StreamContext, next func()) {
 		return
 	}
 	if record == nil {
-		sc.Response = &AdminResponse{Success: false, ErrorMessage: "mailbox not found"}
+		sc.Response = refusal(wire.StatusNotFound, "mailbox not found")
 		return
 	}
 
@@ -460,7 +467,7 @@ func handleListACL(sc *forge.StreamContext, next func()) {
 	}
 
 	if req.FolderPath == "" {
-		sc.Response = &AdminResponse{Success: false, ErrorMessage: "folderPath is required"}
+		sc.Response = refusal(wire.StatusBadRequest, "folderPath is required")
 		return
 	}
 
@@ -473,7 +480,7 @@ func handleListACL(sc *forge.StreamContext, next func()) {
 		return
 	}
 	if record == nil {
-		sc.Response = &AdminResponse{Success: false, ErrorMessage: "mailbox not found"}
+		sc.Response = refusal(wire.StatusNotFound, "mailbox not found")
 		return
 	}
 
@@ -540,7 +547,7 @@ func handleUpdateConfig(sc *forge.StreamContext, next func()) {
 	callerID := sc.PeerID
 
 	if req.FolderPath == "" {
-		sc.Response = &AdminResponse{Success: false, ErrorMessage: "folderPath is required"}
+		sc.Response = refusal(wire.StatusBadRequest, "folderPath is required")
 		return
 	}
 
@@ -552,7 +559,7 @@ func handleUpdateConfig(sc *forge.StreamContext, next func()) {
 		return
 	}
 	if record == nil {
-		sc.Response = &AdminResponse{Success: false, ErrorMessage: "mailbox not found"}
+		sc.Response = refusal(wire.StatusNotFound, "mailbox not found")
 		return
 	}
 
@@ -561,7 +568,7 @@ func handleUpdateConfig(sc *forge.StreamContext, next func()) {
 		req.MaxMessages, req.RetentionDays, req.RetentionCount,
 		record.MaxMessages, record.RetentionDays, record.RetentionCount)
 	if err != nil {
-		sc.Response = &AdminResponse{Success: false, ErrorMessage: err.Error()}
+		sc.Response = refusal(wire.StatusBadRequest, err.Error())
 		return
 	}
 
@@ -585,7 +592,7 @@ func handleGetMailboxInfo(sc *forge.StreamContext, next func()) {
 	callerID := sc.PeerID
 
 	if req.FolderPath == "" {
-		sc.Response = &AdminResponse{Success: false, ErrorMessage: "folderPath is required"}
+		sc.Response = refusal(wire.StatusBadRequest, "folderPath is required")
 		return
 	}
 
@@ -597,7 +604,7 @@ func handleGetMailboxInfo(sc *forge.StreamContext, next func()) {
 		return
 	}
 	if record == nil {
-		sc.Response = &AdminResponse{Success: false, ErrorMessage: "mailbox not found"}
+		sc.Response = refusal(wire.StatusNotFound, "mailbox not found")
 		return
 	}
 

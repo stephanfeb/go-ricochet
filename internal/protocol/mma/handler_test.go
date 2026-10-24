@@ -197,3 +197,29 @@ func TestMalformedAdminRequests(t *testing.T) {
 		t.Errorf("unparseable request: %+v, want 400", resp)
 	}
 }
+
+// N24: refusals the handler makes itself carried no status, which clients
+// read as a 500.
+func TestRefusalsCarryAStatus(t *testing.T) {
+	_, call, owner := setup(t)
+	grantee := protocoltest.PeerID(t).String()
+	for name, c := range map[string]struct {
+		req  mma.AdminRequest
+		want int
+	}{
+		"create, no folder": {mma.AdminRequest{OperationType: mma.OpCreateMailbox}, wire.StatusBadRequest},
+		"create, bad type":  {mma.AdminRequest{OperationType: mma.OpCreateMailbox, FolderPath: "x", MailboxType: "nonsense"}, wire.StatusBadRequest},
+		"grant, no folder":  {mma.AdminRequest{OperationType: mma.OpGrantAccess, GranteePeerID: grantee, AccessMode: "readOnly"}, wire.StatusBadRequest},
+		"grant, no grantee": {mma.AdminRequest{OperationType: mma.OpGrantAccess, FolderPath: "x", AccessMode: "readOnly"}, wire.StatusBadRequest},
+		"grant, missing":    {mma.AdminRequest{OperationType: mma.OpGrantAccess, FolderPath: "missing", GranteePeerID: grantee, AccessMode: "readOnly"}, wire.StatusNotFound},
+		"revoke, missing":   {mma.AdminRequest{OperationType: mma.OpRevokeAccess, FolderPath: "missing", GranteePeerID: grantee}, wire.StatusNotFound},
+		"list ACL, missing": {mma.AdminRequest{OperationType: mma.OpListACL, FolderPath: "missing"}, wire.StatusNotFound},
+		"update, missing":   {mma.AdminRequest{OperationType: mma.OpUpdateConfig, FolderPath: "missing"}, wire.StatusNotFound},
+		"info, missing":     {mma.AdminRequest{OperationType: mma.OpGetMailboxInfo, FolderPath: "missing"}, wire.StatusNotFound},
+		"info, no folder":   {mma.AdminRequest{OperationType: mma.OpGetMailboxInfo}, wire.StatusBadRequest},
+	} {
+		if resp := call(owner, c.req); resp.Success || resp.Status != c.want {
+			t.Errorf("%s: %+v, want status %d", name, resp, c.want)
+		}
+	}
+}

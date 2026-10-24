@@ -938,13 +938,16 @@ func (c *Client) GetMailboxInfo(ctx context.Context, folderPath string) (*Mailbo
 	var envelope struct {
 		Success      bool           `json:"success"`
 		ErrorMessage string         `json:"errorMessage"`
+		Status       int            `json:"status"`
+		RetryAfterMs int64          `json:"retryAfterMs"`
 		Data         *MailboxDetail `json:"data"`
 	}
 	if err := json.Unmarshal(respData, &envelope); err != nil {
 		return nil, fmt.Errorf("unmarshal mailbox info: %w", err)
 	}
 	if !envelope.Success {
-		return nil, fmt.Errorf("admin operation %s failed: %s", req.OperationType, envelope.ErrorMessage)
+		return nil, statusError("admin operation "+req.OperationType,
+			failureStatus(envelope.Status), envelope.ErrorMessage, envelope.RetryAfterMs)
 	}
 	if envelope.Data == nil {
 		return nil, fmt.Errorf("mailbox info response had no data")
