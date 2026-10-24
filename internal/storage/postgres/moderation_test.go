@@ -115,7 +115,7 @@ func TestDeleteDocumentsWithPrefixTakesOnlyThatPrefix(t *testing.T) {
 		owner peer.ID
 		path  string
 	}{{owner, "microblog/media/p_1-img0"}, {owner, "microblog/media/p_1-img1"}, {owner, "microblog/media/pX1-img0"}, {other, "microblog/media/p_1-img0"}} {
-		if _, err := s.PutDocument(ctx, d.owner, d.path, []byte{1}, "image/jpeg", d.owner, nil, nil); err != nil {
+		if _, err := s.PutDocument(ctx, d.owner, d.path, []byte{1}, "image/jpeg", d.owner, nil, storage.DocumentWriteOptions{}); err != nil {
 			t.Fatal(err)
 		}
 		t.Cleanup(func() { _, _ = s.DeleteDocument(ctx, d.owner, d.path) })

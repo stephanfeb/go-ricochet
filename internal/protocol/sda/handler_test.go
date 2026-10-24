@@ -6,13 +6,14 @@ import (
 
 	"github.com/libp2p/go-libp2p/core/peer"
 
+	"github.com/stephanfeb/go-ricochet/internal/core"
 	"github.com/stephanfeb/go-ricochet/internal/protocol/protocoltest"
 	"github.com/stephanfeb/go-ricochet/internal/protocol/sda"
 )
 
-func setup(t *testing.T) (*protocoltest.Env, func(from peer.ID, req sda.DocRequest) *sda.DocResponse, peer.ID) {
+func setup(t *testing.T, configure ...func(*core.ServerConfig)) (*protocoltest.Env, func(from peer.ID, req sda.DocRequest) *sda.DocResponse, peer.ID) {
 	t.Helper()
-	env := protocoltest.New(t)
+	env := protocoltest.New(t, configure...)
 	p := sda.NewPipeline(env.Logger, env.Pool, env.Registry)
 	owner := protocoltest.PeerID(t)
 	call := func(from peer.ID, req sda.DocRequest) *sda.DocResponse {
@@ -129,7 +130,8 @@ func TestListAndHistory(t *testing.T) {
 	for _, p := range []string{"b", "a", "c"} {
 		call(owner, sda.DocRequest{Operation: sda.OpPUT, Path: p, Body: protocoltest.Base64([]byte(p))})
 	}
-	call(owner, sda.DocRequest{Operation: sda.OpPUT, Path: "a", Body: protocoltest.Base64([]byte("a2"))})
+	keep := 5
+	call(owner, sda.DocRequest{Operation: sda.OpPUT, Path: "a", Body: protocoltest.Base64([]byte("a2")), History: &keep})
 
 	two := 2
 	resp := call(owner, sda.DocRequest{Operation: sda.OpLIST, ListLimit: &two})
@@ -248,8 +250,6 @@ func TestRequestValidation(t *testing.T) {
 	}
 }
 
-func intp(n int) *int { return &n }
-
 // A document is the owner's alone until the owner says otherwise: private by
 // default, readable by the peers on its reader list once shared, by anyone
 // once public. Every read goes through the same check, history included, so
@@ -262,7 +262,8 @@ func TestDocumentVisibility(t *testing.T) {
 	body := protocoltest.Base64([]byte(`{"v":1}`))
 
 	call(owner, sda.DocRequest{Operation: sda.OpPUT, Path: "diary", Body: body})
-	call(owner, sda.DocRequest{Operation: sda.OpPUT, Path: "diary", Body: protocoltest.Base64([]byte(`{"v":2}`))})
+	keep := 5
+	call(owner, sda.DocRequest{Operation: sda.OpPUT, Path: "diary", Body: protocoltest.Base64([]byte(`{"v":2}`)), History: &keep})
 	call(owner, sda.DocRequest{Operation: sda.OpPUT, Path: "blog", Body: body, Visibility: "public"})
 
 	one := 1
@@ -399,3 +400,89 @@ func TestDocumentVisibility(t *testing.T) {
 		t.Errorf("access of an absent document: %+v, want 404", resp)
 	}
 }
+
+// N19: history could never be turned on. It is off until the owner sets it
+// on a PUT, the setting applies to that PUT, it is clamped to the server's
+// ceiling, and RESTORE brings a kept version back.
+func TestDocumentHistorySetting(t *testing.T) {
+	_, call, owner := setup(t, func(cfg *core.ServerConfig) { cfg.MaxDocumentHistoryVersions = 2 })
+	put := func(body string, history *int) *sda.DocResponse {
+		t.Helper()
+		return call(owner, sda.DocRequest{Operation: sda.OpPUT, Path: "notes", Body: protocoltest.Base64([]byte(body)), History: history})
+	}
+	kept := func() []int {
+		t.Helper()
+		resp := call(owner, sda.DocRequest{Operation: sda.OpHISTORY, Path: "notes"})
+		var vs []struct {
+			Version int `json:"versionNumber"`
+		}
+		if err := json.Unmarshal(protocoltest.FromBase64(t, resp.Body), &vs); err != nil {
+			t.Fatalf("history: %+v: %v", resp, err)
+		}
+		out := []int{}
+		for _, v := range vs {
+			out = append(out, v.Version)
+		}
+		return out
+	}
+	historyHeader := func() any {
+		return call(owner, sda.DocRequest{Operation: sda.OpHEAD, Path: "notes"}).Headers["History"]
+	}
+
+	put("v1", nil)
+	put("v2", nil)
+	if got := kept(); len(got) != 0 || historyHeader() != float64(0) {
+		t.Fatalf("history off by default: kept %v, header %v; want none and 0", got, historyHeader())
+	}
+
+	ten, zero, negative := 10, 0, -1
+	put("v3", &ten) // replaces v2, which is the first version kept
+	if got := kept(); len(got) != 1 || got[0] != 2 {
+		t.Errorf("after turning history on: kept %v, want [2]", got)
+	}
+	if historyHeader() != float64(2) {
+		t.Errorf("History header = %v, want 2 (10 clamped to the ceiling)", historyHeader())
+	}
+	put("v4", nil)
+	put("v5", nil)
+	if got := kept(); len(got) != 2 || got[0] != 4 || got[1] != 3 {
+		t.Errorf("after two more writes: kept %v, want [4 3] (pruned to the ceiling)", got)
+	}
+
+	resp := call(owner, sda.DocRequest{Operation: sda.OpRESTORE, Path: "notes", VersionNumber: intp(3)})
+	if resp.Status != sda.StatusOK || resp.Headers["Version"] != float64(6) {
+		t.Fatalf("restore v3: %+v, want 200 and version 6", resp)
+	}
+	if got := call(owner, sda.DocRequest{Operation: sda.OpGET, Path: "notes"}); string(protocoltest.FromBase64(t, got.Body)) != "v3" {
+		t.Errorf("after restoring v3 the body is %q", protocoltest.FromBase64(t, got.Body))
+	}
+	if got := kept(); len(got) != 2 || got[0] != 5 {
+		t.Errorf("after restore: kept %v, want v5 (the version restore replaced) first", got)
+	}
+
+	stale := "sha256:stale"
+	for name, c := range map[string]struct {
+		from peer.ID
+		req  sda.DocRequest
+		want int
+	}{
+		"version not kept": {owner, sda.DocRequest{Operation: sda.OpRESTORE, Path: "notes", VersionNumber: intp(1)}, sda.StatusNotFound},
+		"no version":       {owner, sda.DocRequest{Operation: sda.OpRESTORE, Path: "notes"}, sda.StatusBadRequest},
+		"missing document": {owner, sda.DocRequest{Operation: sda.OpRESTORE, Path: "nothing", VersionNumber: intp(1)}, sda.StatusNotFound},
+		"stale If-Match": {owner, sda.DocRequest{Operation: sda.OpRESTORE, Path: "notes", VersionNumber: intp(5),
+			Headers: map[string]string{"If-Match": stale}}, sda.StatusConflict},
+		"not the owner":    {protocoltest.PeerID(t), sda.DocRequest{Operation: sda.OpRESTORE, Path: "notes", VersionNumber: intp(5)}, sda.StatusForbidden},
+		"negative history": {owner, sda.DocRequest{Operation: sda.OpPUT, Path: "notes", Body: protocoltest.Base64([]byte("x")), History: &negative}, sda.StatusBadRequest},
+	} {
+		if resp := call(c.from, c.req); resp.Status != c.want {
+			t.Errorf("%s: %+v, want %d", name, resp, c.want)
+		}
+	}
+
+	put("v7", &zero)
+	if got := kept(); len(got) != 0 || historyHeader() != float64(0) {
+		t.Errorf("after turning history off: kept %v, header %v; want none and 0", got, historyHeader())
+	}
+}
+
+func intp(n int) *int { return &n }

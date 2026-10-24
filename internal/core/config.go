@@ -54,6 +54,10 @@ type ServerConfig struct {
 	// MaxEntriesPerFeed caps entries in one feed. A feed's own max_entries
 	// is a rolling window the owner chooses; this is the ceiling under it.
 	MaxEntriesPerFeed int `json:"maxEntriesPerFeed"`
+	// MaxDocumentHistoryVersions caps the earlier versions one document
+	// keeps. A document's own history setting is chosen by its owner; this
+	// is the ceiling under it, and every prune applies it.
+	MaxDocumentHistoryVersions int `json:"maxDocumentHistoryVersions"`
 	// MailboxCacheSize bounds the delivery path's cache of loaded mailboxes.
 	// It is a memory bound, not a throughput one: a miss costs one indexed
 	// SELECT, and the least recently used entry is what makes room.
@@ -484,18 +488,19 @@ func (c *PostgresConfig) ConnectionURI() string {
 // DefaultConfig returns the default server configuration.
 func DefaultConfig() *ServerConfig {
 	return &ServerConfig{
-		Port:                  55223,
-		Transports:            []string{transports.UDX},
-		ListenAddresses:       []string{"/ip4/0.0.0.0/udp/55223/udx"},
-		DataDirectory:         "./sf_storage",
-		MaxStorageBytes:       10 * 1024 * 1024 * 1024, // 10GB
-		RetentionPolicy:       30 * 24 * time.Hour,     // 30 days
-		MaxMessagesPerMailbox: 1000,
-		MaxMailboxes:          100000,
-		MaxMailboxesPerOwner:  100,
-		MaxEntriesPerFeed:     10000,
-		MailboxCacheSize:      10000,
-		NearCapacityRatio:     0.9,
+		Port:                       55223,
+		Transports:                 []string{transports.UDX},
+		ListenAddresses:            []string{"/ip4/0.0.0.0/udp/55223/udx"},
+		DataDirectory:              "./sf_storage",
+		MaxStorageBytes:            10 * 1024 * 1024 * 1024, // 10GB
+		RetentionPolicy:            30 * 24 * time.Hour,     // 30 days
+		MaxMessagesPerMailbox:      1000,
+		MaxMailboxes:               100000,
+		MaxMailboxesPerOwner:       100,
+		MaxEntriesPerFeed:          10000,
+		MaxDocumentHistoryVersions: 10,
+		MailboxCacheSize:           10000,
+		NearCapacityRatio:          0.9,
 
 		Storage: StorageBackendConfig{
 			Backend: "postgres",
@@ -667,6 +672,9 @@ func (c *ServerConfig) Validate() error {
 	if c.MaxEntriesPerFeed <= 0 {
 		return fmt.Errorf("max_entries_per_feed must be positive")
 	}
+	if c.MaxDocumentHistoryVersions <= 0 {
+		return fmt.Errorf("max_document_history_versions must be positive")
+	}
 	if c.MailboxCacheSize <= 0 {
 		return fmt.Errorf("mailbox_cache_size must be positive")
 	}
@@ -798,7 +806,9 @@ type yamlFileConfig struct {
 
 		MaxMailboxesPerOwner int `yaml:"max_mailboxes_per_owner"`
 		MaxEntriesPerFeed    int `yaml:"max_entries_per_feed"`
-		MailboxCacheSize     int `yaml:"mailbox_cache_size"`
+
+		MaxDocumentHistoryVersions int `yaml:"max_document_history_versions"`
+		MailboxCacheSize           int `yaml:"mailbox_cache_size"`
 
 		NearCapacityRatio float64 `yaml:"near_capacity_ratio"`
 	} `yaml:"storage"`
@@ -973,6 +983,9 @@ func LoadConfigFromFile(path string, base *ServerConfig) error {
 	}
 	if yc.Storage.MaxEntriesPerFeed > 0 {
 		base.MaxEntriesPerFeed = yc.Storage.MaxEntriesPerFeed
+	}
+	if yc.Storage.MaxDocumentHistoryVersions > 0 {
+		base.MaxDocumentHistoryVersions = yc.Storage.MaxDocumentHistoryVersions
 	}
 	if yc.Storage.MailboxCacheSize > 0 {
 		base.MailboxCacheSize = yc.Storage.MailboxCacheSize

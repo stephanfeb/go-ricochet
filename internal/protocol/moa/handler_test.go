@@ -166,7 +166,7 @@ func TestRemovePostTakesThePostItsEditsItsThreadAndImagesOnly(t *testing.T) {
 	h.entry(t, author, "microblog/threads/p1", replier, `{"v":2,"id":"r1","type":"create","target":{"id":"p1"}}`)
 	h.entry(t, replier, "microblog", replier, `{"v":2,"id":"x1","type":"react","target":{"id":"p1"}}`)
 	for _, path := range []string{"microblog/media/p1-img0", "microblog/media/p1-img1", "microblog/media/p2-img0"} {
-		if _, err := h.env.Store.PutDocument(ctx, author, path, []byte{1}, "image/jpeg", author, nil, nil); err != nil {
+		if _, err := h.env.Store.PutDocument(ctx, author, path, []byte{1}, "image/jpeg", author, nil, storage.DocumentWriteOptions{}); err != nil {
 			t.Fatal(err)
 		}
 	}

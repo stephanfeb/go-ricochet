@@ -293,6 +293,9 @@ type DocumentResponse struct {
 	LastModified int64  `json:"lastModified,omitempty"`
 	Content      []byte `json:"content,omitempty"`
 	Visibility   string `json:"visibility,omitempty"` // private, shared or public
+	Version      int    `json:"version,omitempty"`
+	// History is how many earlier versions the document keeps; 0 is off.
+	History int `json:"history"`
 }
 
 func (r *DocumentResponse) IsNotModified() bool { return r.Status == 304 }
@@ -306,6 +309,7 @@ type DocumentPutResponse struct {
 	ETag         string `json:"etag,omitempty"`
 	LastModified int64  `json:"lastModified,omitempty"`
 	Created      bool   `json:"created"`
+	Version      int    `json:"version,omitempty"` // set by RestoreDocumentVersion
 }
 
 func (r *DocumentPutResponse) IsSuccess() bool {
@@ -321,6 +325,20 @@ type DocumentMetadata struct {
 	LastModified  int64  `json:"lastModified"`
 	ContentLength int    `json:"contentLength"`
 	Visibility    string `json:"visibility,omitempty"`
+	Version       int    `json:"version,omitempty"`
+	// History is how many earlier versions the document keeps; 0 is off.
+	History int `json:"history"`
+}
+
+// DocumentVersion is one kept version of a document. Content is set only
+// when a single version is fetched; a listing carries the size instead.
+type DocumentVersion struct {
+	VersionNumber int    `json:"versionNumber"`
+	ContentHash   string `json:"contentHash"`
+	ContentType   string `json:"contentType"`
+	CreatedAt     int64  `json:"createdAt"` // Unix ms
+	Size          int    `json:"size"`
+	Content       []byte `json:"content,omitempty"`
 }
 
 // DocumentInfo represents a document in a LIST response.

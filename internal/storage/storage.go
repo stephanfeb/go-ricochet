@@ -19,7 +19,35 @@ const (
 
 	// MaxDocumentListLimit caps what a caller may request per page.
 	MaxDocumentListLimit = 5000
+
+	// DefaultMaxDocumentHistory is the ceiling on a document's kept versions
+	// when a write names none (DocumentWriteOptions.MaxHistory zero).
+	DefaultMaxDocumentHistory = 10
 )
+
+// DocumentWriteOptions carries what a document write sets besides the
+// content.
+type DocumentWriteOptions struct {
+	// Visibility sets who may read the document. Nil keeps an existing
+	// document's and makes a new one private.
+	Visibility *core.Visibility
+	// History sets how many earlier versions the document keeps, starting
+	// with the one this write replaces. Zero turns history off and deletes
+	// the kept versions; nil leaves the setting as it is.
+	History *int
+	// MaxHistory is the server's ceiling on kept versions, applied to History
+	// and to every prune, so a document never keeps more than the ceiling
+	// even if its own setting predates it. Zero means DefaultMaxDocumentHistory.
+	MaxHistory int
+}
+
+// HistoryCeiling is MaxHistory with its default applied.
+func (o DocumentWriteOptions) HistoryCeiling() int {
+	if o.MaxHistory > 0 {
+		return o.MaxHistory
+	}
+	return DefaultMaxDocumentHistory
+}
 
 // Storage defines the interface for Ricochet's storage backends.
 type Storage interface {
@@ -80,10 +108,17 @@ type Storage interface {
 	// HeadDocument is GetDocument without the body: every field but Content,
 	// with ContentLength measured in the database. Nil when absent.
 	HeadDocument(ctx context.Context, ownerID peer.ID, path string) (*DocumentRecord, error)
-	// PutDocument writes a document. A nil visibility keeps the existing
-	// document's, or makes a new one private.
-	PutDocument(ctx context.Context, ownerID peer.ID, path string, content []byte, contentType string, updatedBy peer.ID, ifMatch *string, visibility *core.Visibility) (*DocumentPutResult, error)
-	PatchDocument(ctx context.Context, ownerID peer.ID, path string, patch map[string]any, updatedBy peer.ID, ifMatch *string) (*DocumentPutResult, error)
+	// PutDocument writes a document. When history is on, the version it
+	// replaces is kept, and the kept versions are pruned to the ceiling.
+	PutDocument(ctx context.Context, ownerID peer.ID, path string, content []byte, contentType string, updatedBy peer.ID, ifMatch *string, opts DocumentWriteOptions) (*DocumentPutResult, error)
+	// PatchDocument merges patch into a JSON document. Only opts.MaxHistory
+	// applies: a patch changes neither visibility nor the history setting.
+	PatchDocument(ctx context.Context, ownerID peer.ID, path string, patch map[string]any, updatedBy peer.ID, ifMatch *string, opts DocumentWriteOptions) (*DocumentPutResult, error)
+	// RestoreDocumentVersion makes a kept version the current content again,
+	// as a new version (so the one it replaces is kept in turn). It returns
+	// ErrDocumentNotFound when the document or the version is not stored.
+	// Only opts.MaxHistory applies.
+	RestoreDocumentVersion(ctx context.Context, ownerID peer.ID, path string, versionNumber int, updatedBy peer.ID, ifMatch *string, opts DocumentWriteOptions) (*DocumentPutResult, error)
 	DeleteDocument(ctx context.Context, ownerID peer.ID, path string) (bool, error)
 	// ListDocuments returns one page of document metadata for an owner, ordered
 	// by path, holding only what readerID may read: everything for the owner,

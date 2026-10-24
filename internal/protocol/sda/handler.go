@@ -43,6 +43,9 @@ const (
 	// OpACCESS reads or changes who may read a document: its visibility and
 	// reader list. Owner only; accessAction is get, set, grant or revoke.
 	OpACCESS = "ACCESS"
+	// OpRESTORE makes a kept version (versionNumber) the current content
+	// again, as a new version. Owner only; honours If-Match.
+	OpRESTORE = "RESTORE"
 )
 
 // Batch write limits.
@@ -91,9 +94,15 @@ type DocRequest struct {
 	Body        string            `json:"body,omitempty"` // base64 encoded
 
 	// PATCH-specific: JSON patch object sent as the body, decoded separately.
-	// HISTORY-specific
+	// HISTORY-specific; versionNumber is also the version RESTORE brings back.
 	MaxVersions   *int `json:"maxVersions,omitempty"`
 	VersionNumber *int `json:"versionNumber,omitempty"`
+
+	// History on a PUT sets how many earlier versions the document keeps,
+	// clamped to the server's max_document_history_versions, starting with
+	// the version this PUT replaces. 0 turns history off and deletes the
+	// kept versions; absent leaves the setting as it is.
+	History *int `json:"history,omitempty"`
 
 	// BATCH_PUT-specific: the documents to write. All belong to OwnerPeerID.
 	BatchDocuments []BatchDocument `json:"batchDocuments,omitempty"`
@@ -172,6 +181,7 @@ func NewPipeline(logger *slog.Logger, pool *codec.BufferPool, reg *forge.Registr
 		OpHISTORY:   middleware.Chain(forge.JSONDeserialize[DocRequest](), handleHistory),
 		OpDIRECTORY: middleware.Chain(forge.JSONDeserialize[DocRequest](), handleDirectory),
 		OpACCESS:    middleware.Chain(forge.JSONDeserialize[DocRequest](), handleAccess),
+		OpRESTORE:   middleware.Chain(forge.JSONDeserialize[DocRequest](), handleRestore),
 	}
 
 	return wire.Bounded(forge.NewPipeline(logger,
@@ -202,7 +212,7 @@ func isWriteClassifier(raw []byte) bool {
 		return false
 	}
 	switch envelope.Operation {
-	case OpPUT, OpPATCH, OpDELETE, OpBATCH_PUT:
+	case OpPUT, OpPATCH, OpDELETE, OpBATCH_PUT, OpRESTORE:
 		return true
 	case OpDIRECTORY:
 		return envelope.DirectoryAction == "join" || envelope.DirectoryAction == "leave"
@@ -304,7 +314,7 @@ func commonValidation() forge.Middleware {
 		// ACCESS is the owner's in every action, reading the list included.
 		isWrite := envelope.Operation == OpPUT || envelope.Operation == OpPATCH ||
 			envelope.Operation == OpDELETE || envelope.Operation == OpBATCH_PUT ||
-			envelope.Operation == OpACCESS
+			envelope.Operation == OpACCESS || envelope.Operation == OpRESTORE
 		if envelope.Operation == OpDIRECTORY {
 			isWrite = envelope.DirectoryAction == "join" || envelope.DirectoryAction == "leave"
 		}
@@ -368,6 +378,7 @@ func handleGet(sc *forge.StreamContext, next func()) {
 			"Last-Modified": doc.UpdatedAt.UnixMilli(),
 			"Version":       doc.VersionNumber,
 			"Visibility":    doc.Visibility.String(),
+			"History":       historyKept(sc, doc),
 		},
 		Body: base64.StdEncoding.EncodeToString(doc.Content),
 	}
@@ -409,11 +420,19 @@ func handlePut(sc *forge.StreamContext, next func()) {
 			Headers: map[string]any{"Error": err.Error()}}
 		return
 	}
+	if req.History != nil && *req.History < 0 {
+		sc.Response = &DocResponse{Status: StatusBadRequest,
+			Headers: map[string]any{"Error": "history must not be negative"}}
+		return
+	}
+	opts := writeOptions(sc)
+	opts.Visibility = visibility
+	opts.History = req.History
 
 	ctx, cancel := context.WithTimeout(sc.Ctx, 30*time.Second)
 	defer cancel()
 
-	result, err := store.PutDocument(ctx, ownerID.(peer.ID), req.Path, content, contentType, sc.PeerID, ifMatch, visibility)
+	result, err := store.PutDocument(ctx, ownerID.(peer.ID), req.Path, content, contentType, sc.PeerID, ifMatch, opts)
 	if err != nil {
 		sc.Response = writeErrorResponse(sc.Logger, err)
 		return
@@ -434,6 +453,67 @@ func handlePut(sc *forge.StreamContext, next func()) {
 			"Last-Modified": result.UpdatedAt.UnixMilli(),
 		},
 	}
+}
+
+// handleRestore makes a kept version the current content again. The
+// version it replaces is kept in turn when history is on, so a restore can
+// itself be undone.
+func handleRestore(sc *forge.StreamContext, next func()) {
+	req := sc.Request.(*DocRequest)
+	store, _ := forge.ServiceFrom[storage.Storage](sc, "storage")
+	ownerID, _ := sc.Get("ownerID")
+
+	if req.VersionNumber == nil {
+		sc.Response = &DocResponse{Status: StatusBadRequest,
+			Headers: map[string]any{"Error": "versionNumber is required"}}
+		return
+	}
+	var ifMatch *string
+	if im, ok := req.Headers["If-Match"]; ok {
+		ifMatch = &im
+	}
+
+	ctx, cancel := context.WithTimeout(sc.Ctx, 30*time.Second)
+	defer cancel()
+
+	result, err := store.RestoreDocumentVersion(ctx, ownerID.(peer.ID), req.Path, *req.VersionNumber, sc.PeerID, ifMatch, writeOptions(sc))
+	if err != nil {
+		sc.Response = writeErrorResponse(sc.Logger, err)
+		return
+	}
+
+	maybeUpdateDirectoryListing(ctx, sc.Logger, store, ownerID.(peer.ID), req.Path)
+
+	sc.Response = &DocResponse{
+		Status: StatusOK,
+		Headers: map[string]any{
+			"ETag":          result.ContentHash,
+			"Last-Modified": result.UpdatedAt.UnixMilli(),
+			"Version":       result.VersionNumber,
+		},
+	}
+}
+
+// writeOptions starts a write's options with the server's history ceiling.
+func writeOptions(sc *forge.StreamContext) storage.DocumentWriteOptions {
+	var opts storage.DocumentWriteOptions
+	if cfg, ok := forge.ServiceFrom[*core.ServerConfig](sc, "config"); ok && cfg != nil {
+		opts.MaxHistory = cfg.MaxDocumentHistoryVersions
+	}
+	return opts
+}
+
+// historyKept is how many earlier versions the document keeps: 0 when
+// history is off, otherwise its setting under the server's ceiling.
+func historyKept(sc *forge.StreamContext, doc *storage.DocumentRecord) int {
+	if !doc.HistoryEnabled {
+		return 0
+	}
+	ceiling := writeOptions(sc).HistoryCeiling()
+	if doc.MaxHistoryVersions != nil && *doc.MaxHistoryVersions < ceiling {
+		return *doc.MaxHistoryVersions
+	}
+	return ceiling
 }
 
 // handlePatch applies a partial update to a document.
@@ -466,7 +546,7 @@ func handlePatch(sc *forge.StreamContext, next func()) {
 	ctx, cancel := context.WithTimeout(sc.Ctx, 30*time.Second)
 	defer cancel()
 
-	result, err := store.PatchDocument(ctx, ownerID.(peer.ID), req.Path, patch, sc.PeerID, ifMatch)
+	result, err := store.PatchDocument(ctx, ownerID.(peer.ID), req.Path, patch, sc.PeerID, ifMatch, writeOptions(sc))
 	if err != nil {
 		sc.Response = writeErrorResponse(sc.Logger, err)
 		return
@@ -535,6 +615,7 @@ func handleHead(sc *forge.StreamContext, next func()) {
 			"Last-Modified":  doc.UpdatedAt.UnixMilli(),
 			"Version":        doc.VersionNumber,
 			"Visibility":     doc.Visibility.String(),
+			"History":        historyKept(sc, doc),
 		},
 	}
 }
@@ -675,8 +756,10 @@ func handleBatchPut(sc *forge.StreamContext, next func()) {
 			continue // rejected during decoding
 		}
 
+		opts := writeOptions(sc)
+		opts.Visibility = p.visibility
 		result, err := store.PutDocument(ctx, ownerID.(peer.ID), p.path,
-			p.content, p.contentType, sc.PeerID, p.ifMatch, p.visibility)
+			p.content, p.contentType, sc.PeerID, p.ifMatch, opts)
 		if err != nil {
 			// Reuse the single-document error mapping so batch and non-batch
 			// writes cannot report the same failure differently.
@@ -874,7 +957,7 @@ func handleHistory(sc *forge.StreamContext, next func()) {
 		VersionNumber int    `json:"versionNumber"`
 		ContentHash   string `json:"contentHash"`
 		ContentType   string `json:"contentType"`
-		CreatedAt     string `json:"createdAt"`
+		CreatedAt     int64  `json:"createdAt"` // Unix ms, as every time on the wire
 		Size          int    `json:"size"`
 	}
 
@@ -884,7 +967,7 @@ func handleHistory(sc *forge.StreamContext, next func()) {
 			VersionNumber: v.VersionNumber,
 			ContentHash:   v.ContentHash,
 			ContentType:   v.ContentType,
-			CreatedAt:     v.CreatedAt.Format(time.RFC3339),
+			CreatedAt:     v.CreatedAt.UnixMilli(),
 			Size:          v.ContentLength,
 		})
 	}

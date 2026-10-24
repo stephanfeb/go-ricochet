@@ -154,6 +154,7 @@ type docConfig struct {
 	ContentType  string
 	ServerPeerID *peer.ID
 	Visibility   *wire.Visibility
+	History      *int
 }
 
 // WithIfNoneMatch sets the If-None-Match header for conditional GET/HEAD.
@@ -183,6 +184,16 @@ func WithContentType(ct string) DocOption {
 func WithVisibility(v wire.Visibility) DocOption {
 	return func(c *docConfig) {
 		c.Visibility = &v
+	}
+}
+
+// WithHistory sets, on a PUT, how many earlier versions the document keeps,
+// starting with the version this PUT replaces. The server clamps it to its
+// max_document_history_versions. 0 turns history off and deletes the kept
+// versions; without this option the setting is left as it is.
+func WithHistory(versions int) DocOption {
+	return func(c *docConfig) {
+		c.History = &versions
 	}
 }
 

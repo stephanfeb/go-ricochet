@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 
@@ -233,5 +234,56 @@ func TestDocumentNotFound(t *testing.T) {
 	}
 	if getResp.Status != 404 {
 		t.Errorf("expected status 404, got %d", getResp.Status)
+	}
+}
+
+// N19: history over the wire, from turning it on to restoring a version.
+func TestDocumentHistoryRoundTrip(t *testing.T) {
+	server := newTestServer(t)
+	cl := newTestClient(t, server)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	self := cl.PeerID()
+
+	if _, err := cl.PutDocument(ctx, self, "notes/draft", []byte("first")); err != nil {
+		t.Fatalf("put first: %v", err)
+	}
+	if _, err := cl.PutDocument(ctx, self, "notes/draft", []byte("second"), client.WithHistory(3)); err != nil {
+		t.Fatalf("put second with history: %v", err)
+	}
+	if _, err := cl.PutDocument(ctx, self, "notes/draft", []byte("third")); err != nil {
+		t.Fatalf("put third: %v", err)
+	}
+
+	meta, err := cl.HeadDocument(ctx, self, "notes/draft")
+	if err != nil || meta.History != 3 || meta.Version != 3 {
+		t.Fatalf("head = %+v, %v; want history 3, version 3", meta, err)
+	}
+	versions, err := cl.GetDocumentHistory(ctx, self, "notes/draft", 0)
+	if err != nil || len(versions) != 2 || versions[0].VersionNumber != 2 || versions[1].VersionNumber != 1 {
+		t.Fatalf("history = %+v, %v; want versions 2 and 1", versions, err)
+	}
+	if since := time.Since(time.UnixMilli(versions[0].CreatedAt)); since < 0 || since > time.Minute {
+		t.Errorf("version createdAt = %d, want Unix ms of the write", versions[0].CreatedAt)
+	}
+	first, err := cl.GetDocumentVersion(ctx, self, "notes/draft", 1)
+	if err != nil || string(first.Content) != "first" || first.VersionNumber != 1 {
+		t.Fatalf("version 1 = %+v, %v", first, err)
+	}
+
+	restored, err := cl.RestoreDocumentVersion(ctx, "notes/draft", 1, client.WithIfMatch(meta.ETag))
+	if err != nil || restored.Version != 4 {
+		t.Fatalf("restore = %+v, %v; want version 4", restored, err)
+	}
+	doc, err := cl.GetDocument(ctx, self, "notes/draft")
+	if err != nil || string(doc.Content) != "first" || doc.Version != 4 {
+		t.Fatalf("after restore = %+v, %v; want the first body as version 4", doc, err)
+	}
+	if _, err := cl.RestoreDocumentVersion(ctx, "notes/draft", 1, client.WithIfMatch(meta.ETag)); !errors.Is(err, client.ErrConflict) {
+		t.Errorf("restore with a stale ETag: %v, want ErrConflict", err)
+	}
+	if _, err := cl.RestoreDocumentVersion(ctx, "notes/draft", 99); !errors.Is(err, client.ErrNotFound) {
+		t.Errorf("restore of a version never kept: %v, want ErrNotFound", err)
 	}
 }

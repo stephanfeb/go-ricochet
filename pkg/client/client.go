@@ -1184,9 +1184,12 @@ func (c *Client) doDoc(ctx context.Context, req *sda.DocRequest, opts []DocOptio
 		req.Headers["Content-Type"] = cfg.ContentType
 	}
 
-	// Visibility rides on a PUT; the server ignores it elsewhere.
+	// Visibility and history ride on a PUT; the server ignores them elsewhere.
 	if cfg.Visibility != nil && req.Visibility == "" {
 		req.Visibility = cfg.Visibility.String()
+	}
+	if cfg.History != nil && req.History == nil {
+		req.History = cfg.History
 	}
 
 	reqData, err := json.Marshal(req)
@@ -1246,6 +1249,8 @@ func (c *Client) GetDocument(ctx context.Context, ownerPeerID peer.ID, path stri
 	if v, ok := resp.Headers["Visibility"]; ok {
 		result.Visibility, _ = v.(string)
 	}
+	result.Version = int(headerToInt64(resp.Headers["Version"]))
+	result.History = int(headerToInt64(resp.Headers["History"]))
 
 	if resp.Body != "" {
 		content, err := base64.StdEncoding.DecodeString(resp.Body)
@@ -1366,7 +1371,105 @@ func (c *Client) HeadDocument(ctx context.Context, ownerPeerID peer.ID, path str
 	if v, ok := resp.Headers["Visibility"]; ok {
 		result.Visibility, _ = v.(string)
 	}
+	result.Version = int(headerToInt64(resp.Headers["Version"]))
+	result.History = int(headerToInt64(resp.Headers["History"]))
 
+	return result, nil
+}
+
+// GetDocumentHistory lists the kept versions of a document, newest first,
+// with sizes but not bodies. maxVersions limits the listing; 0 lists all.
+// A document with history off lists none.
+func (c *Client) GetDocumentHistory(ctx context.Context, ownerPeerID peer.ID, path string, maxVersions int, opts ...DocOption) ([]wire.DocumentVersion, error) {
+	req := &sda.DocRequest{
+		Operation:   sda.OpHISTORY,
+		OwnerPeerID: ownerPeerID.String(),
+		Path:        path,
+	}
+	if maxVersions > 0 {
+		req.MaxVersions = &maxVersions
+	}
+
+	resp, err := c.doDoc(ctx, req, opts)
+	if err != nil {
+		return nil, err
+	}
+	if resp.Status != sda.StatusOK {
+		return nil, responseError("document history", resp.Status, resp.Headers)
+	}
+
+	versions := []wire.DocumentVersion{}
+	if resp.Body == "" {
+		return versions, nil
+	}
+	body, err := base64.StdEncoding.DecodeString(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("decode history body: %w", err)
+	}
+	if err := json.Unmarshal(body, &versions); err != nil {
+		return nil, fmt.Errorf("unmarshal history: %w", err)
+	}
+	return versions, nil
+}
+
+// GetDocumentVersion fetches one kept version of a document with its body.
+func (c *Client) GetDocumentVersion(ctx context.Context, ownerPeerID peer.ID, path string, versionNumber int, opts ...DocOption) (*wire.DocumentVersion, error) {
+	req := &sda.DocRequest{
+		Operation:     sda.OpHISTORY,
+		OwnerPeerID:   ownerPeerID.String(),
+		Path:          path,
+		VersionNumber: &versionNumber,
+	}
+
+	resp, err := c.doDoc(ctx, req, opts)
+	if err != nil {
+		return nil, err
+	}
+	if resp.Status != sda.StatusOK {
+		return nil, responseError("document version", resp.Status, resp.Headers)
+	}
+
+	content, err := base64.StdEncoding.DecodeString(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("decode version body: %w", err)
+	}
+	v := &wire.DocumentVersion{
+		VersionNumber: int(headerToInt64(resp.Headers["Version"])),
+		CreatedAt:     headerToInt64(resp.Headers["Created-At"]),
+		Size:          len(content),
+		Content:       content,
+	}
+	v.ContentHash, _ = resp.Headers["ETag"].(string)
+	v.ContentType, _ = resp.Headers["Content-Type"].(string)
+	return v, nil
+}
+
+// RestoreDocumentVersion makes a kept version of one of this client's
+// documents the current content again. It is written as a new version, so
+// with history on the version it replaces is kept and the restore can be
+// undone. WithIfMatch makes it conditional on the current ETag.
+func (c *Client) RestoreDocumentVersion(ctx context.Context, path string, versionNumber int, opts ...DocOption) (*wire.DocumentPutResponse, error) {
+	req := &sda.DocRequest{
+		Operation:     sda.OpRESTORE,
+		OwnerPeerID:   c.host.ID().String(),
+		Path:          path,
+		VersionNumber: &versionNumber,
+	}
+
+	resp, err := c.doDoc(ctx, req, opts)
+	if err != nil {
+		return nil, err
+	}
+	if resp.Status >= 400 {
+		return nil, responseError("document restore", resp.Status, resp.Headers)
+	}
+
+	result := &wire.DocumentPutResponse{
+		Status:       resp.Status,
+		LastModified: headerToInt64(resp.Headers["Last-Modified"]),
+		Version:      int(headerToInt64(resp.Headers["Version"])),
+	}
+	result.ETag, _ = resp.Headers["ETag"].(string)
 	return result, nil
 }
 

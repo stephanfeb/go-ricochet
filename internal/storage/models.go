@@ -146,9 +146,10 @@ type DocumentVersionRecord struct {
 
 // DocumentPutResult is the result of a document put operation.
 type DocumentPutResult struct {
-	ContentHash string    `json:"contentHash"`
-	Created     bool      `json:"created"`
-	UpdatedAt   time.Time `json:"updatedAt"`
+	ContentHash   string    `json:"contentHash"`
+	Created       bool      `json:"created"`
+	UpdatedAt     time.Time `json:"updatedAt"`
+	VersionNumber int       `json:"versionNumber"`
 }
 
 // PeerBan is a peer a moderator banned: refused on every protocol, its

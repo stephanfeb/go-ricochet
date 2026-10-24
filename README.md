@@ -297,6 +297,16 @@ _, err = cl.PutDocument(ctx, ownerID, "profile", []byte(`{"name":"Ann"}`),
 _, err = cl.SetDocumentVisibility(ctx, "config/settings", wire.VisibilityShared)
 access, err := cl.GrantDocumentReader(ctx, "config/settings", friendPeerID)
 fmt.Println(access.Visibility, access.Readers) // shared [{friend ...}]
+
+// History is off until the owner turns it on with a PUT. From that PUT on
+// the document keeps up to N earlier versions (clamped to the server's
+// max_document_history_versions); WithHistory(0) turns it off and deletes
+// them. A restore is written as a new version, so it can be undone too.
+_, err = cl.PutDocument(ctx, ownerID, "config/settings", []byte(`{"theme":"dark"}`),
+    client.WithHistory(5))
+versions, err := cl.GetDocumentHistory(ctx, ownerID, "config/settings", 0) // newest first, no bodies
+old, err := cl.GetDocumentVersion(ctx, ownerID, "config/settings", versions[0].VersionNumber)
+_, err = cl.RestoreDocumentVersion(ctx, "config/settings", old.VersionNumber)
 ```
 
 ### Push Notifications
@@ -350,7 +360,7 @@ request. Writes are the owner's alone, with one exception.
 | Store | Default | Readable by | Writable by |
 |-------|---------|-------------|-------------|
 | Mailboxes | private | Owner; shared mailboxes by the peers on their ACL; public mailboxes by anyone | Per mailbox type and ACL; see [doc/MAILBOX_LIFECYCLE_AND_ACLS.md](doc/MAILBOX_LIFECYCLE_AND_ACLS.md) |
-| Documents (`GET`, `HEAD`, `LIST`, `HISTORY`) | private | Per document, every stored version with it | Owner only (`PUT`, `PATCH`, `DELETE`, `BATCH_PUT`, `ACCESS`) |
+| Documents (`GET`, `HEAD`, `LIST`, `HISTORY`) | private | Per document, every stored version with it | Owner only (`PUT`, `PATCH`, `DELETE`, `BATCH_PUT`, `ACCESS`, `RESTORE`) |
 | Feeds (`GET`, `LIST`, `BATCH_GET`) | public | Per feed, every entry with it | Owner only (`CREATE`, `DELETE`, `ACCESS`), except that any peer may `APPEND` to a feed its owner created as collaborative |
 | Collections (`GET`, `LIST`, `QUERY`) | private | Per collection, every item and query with it | Owner only (`CREATE`, `PUT`, `DELETE`, `ACCESS`) |
 | Directory | public | Any peer can browse and search every listing | Each peer joins, updates and leaves only its own listing |

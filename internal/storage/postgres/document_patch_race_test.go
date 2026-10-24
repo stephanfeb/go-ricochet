@@ -19,7 +19,7 @@ func TestConcurrentPatchesWithSameIfMatchAdmitOne(t *testing.T) {
 	owner := newTestPeer(t)
 	const path = "/race/if-match.json"
 
-	put, err := store.PutDocument(ctx, owner, path, []byte(`{"n":0}`), "application/json", owner, nil, nil)
+	put, err := store.PutDocument(ctx, owner, path, []byte(`{"n":0}`), "application/json", owner, nil, storage.DocumentWriteOptions{})
 	if err != nil {
 		t.Fatalf("seed document: %v", err)
 	}
@@ -40,7 +40,7 @@ func TestConcurrentPatchesWithSameIfMatchAdmitOne(t *testing.T) {
 			defer wg.Done()
 			<-start
 			ifMatch := etag
-			_, err := store.PatchDocument(ctx, owner, path, map[string]any{"n": i + 1}, owner, &ifMatch)
+			_, err := store.PatchDocument(ctx, owner, path, map[string]any{"n": i + 1}, owner, &ifMatch, storage.DocumentWriteOptions{})
 			mu.Lock()
 			defer mu.Unlock()
 			var conflictErr *storage.DocumentConflictError
@@ -73,7 +73,7 @@ func TestConcurrentPatchesWithoutIfMatchAllApply(t *testing.T) {
 	owner := newTestPeer(t)
 	const path = "/race/merge.json"
 
-	if _, err := store.PutDocument(ctx, owner, path, []byte(`{}`), "application/json", owner, nil, nil); err != nil {
+	if _, err := store.PutDocument(ctx, owner, path, []byte(`{}`), "application/json", owner, nil, storage.DocumentWriteOptions{}); err != nil {
 		t.Fatalf("seed document: %v", err)
 	}
 
@@ -89,7 +89,7 @@ func TestConcurrentPatchesWithoutIfMatchAllApply(t *testing.T) {
 			defer wg.Done()
 			<-start
 			key := fmt.Sprintf("k%d", i)
-			if _, err := store.PatchDocument(ctx, owner, path, map[string]any{key: i}, owner, nil); err != nil {
+			if _, err := store.PatchDocument(ctx, owner, path, map[string]any{key: i}, owner, nil, storage.DocumentWriteOptions{}); err != nil {
 				errs <- err
 			}
 		}(i)

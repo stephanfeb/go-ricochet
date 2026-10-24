@@ -20,7 +20,7 @@ func TestStoreVisibilityAndReaders(t *testing.T) {
 	owner, friend, stranger := newTestPeer(t), newTestPeer(t), newTestPeer(t)
 
 	// Defaults: documents and collections private, feeds public.
-	if _, err := store.PutDocument(ctx, owner, "diary", []byte("d"), "text/plain", owner, nil, nil); err != nil {
+	if _, err := store.PutDocument(ctx, owner, "diary", []byte("d"), "text/plain", owner, nil, storage.DocumentWriteOptions{}); err != nil {
 		t.Fatal(err)
 	}
 	doc, _ := store.GetDocument(ctx, owner, "diary")
@@ -44,16 +44,16 @@ func TestStoreVisibilityAndReaders(t *testing.T) {
 
 	// A put with a visibility changes it; one without keeps it.
 	public := core.VisibilityPublic
-	if _, err := store.PutDocument(ctx, owner, "diary", []byte("d2"), "text/plain", owner, nil, &public); err != nil {
+	if _, err := store.PutDocument(ctx, owner, "diary", []byte("d2"), "text/plain", owner, nil, storage.DocumentWriteOptions{Visibility: &public}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.PutDocument(ctx, owner, "diary", []byte("d3"), "text/plain", owner, nil, nil); err != nil {
+	if _, err := store.PutDocument(ctx, owner, "diary", []byte("d3"), "text/plain", owner, nil, storage.DocumentWriteOptions{}); err != nil {
 		t.Fatal(err)
 	}
 	if doc, _ = store.HeadDocument(ctx, owner, "diary"); doc.Visibility != core.VisibilityPublic {
 		t.Errorf("after put with public then a plain put: %v, want public", doc.Visibility)
 	}
-	if _, err := store.PatchDocument(ctx, owner, "diary", map[string]any{}, owner, nil); err == nil {
+	if _, err := store.PatchDocument(ctx, owner, "diary", map[string]any{}, owner, nil, storage.DocumentWriteOptions{}); err == nil {
 		// A patch of non-JSON fails; that is fine, the point is it never touches visibility.
 		t.Log("patch of a text document unexpectedly succeeded")
 	}
@@ -100,7 +100,7 @@ func TestStoreVisibilityAndReaders(t *testing.T) {
 	}
 
 	// Listings per reader.
-	if _, err := store.PutDocument(ctx, owner, "blog", []byte("b"), "text/plain", owner, nil, &public); err != nil {
+	if _, err := store.PutDocument(ctx, owner, "blog", []byte("b"), "text/plain", owner, nil, storage.DocumentWriteOptions{Visibility: &public}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.CreateFeed(ctx, owner, "drafts", "Drafts", "", false, core.VisibilityPrivate); err != nil {

@@ -104,6 +104,12 @@ storage:
   # collaborative feed that anyone may append to.
   max_entries_per_feed: 10000        # default: 10000
 
+  # Earlier versions one document may keep. A document keeps none until its
+  # owner turns history on (PUT with "history": N); N is clamped to this,
+  # and every write prunes to it, so lowering it bounds existing documents
+  # from their next write.
+  max_document_history_versions: 10  # default: 10
+
   # max_storage_gb is enforced as well as reported: once the database on
   # disk reaches it, message submission and document, feed and collection
   # writes are refused with a 507 until space is freed. The check uses the

@@ -658,7 +658,7 @@ func (s *PostgresStorage) HeadDocument(ctx context.Context, ownerID peer.ID, pat
 // The lock query deliberately does not select `content`. The body is never
 // needed here: the caller supplies the new one, and archiving the old one is a
 // server-side copy that never round-trips through this process.
-func (s *PostgresStorage) PutDocument(ctx context.Context, ownerID peer.ID, path string, content []byte, contentType string, updatedBy peer.ID, ifMatch *string, visibility *core.Visibility) (*storage.DocumentPutResult, error) {
+func (s *PostgresStorage) PutDocument(ctx context.Context, ownerID peer.ID, path string, content []byte, contentType string, updatedBy peer.ID, ifMatch *string, opts storage.DocumentWriteOptions) (*storage.DocumentPutResult, error) {
 	if len(content) > storage.MaxDocumentSize {
 		return nil, &storage.DocumentSizeExceededError{ActualSize: len(content), MaxSize: storage.MaxDocumentSize}
 	}
@@ -669,7 +669,7 @@ func (s *PostgresStorage) PutDocument(ctx context.Context, ownerID peer.ID, path
 	}
 	defer tx.Rollback(ctx)
 
-	result, err := putDocumentLocked(ctx, tx, ownerID, path, content, contentType, updatedBy, ifMatch, visibility)
+	result, err := putDocumentLocked(ctx, tx, ownerID, path, content, contentType, updatedBy, ifMatch, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -686,7 +686,9 @@ func (s *PostgresStorage) PutDocument(ctx context.Context, ownerID peer.ID, path
 //
 // A nil visibility leaves an existing document's alone and makes a new one
 // private; the column default is not relied on so the two cases read the same.
-func putDocumentLocked(ctx context.Context, tx pgx.Tx, ownerID peer.ID, path string, content []byte, contentType string, updatedBy peer.ID, ifMatch *string, visibility *core.Visibility) (*storage.DocumentPutResult, error) {
+// A history setting applies to this write: turning it on keeps the version
+// this write replaces, turning it off deletes the kept versions.
+func putDocumentLocked(ctx context.Context, tx pgx.Tx, ownerID peer.ID, path string, content []byte, contentType string, updatedBy peer.ID, ifMatch *string, opts storage.DocumentWriteOptions) (*storage.DocumentPutResult, error) {
 	contentHash := computeContentHash(content)
 	now := time.Now()
 
@@ -720,54 +722,80 @@ func putDocumentLocked(ctx context.Context, tx pgx.Tx, ownerID peer.ID, path str
 		return nil, &storage.DocumentConflictError{ExpectedHash: *ifMatch, ActualHash: existingHash}
 	}
 
+	ceiling := opts.HistoryCeiling()
+	if opts.History != nil {
+		historyEnabled = *opts.History > 0
+		maxHistoryVersions = nil
+		if historyEnabled {
+			keep := min(*opts.History, ceiling)
+			maxHistoryVersions = &keep
+		}
+	}
+	// The ceiling bounds every prune, so a setting made before the ceiling
+	// was lowered, or a document switched on by hand with no maximum, still
+	// keeps no more than the server allows.
+	keep := ceiling
+	if maxHistoryVersions != nil && *maxHistoryVersions < keep {
+		keep = *maxHistoryVersions
+	}
+
 	newVersion := 1
 	if found {
 		newVersion = existingVersion + 1
 
-		if historyEnabled {
+		switch {
+		case historyEnabled:
 			if err := archiveDocumentVersion(ctx, tx, existingID); err != nil {
 				return nil, err
 			}
-			if maxHistoryVersions != nil {
-				if err := pruneDocumentVersions(ctx, tx, existingID, *maxHistoryVersions); err != nil {
-					return nil, err
-				}
+			if err := pruneDocumentVersions(ctx, tx, existingID, keep); err != nil {
+				return nil, err
+			}
+		case opts.History != nil:
+			if err := pruneDocumentVersions(ctx, tx, existingID, 0); err != nil {
+				return nil, err
 			}
 		}
 	}
 
-	// $9 is the visibility to write, $10 whether to write it on update.
+	// $9 is the visibility to write, $10 whether to write it on update; $11
+	// and $12 the history setting, $13 whether to write it on update.
 	vis := int(core.VisibilityPrivate)
-	if visibility != nil {
-		vis = int(*visibility)
+	if opts.Visibility != nil {
+		vis = int(*opts.Visibility)
 	}
 	var created bool
 	err = tx.QueryRow(ctx, `
 		INSERT INTO documents (
 			owner_peer_id, path, content, content_type, content_hash,
-			created_at, updated_at, updated_by_peer_id, version_number, visibility
-		) VALUES ($1, $2, $3, $4, $5, $6, $6, $7, $8, $9)
+			created_at, updated_at, updated_by_peer_id, version_number, visibility,
+			history_enabled, max_history_versions
+		) VALUES ($1, $2, $3, $4, $5, $6, $6, $7, $8, $9, $11, $12)
 		ON CONFLICT (owner_peer_id, path)
 		DO UPDATE SET
 			content = $3, content_type = $4, content_hash = $5,
 			updated_at = $6, updated_by_peer_id = $7, version_number = $8,
-			visibility = CASE WHEN $10 THEN $9 ELSE documents.visibility END
+			visibility = CASE WHEN $10 THEN $9 ELSE documents.visibility END,
+			history_enabled = CASE WHEN $13 THEN $11 ELSE documents.history_enabled END,
+			max_history_versions = CASE WHEN $13 THEN $12 ELSE documents.max_history_versions END
 		RETURNING (xmax = 0)`,
 		ownerID.String(), path, content, contentType, contentHash,
-		now, updatedBy.String(), newVersion, vis, visibility != nil,
+		now, updatedBy.String(), newVersion, vis, opts.Visibility != nil,
+		historyEnabled, maxHistoryVersions, opts.History != nil,
 	).Scan(&created)
 	if err != nil {
 		return nil, fmt.Errorf("put document: %w", err)
 	}
 
 	return &storage.DocumentPutResult{
-		ContentHash: contentHash,
-		Created:     created,
-		UpdatedAt:   now,
+		ContentHash:   contentHash,
+		Created:       created,
+		UpdatedAt:     now,
+		VersionNumber: newVersion,
 	}, nil
 }
 
-func (s *PostgresStorage) PatchDocument(ctx context.Context, ownerID peer.ID, path string, patch map[string]any, updatedBy peer.ID, ifMatch *string) (*storage.DocumentPutResult, error) {
+func (s *PostgresStorage) PatchDocument(ctx context.Context, ownerID peer.ID, path string, patch map[string]any, updatedBy peer.ID, ifMatch *string, opts storage.DocumentWriteOptions) (*storage.DocumentPutResult, error) {
 	// Read, merge and write under one row lock. Reading outside it let two
 	// concurrent patches both pass the If-Match check and the second
 	// overwrite the first; without If-Match, one patch's keys were lost.
@@ -814,12 +842,68 @@ func (s *PostgresStorage) PatchDocument(ctx context.Context, ownerID peer.ID, pa
 		return nil, fmt.Errorf("marshal merged document: %w", err)
 	}
 
-	result, err := putDocumentLocked(ctx, tx, ownerID, path, newContent, "application/json", updatedBy, nil, nil)
+	result, err := putDocumentLocked(ctx, tx, ownerID, path, newContent, "application/json", updatedBy, nil,
+		storage.DocumentWriteOptions{MaxHistory: opts.MaxHistory})
 	if err != nil {
 		return nil, err
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return nil, fmt.Errorf("commit patch document: %w", err)
+	}
+	return result, nil
+}
+
+// RestoreDocumentVersion copies a kept version back into the document under
+// the row lock, through the same write path as a PUT. The body is copied in
+// one transaction and never leaves the database for the client.
+func (s *PostgresStorage) RestoreDocumentVersion(ctx context.Context, ownerID peer.ID, path string, versionNumber int, updatedBy peer.ID, ifMatch *string, opts storage.DocumentWriteOptions) (*storage.DocumentPutResult, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("begin restore document: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	// Locking the document first means no write can archive or prune the
+	// version between reading it and writing it back.
+	var docID int64
+	err = tx.QueryRow(ctx, `
+		SELECT id FROM documents
+		WHERE owner_peer_id = $1 AND path = $2
+		FOR UPDATE`,
+		ownerID.String(), path,
+	).Scan(&docID)
+	switch {
+	case err == nil:
+	case errors.Is(err, pgx.ErrNoRows):
+		return nil, storage.ErrDocumentNotFound
+	default:
+		return nil, fmt.Errorf("lock document: %w", err)
+	}
+
+	var (
+		content     []byte
+		contentType string
+	)
+	err = tx.QueryRow(ctx, `
+		SELECT content, content_type FROM document_versions
+		WHERE document_id = $1 AND version_number = $2`,
+		docID, versionNumber,
+	).Scan(&content, &contentType)
+	switch {
+	case err == nil:
+	case errors.Is(err, pgx.ErrNoRows):
+		return nil, storage.ErrDocumentNotFound
+	default:
+		return nil, fmt.Errorf("read document version: %w", err)
+	}
+
+	result, err := putDocumentLocked(ctx, tx, ownerID, path, content, contentType, updatedBy, ifMatch,
+		storage.DocumentWriteOptions{MaxHistory: opts.MaxHistory})
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("commit restore document: %w", err)
 	}
 	return result, nil
 }

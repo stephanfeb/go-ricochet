@@ -20,7 +20,7 @@ func TestHeadDocumentReportsSizeWithoutBody(t *testing.T) {
 	ctx := context.Background()
 
 	body := make([]byte, 50_000)
-	if _, err := store.PutDocument(ctx, owner, "big/doc", body, "application/octet-stream", owner, nil, nil); err != nil {
+	if _, err := store.PutDocument(ctx, owner, "big/doc", body, "application/octet-stream", owner, nil, storage.DocumentWriteOptions{}); err != nil {
 		t.Fatalf("put: %v", err)
 	}
 	head, err := store.HeadDocument(ctx, owner, "big/doc")

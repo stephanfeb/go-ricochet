@@ -96,7 +96,7 @@ func TestListDocumentsPaging(t *testing.T) {
 	for i := 0; i < total; i++ {
 		path := fmt.Sprintf("vault/doc-%03d", i)
 		content := []byte(fmt.Sprintf(`{"i":%d}`, i))
-		if _, err := store.PutDocument(ctx, owner, path, content, "application/json", owner, nil, nil); err != nil {
+		if _, err := store.PutDocument(ctx, owner, path, content, "application/json", owner, nil, storage.DocumentWriteOptions{}); err != nil {
 			t.Fatalf("put %s: %v", path, err)
 		}
 	}
@@ -153,7 +153,7 @@ func TestListDocumentsReportsSizeWithoutBody(t *testing.T) {
 		"c-larger": 9000,
 	}
 	for path, size := range sizes {
-		if _, err := store.PutDocument(ctx, owner, path, make([]byte, size), "application/octet-stream", owner, nil, nil); err != nil {
+		if _, err := store.PutDocument(ctx, owner, path, make([]byte, size), "application/octet-stream", owner, nil, storage.DocumentWriteOptions{}); err != nil {
 			t.Fatalf("put %s: %v", path, err)
 		}
 	}
@@ -182,7 +182,7 @@ func TestPutDocumentConditionalIsAtomic(t *testing.T) {
 	owner := newTestPeer(t)
 	const path = "vault/contended"
 
-	base, err := store.PutDocument(ctx, owner, path, []byte("original"), "text/plain", owner, nil, nil)
+	base, err := store.PutDocument(ctx, owner, path, []byte("original"), "text/plain", owner, nil, storage.DocumentWriteOptions{})
 	if err != nil {
 		t.Fatalf("seed put: %v", err)
 	}
@@ -205,7 +205,7 @@ func TestPutDocumentConditionalIsAtomic(t *testing.T) {
 
 			body := []byte(fmt.Sprintf("writer-%d", i))
 			ifMatch := etag
-			_, err := store.PutDocument(ctx, owner, path, body, "text/plain", owner, &ifMatch, nil)
+			_, err := store.PutDocument(ctx, owner, path, body, "text/plain", owner, &ifMatch, storage.DocumentWriteOptions{})
 
 			mu.Lock()
 			defer mu.Unlock()
@@ -253,7 +253,7 @@ func TestPutDocumentArchivesPreviousVersion(t *testing.T) {
 	owner := newTestPeer(t)
 	const path = "vault/versioned"
 
-	if _, err := store.PutDocument(ctx, owner, path, []byte("v1-body"), "text/plain", owner, nil, nil); err != nil {
+	if _, err := store.PutDocument(ctx, owner, path, []byte("v1-body"), "text/plain", owner, nil, storage.DocumentWriteOptions{}); err != nil {
 		t.Fatalf("first put: %v", err)
 	}
 	// History is a column with no setter on the storage interface, so enable it
@@ -264,7 +264,7 @@ func TestPutDocumentArchivesPreviousVersion(t *testing.T) {
 		t.Fatalf("enable history: %v", err)
 	}
 
-	if _, err := store.PutDocument(ctx, owner, path, []byte("v2-body"), "text/plain", owner, nil, nil); err != nil {
+	if _, err := store.PutDocument(ctx, owner, path, []byte("v2-body"), "text/plain", owner, nil, storage.DocumentWriteOptions{}); err != nil {
 		t.Fatalf("second put: %v", err)
 	}
 
@@ -308,7 +308,7 @@ func TestDocumentHistoryNotFound(t *testing.T) {
 	owner := newTestPeer(t)
 	const path = "vault/unversioned"
 
-	if _, err := store.PutDocument(ctx, owner, path, []byte("body"), "text/plain", owner, nil, nil); err != nil {
+	if _, err := store.PutDocument(ctx, owner, path, []byte("body"), "text/plain", owner, nil, storage.DocumentWriteOptions{}); err != nil {
 		t.Fatalf("put: %v", err)
 	}
 	if v, err := store.GetDocumentAtVersion(ctx, owner, path, 7); !errors.Is(err, storage.ErrDocumentNotFound) {
@@ -319,6 +319,94 @@ func TestDocumentHistoryNotFound(t *testing.T) {
 	}
 	if vs, err := store.GetDocumentHistory(ctx, owner, "vault/missing", nil); !errors.Is(err, storage.ErrDocumentNotFound) {
 		t.Errorf("history of a missing document = %+v, %v; want ErrDocumentNotFound", vs, err)
+	}
+}
+
+// TestDocumentHistorySetting is N19 in SQL: history is off until a write
+// turns it on, the setting applies to that write, the ceiling bounds every
+// prune (also for a document switched on by hand with no maximum), turning
+// it off deletes the kept versions, and a restore is a new version.
+func TestDocumentHistorySetting(t *testing.T) {
+	store := newTestStorage(t)
+	ctx := context.Background()
+	owner := newTestPeer(t)
+	const path = "vault/history"
+	put := func(body string, opts storage.DocumentWriteOptions) {
+		t.Helper()
+		if _, err := store.PutDocument(ctx, owner, path, []byte(body), "text/plain", owner, nil, opts); err != nil {
+			t.Fatalf("put %s: %v", body, err)
+		}
+	}
+	kept := func() []int {
+		t.Helper()
+		vs, err := store.GetDocumentHistory(ctx, owner, path, nil)
+		if err != nil {
+			t.Fatalf("history: %v", err)
+		}
+		out := []int{}
+		for _, v := range vs {
+			out = append(out, v.VersionNumber)
+		}
+		return out
+	}
+	ceiling := storage.DocumentWriteOptions{MaxHistory: 2}
+	ten, zero := 10, 0
+
+	put("v1", ceiling)
+	put("v2", ceiling)
+	if got := kept(); len(got) != 0 {
+		t.Fatalf("history off by default: kept %v", got)
+	}
+	put("v3", storage.DocumentWriteOptions{History: &ten, MaxHistory: 2})
+	if got := kept(); len(got) != 1 || got[0] != 2 {
+		t.Errorf("turning history on keeps the version it replaces: kept %v, want [2]", got)
+	}
+	doc, err := store.HeadDocument(ctx, owner, path)
+	if err != nil || !doc.HistoryEnabled || doc.MaxHistoryVersions == nil || *doc.MaxHistoryVersions != 2 {
+		t.Errorf("stored setting = %+v (err %v), want enabled with 10 clamped to 2", doc, err)
+	}
+	put("v4", ceiling)
+	put("v5", ceiling)
+	if got := kept(); len(got) != 2 || got[0] != 4 || got[1] != 3 {
+		t.Errorf("pruned to the ceiling: kept %v, want [4 3]", got)
+	}
+
+	restored, err := store.RestoreDocumentVersion(ctx, owner, path, 3, owner, nil, ceiling)
+	if err != nil || restored.VersionNumber != 6 {
+		t.Fatalf("restore v3 = %+v, %v; want version 6", restored, err)
+	}
+	if cur, _ := store.GetDocument(ctx, owner, path); string(cur.Content) != "v3" {
+		t.Errorf("after restore the body is %q, want v3", cur.Content)
+	}
+	if got := kept(); len(got) != 2 || got[0] != 5 {
+		t.Errorf("after restore: kept %v, want v5 first", got)
+	}
+	if _, err := store.RestoreDocumentVersion(ctx, owner, path, 1, owner, nil, ceiling); !errors.Is(err, storage.ErrDocumentNotFound) {
+		t.Errorf("restore of a pruned version: %v, want ErrDocumentNotFound", err)
+	}
+	stale := "sha256:stale"
+	var conflict *storage.DocumentConflictError
+	if _, err := store.RestoreDocumentVersion(ctx, owner, path, 5, owner, &stale, ceiling); !errors.As(err, &conflict) {
+		t.Errorf("restore with a stale If-Match: %v, want a conflict", err)
+	}
+
+	put("v7", storage.DocumentWriteOptions{History: &zero, MaxHistory: 2})
+	if got := kept(); len(got) != 0 {
+		t.Errorf("turning history off: kept %v, want none", got)
+	}
+
+	// Switched on by hand with no maximum, as before history had a setter:
+	// the ceiling still bounds it.
+	if _, err := store.pool.Exec(ctx,
+		`UPDATE documents SET history_enabled = TRUE, max_history_versions = NULL WHERE owner_peer_id = $1 AND path = $2`,
+		owner.String(), path); err != nil {
+		t.Fatalf("enable by hand: %v", err)
+	}
+	for _, b := range []string{"v8", "v9", "v10", "v11"} {
+		put(b, ceiling)
+	}
+	if got := kept(); len(got) != 2 {
+		t.Errorf("no maximum of its own: kept %v, want 2 (the ceiling)", got)
 	}
 }
 

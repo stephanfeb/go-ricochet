@@ -157,6 +157,7 @@ func (h *Handler) HandleStream(s network.Stream) {
 | `DELETE` | Remove document | `handleDelete` |
 | `LIST` | Enumerate all documents for an owner | `handleList` |
 | `HISTORY` | Version history listing or retrieve specific version | `handleHistory` |
+| `RESTORE` | Make a kept version current again, as a new version (owner only) | `handleRestore` |
 | `DIRECTORY` | Join/leave/browse/get the public directory | `handleDirectory` |
 
 ### 2.2 Key Files

@@ -498,7 +498,7 @@ func (f *Fake) HeadDocument(_ context.Context, owner peer.ID, path string) (*sto
 	return &cp, nil
 }
 
-func (f *Fake) putDocument(owner peer.ID, path string, content []byte, contentType string, updatedBy peer.ID, ifMatch *string, visibility *core.Visibility) (*storage.DocumentPutResult, error) {
+func (f *Fake) putDocument(owner peer.ID, path string, content []byte, contentType string, updatedBy peer.ID, ifMatch *string, opts storage.DocumentWriteOptions) (*storage.DocumentPutResult, error) {
 	if len(content) > storage.MaxDocumentSize {
 		return nil, &storage.DocumentSizeExceededError{ActualSize: len(content), MaxSize: storage.MaxDocumentSize}
 	}
@@ -510,43 +510,83 @@ func (f *Fake) putDocument(owner peer.ID, path string, content []byte, contentTy
 	}
 	if !found {
 		vis := core.VisibilityPrivate
-		if visibility != nil {
-			vis = *visibility
+		if opts.Visibility != nil {
+			vis = *opts.Visibility
 		}
-		f.documents[k] = &storage.DocumentRecord{
-			ID: f.id(), OwnerPeerID: owner.String(), Path: path, Content: content, ContentHash: hash(content),
-			ContentLength: len(content), ContentType: contentType, CreatedAt: now, UpdatedAt: now,
-			UpdatedByPeerID: updatedBy.String(), VersionNumber: 1, HistoryEnabled: true, Visibility: vis,
+		existing = &storage.DocumentRecord{
+			ID: f.id(), OwnerPeerID: owner.String(), Path: path, CreatedAt: now, Visibility: vis,
 		}
-		return &storage.DocumentPutResult{ContentHash: hash(content), Created: true, UpdatedAt: now}, nil
+		f.documents[k] = existing
+	} else if opts.Visibility != nil {
+		existing.Visibility = *opts.Visibility
 	}
-	if visibility != nil {
-		existing.Visibility = *visibility
+
+	// As in SQL: a setting applies to this write, and the ceiling bounds
+	// every prune.
+	ceiling := opts.HistoryCeiling()
+	if opts.History != nil {
+		existing.HistoryEnabled = *opts.History > 0
+		existing.MaxHistoryVersions = nil
+		if existing.HistoryEnabled {
+			keep := min(*opts.History, ceiling)
+			existing.MaxHistoryVersions = &keep
+		}
 	}
-	f.versions[k] = append(f.versions[k], &storage.DocumentVersionRecord{
-		ID: f.id(), DocumentID: existing.ID, VersionNumber: existing.VersionNumber, Content: existing.Content,
-		ContentLength: existing.ContentLength, ContentHash: existing.ContentHash, ContentType: existing.ContentType,
-		CreatedAt: existing.UpdatedAt, CreatedByPeerID: existing.UpdatedByPeerID,
-	})
+	keep := ceiling
+	if existing.MaxHistoryVersions != nil && *existing.MaxHistoryVersions < keep {
+		keep = *existing.MaxHistoryVersions
+	}
+	if found {
+		switch {
+		case existing.HistoryEnabled:
+			f.versions[k] = append(f.versions[k], &storage.DocumentVersionRecord{
+				ID: f.id(), DocumentID: existing.ID, VersionNumber: existing.VersionNumber, Content: existing.Content,
+				ContentLength: existing.ContentLength, ContentHash: existing.ContentHash, ContentType: existing.ContentType,
+				CreatedAt: existing.UpdatedAt, CreatedByPeerID: existing.UpdatedByPeerID,
+			})
+			if vs := f.versions[k]; len(vs) > keep {
+				f.versions[k] = vs[len(vs)-keep:]
+			}
+		case opts.History != nil:
+			delete(f.versions, k)
+		}
+	}
+
 	existing.Content = content
 	existing.ContentHash = hash(content)
 	existing.ContentLength = len(content)
-	if contentType != "" {
+	if contentType != "" || !found {
 		existing.ContentType = contentType
 	}
 	existing.UpdatedAt = now
 	existing.UpdatedByPeerID = updatedBy.String()
 	existing.VersionNumber++
-	return &storage.DocumentPutResult{ContentHash: existing.ContentHash, Created: false, UpdatedAt: now}, nil
+	return &storage.DocumentPutResult{ContentHash: existing.ContentHash, Created: !found, UpdatedAt: now,
+		VersionNumber: existing.VersionNumber}, nil
 }
 
-func (f *Fake) PutDocument(_ context.Context, owner peer.ID, path string, content []byte, contentType string, updatedBy peer.ID, ifMatch *string, visibility *core.Visibility) (*storage.DocumentPutResult, error) {
+func (f *Fake) PutDocument(_ context.Context, owner peer.ID, path string, content []byte, contentType string, updatedBy peer.ID, ifMatch *string, opts storage.DocumentWriteOptions) (*storage.DocumentPutResult, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return f.putDocument(owner, path, content, contentType, updatedBy, ifMatch, visibility)
+	return f.putDocument(owner, path, content, contentType, updatedBy, ifMatch, opts)
 }
 
-func (f *Fake) PatchDocument(_ context.Context, owner peer.ID, path string, patch map[string]any, updatedBy peer.ID, ifMatch *string) (*storage.DocumentPutResult, error) {
+func (f *Fake) RestoreDocumentVersion(_ context.Context, owner peer.ID, path string, version int, updatedBy peer.ID, ifMatch *string, opts storage.DocumentWriteOptions) (*storage.DocumentPutResult, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if _, ok := f.documents[key(owner, path)]; !ok {
+		return nil, storage.ErrDocumentNotFound
+	}
+	for _, v := range f.versions[key(owner, path)] {
+		if v.VersionNumber == version {
+			return f.putDocument(owner, path, v.Content, v.ContentType, updatedBy, ifMatch,
+				storage.DocumentWriteOptions{MaxHistory: opts.MaxHistory})
+		}
+	}
+	return nil, storage.ErrDocumentNotFound
+}
+
+func (f *Fake) PatchDocument(_ context.Context, owner peer.ID, path string, patch map[string]any, updatedBy peer.ID, ifMatch *string, opts storage.DocumentWriteOptions) (*storage.DocumentPutResult, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	existing, ok := f.documents[key(owner, path)]
@@ -565,7 +605,8 @@ func (f *Fake) PatchDocument(_ context.Context, owner peer.ID, path string, patc
 	if err != nil {
 		return nil, err
 	}
-	return f.putDocument(owner, path, content, existing.ContentType, updatedBy, nil, nil)
+	return f.putDocument(owner, path, content, existing.ContentType, updatedBy, nil,
+		storage.DocumentWriteOptions{MaxHistory: opts.MaxHistory})
 }
 
 // mergePatch applies an RFC 7386 merge patch.
