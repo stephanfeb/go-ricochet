@@ -366,4 +366,15 @@ func TestCrossLanguageVectors(t *testing.T) {
 	if err != nil || isBound || string(got) != "hello, ricochet" {
 		t.Fatalf("legacy vector: payload %q bound %v err %v", got, isBound, err)
 	}
+
+	// The binding is UTF-8. A folder outside ASCII is what tells that apart
+	// from Dart's String.codeUnits, which the Dart client once sealed with
+	// (ricochet-i8c): "é" is one code unit but two UTF-8 bytes, and "日記"
+	// lies above U+00FF.
+	nb := Binding{RecipientPeerID: idR.String(), FolderPath: "café/日記", MessageID: "msg-0001"}
+	nonASCII := append([]byte(boundMagic), box.Seal(nonce[:], append(nb.header(), payload...), &nonce, &xPubR, &xS)...)
+	const wantNonASCII = "52434532000102030405060708090a0b0c0d0e0f1011121314151617a14cd75b5fb31d40f785cb0b0fd0347bc34cec901852e78daff0992911dd6d9572ff54a3060d404fde16c276f12f2c5ee365806eb4b0b188d1af9784bc21670864cfaf883cd59484ad29ba7b954e165538b8dca4b516e5fbbf30749d3cb707f9af354f2b1c67489cd1ca4538d1"
+	if got := hex.EncodeToString(nonASCII); got != wantNonASCII {
+		t.Fatalf("non-ASCII folder ciphertext = %s, want %s", got, wantNonASCII)
+	}
 }
