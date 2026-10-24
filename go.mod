@@ -1,6 +1,6 @@
 module github.com/stephanfeb/go-ricochet
 
-go 1.25.7
+go 1.26.10
 
 require (
 	filippo.io/edwards25519 v1.1.0
