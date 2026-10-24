@@ -2,6 +2,8 @@
 # Checks the server's relay with two clients behind separate NAT routers,
 # in the mailbox example's Docker setup (examples/mailbox/docker):
 #
+#   - the relay carries 1 MiB on one relayed connection, where go-libp2p's
+#     default limit would cut it at 128 KiB;
 #   - the dialer reaches the listener through the server's relay, and a
 #     hole punch then gives the two a direct connection.
 #
@@ -23,6 +25,10 @@ until LISTENER=$(c logs --no-log-prefix listener | awk '/^PEER /{print $2}') && 
     sleep 1
 done
 c logs --no-log-prefix listener | grep "relay slot"
+
+echo
+echo "== Relay: 1 MiB through the relay, hole punching off"
+c run --rm -T dialer bulk "$LISTENER"
 
 echo
 echo "== Hole punch: the dialer connects through the relay, then directly"

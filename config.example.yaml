@@ -289,10 +289,21 @@ ops:
 
 # Circuit relay v2 service limits
 #
-# Only consulted when features.enable_relay_service is on. Every value is
-# omitted below because a zero means "use the go-libp2p default", which is the
-# right choice unless this server is carrying relay traffic for others and you
-# have measured what it costs.
+# Only consulted when features.enable_relay_service is on.
+#
+# connection_duration_sec and connection_data limit each relayed connection:
+# the relay cuts it after that many seconds, or after that many bytes in
+# either direction. Unset (the default), a relayed connection is not cut;
+# two clients that cannot reach each other directly keep talking through
+# this server for as long as they like, and peers see the connection as an
+# ordinary one rather than a limited one. Set either to bound what one
+# relayed connection may cost; set only one and only that one applies.
+# go-libp2p's own defaults, 120 seconds and 131072 bytes, are enough for
+# little more than coordinating a hole punch.
+#
+# For every other key, a zero means "use the go-libp2p default", shown
+# below. max_reservations and max_circuits bound how many relayed
+# connections this server carries at once.
 #
 # Note the units are in the key names, and they do NOT match the internal field
 # names: the file takes reservation_ttl_min (minutes) and
@@ -301,14 +312,14 @@ ops:
 #
 # relay_limits:
 #   max_reservations: 128            # concurrent reservations, server-wide
-#   max_circuits: 16                 # concurrent circuits per reservation
+#   max_circuits: 16                 # concurrent relayed connections per peer
 #   buffer_size: 2048                # relay copy buffer, bytes
-#   max_reservations_per_peer: 4
+#   max_reservations_per_peer: 1
 #   max_reservations_per_ip: 8
 #   max_reservations_per_asn: 32
 #   reservation_ttl_min: 60          # minutes
-#   connection_duration_sec: 120     # seconds
-#   connection_data: 131072          # bytes relayed per circuit before it is cut
+#   connection_duration_sec: 0       # seconds per relayed connection; 0 = no limit
+#   connection_data: 0               # bytes per direction per relayed connection; 0 = no limit
 
 # Admission control
 #

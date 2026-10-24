@@ -1,6 +1,8 @@
 package server
 
 import (
+	"log/slog"
+	"math"
 	"testing"
 	"time"
 
@@ -55,5 +57,48 @@ func TestCapacitySamplerFallsBackWhenUnset(t *testing.T) {
 
 	if got := NewServer(cfg, nil).newCapacitySampler().NearCapacityRatio(); got != 0.9 {
 		t.Errorf("NearCapacityRatio = %v, want the default 0.9", got)
+	}
+}
+
+// The relay must not cut a relayed connection unless the operator sets a
+// limit. Zero used to fall through to go-libp2p's 2 minutes and 128 KiB,
+// which ended every relayed connection between two clients behind NAT.
+// go-libp2p limits a connection on both duration and data or on neither, so
+// an operator who sets one must get only that one.
+func TestRelayConnectionLimitComesFromTheServerConfig(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		duration      time.Duration
+		data          int64
+		wantUnlimited bool
+		wantDuration  time.Duration
+		wantData      int64
+	}{
+		{name: "unset is unlimited", wantUnlimited: true},
+		{name: "duration only", duration: 10 * time.Minute,
+			wantDuration: 10 * time.Minute, wantData: math.MaxInt64},
+		{name: "data only", data: 64 << 20,
+			wantDuration: time.Duration(math.MaxUint32) * time.Second, wantData: 64 << 20},
+		{name: "both", duration: time.Hour, data: 1 << 30,
+			wantDuration: time.Hour, wantData: 1 << 30},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := core.DefaultConfig()
+			cfg.RelayLimits.ConnectionDuration = tc.duration
+			cfg.RelayLimits.ConnectionData = tc.data
+
+			got := NewServer(cfg, slog.New(slog.DiscardHandler)).buildForgeConfig().Host.RelayLimits
+
+			if got.UnlimitedConnections != tc.wantUnlimited {
+				t.Fatalf("UnlimitedConnections = %v, want %v", got.UnlimitedConnections, tc.wantUnlimited)
+			}
+			if tc.wantUnlimited {
+				return
+			}
+			if got.ConnectionDuration != tc.wantDuration || got.ConnectionData != tc.wantData {
+				t.Errorf("limit = %s / %d bytes, want %s / %d bytes",
+					got.ConnectionDuration, got.ConnectionData, tc.wantDuration, tc.wantData)
+			}
+		})
 	}
 }

@@ -614,6 +614,13 @@ other traffic. Behind a cone NAT the punch succeeds; a symmetric NAT defeats
 it and the connection stays on the relay. `test/nat/run.sh` checks this in the
 mailbox example's Docker setup.
 
+The relay does not cut a relayed connection: it carries it for as long, and as
+much, as the two peers want, and they see an ordinary connection rather than a
+limited one. An operator who wants to bound what one relayed connection may
+cost sets `relay_limits.connection_duration_sec` or
+`relay_limits.connection_data` (see `config.example.yaml`); go-libp2p's own
+defaults, 2 minutes and 128 KiB, are only enough to coordinate a hole punch.
+
 A server that is itself behind a NAT reaches the network through other relays;
 that is off by default and configured in the YAML file, with the relay
 candidates taken from the bootstrap peers:

@@ -510,8 +510,10 @@ func (s *Server) buildForgeConfig() *forge.Config {
 	cfg.Host.EnableHolePunching = s.config.EnableHolePunching
 	cfg.Host.EnableAutoNAT = s.config.EnableAutoNAT
 
-	// Relay limits
+	// Relay limits. A relayed connection is not cut unless the operator
+	// sets a duration or data limit.
 	rl := s.config.RelayLimits
+	duration, data, unlimited := rl.ConnectionLimit()
 	cfg.Host.RelayLimits = forgehost.RelayLimits{
 		MaxReservations:        rl.MaxReservations,
 		MaxCircuits:            rl.MaxCircuits,
@@ -520,8 +522,9 @@ func (s *Server) buildForgeConfig() *forge.Config {
 		MaxReservationsPerIP:   rl.MaxReservationsPerIP,
 		MaxReservationsPerASN:  rl.MaxReservationsPerASN,
 		ReservationTTL:         rl.ReservationTTL,
-		ConnectionDuration:     rl.ConnectionDuration,
-		ConnectionData:         rl.ConnectionData,
+		ConnectionDuration:     duration,
+		ConnectionData:         data,
+		UnlimitedConnections:   unlimited,
 	}
 
 	// Node

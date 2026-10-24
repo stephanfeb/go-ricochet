@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"net/url"
 	"os"
@@ -415,7 +416,9 @@ func (r RateLimits) EffectiveWindow() time.Duration {
 }
 
 // RelayLimits configures circuit relay v2 service resource limits.
-// Zero values mean "use go-libp2p defaults".
+// A zero MaxReservations, MaxCircuits, BufferSize, MaxReservationsPer* or
+// ReservationTTL means "use the go-libp2p default". ConnectionDuration and
+// ConnectionData are different: see ConnectionLimit.
 type RelayLimits struct {
 	MaxReservations        int           `json:"maxReservations"`
 	MaxCircuits            int           `json:"maxCircuits"`
@@ -426,6 +429,35 @@ type RelayLimits struct {
 	ReservationTTL         time.Duration `json:"reservationTTL"`
 	ConnectionDuration     time.Duration `json:"connectionDuration"`
 	ConnectionData         int64         `json:"connectionData"`
+}
+
+// relayDurationCeiling and relayDataCeiling stand in for "no limit" on the
+// one of duration and data an operator leaves unset while setting the
+// other: go-libp2p limits a relayed connection on both or on neither, and a
+// zero on either would cut it at once. The relay reports the duration in
+// seconds as a uint32.
+const (
+	relayDurationCeiling = time.Duration(math.MaxUint32) * time.Second
+	relayDataCeiling     = math.MaxInt64
+)
+
+// ConnectionLimit returns how long, and how many bytes in each direction, a
+// relayed connection is carried before the relay cuts it. With neither
+// ConnectionDuration nor ConnectionData set, unlimited is true: the relay
+// carries a connection for as long and as much as the two peers want. Each
+// one an operator sets limits that axis alone.
+func (r RelayLimits) ConnectionLimit() (duration time.Duration, data int64, unlimited bool) {
+	if r.ConnectionDuration <= 0 && r.ConnectionData <= 0 {
+		return 0, 0, true
+	}
+	duration, data = r.ConnectionDuration, r.ConnectionData
+	if duration <= 0 {
+		duration = relayDurationCeiling
+	}
+	if data <= 0 {
+		data = relayDataCeiling
+	}
+	return duration, data, false
 }
 
 // StorageBackendConfig configures the storage backend.

@@ -4,14 +4,18 @@
 //	probe listen          reserve a relay slot, print this peer's ID, accept streams
 //	probe punch <peer>    connect to peer through the relay; exit 0 once a
 //	                      hole punch gives a direct connection
+//	probe bulk <peer>     send 1 MiB to peer through the relay, without
+//	                      hole punching; exit 0 once peer confirms every byte
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -31,11 +35,14 @@ import (
 const (
 	protocolID = "/ricochet-nat-probe/1.0.0"
 	punchWait  = 30 * time.Second
+	// bulkSize is eight times the 128 KiB a go-libp2p relay carries by
+	// default before it cuts the connection.
+	bulkSize = 1 << 20
 )
 
 func main() {
 	if len(os.Args) < 2 {
-		fail(fmt.Errorf("usage: probe listen | punch <peer>"))
+		fail(fmt.Errorf("usage: probe listen | punch <peer> | bulk <peer>"))
 	}
 	raw, err := os.ReadFile("/shared/server.addr")
 	if err != nil {
@@ -47,7 +54,7 @@ func main() {
 		fail(err)
 	}
 
-	h, err := newHost()
+	h, err := newHost(os.Args[1] != "bulk")
 	if err != nil {
 		fail(err)
 	}
@@ -65,19 +72,24 @@ func main() {
 		if !waitForDirect(h, target) {
 			fail(fmt.Errorf("no direct connection %s after the relayed one", punchWait))
 		}
+	case "bulk":
+		target := targetArg()
+		connectThroughRelay(ctx, h, serverAddr, target)
+		bulk(ctx, h, target)
 	default:
 		fail(fmt.Errorf("unknown command %q", os.Args[1]))
 	}
 }
 
-// newHost speaks what a Ricochet server speaks, with the relay client and
-// go-libp2p's hole puncher on, as a mobile client would have them.
-func newHost() (host.Host, error) {
+// newHost speaks what a Ricochet server speaks, with the relay client and,
+// when punch is set, go-libp2p's hole puncher on, as a mobile client would
+// have them. Without the hole puncher a connection stays on the relay.
+func newHost(punch bool) (host.Host, error) {
 	priv, _, err := crypto.GenerateEd25519Key(rand.Reader)
 	if err != nil {
 		return nil, err
 	}
-	return libp2p.New(
+	opts := []libp2p.Option{
 		libp2p.Identity(priv),
 		libp2p.NoTransports,
 		libp2p.Transport(udxtransport.NewTransport),
@@ -85,8 +97,11 @@ func newHost() (host.Host, error) {
 		libp2p.Security(noise.ID, noise.New),
 		libp2p.Muxer("/yamux/1.0.0", yamux.DefaultTransport),
 		libp2p.EnableRelay(),
-		libp2p.EnableHolePunching(holepunch.WithTracer(tracer{})),
-	)
+	}
+	if punch {
+		opts = append(opts, libp2p.EnableHolePunching(holepunch.WithTracer(tracer{})))
+	}
+	return libp2p.New(opts...)
 }
 
 func listen(ctx context.Context, h host.Host, server peer.AddrInfo) {
@@ -143,6 +158,34 @@ func waitForDirect(h host.Host, target peer.ID) bool {
 		time.Sleep(250 * time.Millisecond)
 	}
 	return false
+}
+
+// bulk sends bulkSize bytes over the relayed connection and fails unless
+// the listener reports receiving all of them.
+func bulk(ctx context.Context, h host.Host, target peer.ID) {
+	s, err := h.NewStream(network.WithAllowLimitedConn(ctx, "probe"), target, protocolID)
+	if err != nil {
+		fail(fmt.Errorf("open stream: %w", err))
+	}
+	if _, err := s.Conn().RemoteMultiaddr().ValueForProtocol(ma.P_CIRCUIT); err != nil {
+		fail(fmt.Errorf("stream is not on the relay: %s", s.Conn().RemoteMultiaddr()))
+	}
+	start := time.Now()
+	if _, err := io.Copy(s, io.LimitReader(rand.Reader, bulkSize)); err != nil {
+		fail(fmt.Errorf("relay cut the stream while sending: %w", err))
+	}
+	if err := s.CloseWrite(); err != nil {
+		fail(err)
+	}
+	reply, err := io.ReadAll(s)
+	if err != nil {
+		fail(fmt.Errorf("relay cut the stream before the listener replied: %w", err))
+	}
+	got, err := strconv.Atoi(string(bytes.TrimSpace(reply)))
+	if err != nil || got != bulkSize {
+		fail(fmt.Errorf("listener received %q bytes, want %d", reply, bulkSize))
+	}
+	logf("relay carried %d bytes in %s", got, time.Since(start).Round(100*time.Millisecond))
 }
 
 type tracer struct{}
