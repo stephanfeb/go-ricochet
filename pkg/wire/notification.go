@@ -5,9 +5,14 @@ import "encoding/json"
 // Notification is a push notification that a mailbox has new messages. The
 // server sends one over the notify protocol and publishes one on the
 // mailbox's GossipSub topic.
+//
+// MailboxPath is the folder alone; OwnerPeerID says whose mailbox it is, so
+// a client subscribed to several owners' shared or public mailboxes can
+// tell two folders of the same name apart. Timestamp is Unix seconds.
 type Notification struct {
 	MailboxPath  string `json:"mailboxPath"`
 	MailboxType  string `json:"mailboxType"`
+	OwnerPeerID  string `json:"ownerPeerId"`
 	MessageCount int    `json:"messageCount"`
 	Timestamp    int64  `json:"timestamp"`
 	ServerPeerID string `json:"serverPeerId"`

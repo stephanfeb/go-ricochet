@@ -14,6 +14,8 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/core/peerstore"
 
+	"github.com/stephanfeb/go-p2p-forge/codec"
+
 	"github.com/stephanfeb/go-ricochet/internal/core"
 	"github.com/stephanfeb/go-ricochet/internal/presence"
 	"github.com/stephanfeb/go-ricochet/internal/protocol/notify"
@@ -81,5 +83,41 @@ func TestNotifierSkipsOfflineRecipient(t *testing.T) {
 	}
 	if got := received.Load(); got != 1 {
 		t.Fatalf("online recipient received %d notifications, want 1", got)
+	}
+}
+
+// N23: a notification names the mailbox's owner as well as its folder, so a
+// client following several owners' mailboxes can tell which one changed.
+func TestNotificationNamesTheOwner(t *testing.T) {
+	server := newTestHost(t)
+	client := newTestHost(t)
+	server.Peerstore().AddAddrs(client.ID(), client.Addrs(), peerstore.PermanentAddrTTL)
+
+	got := make(chan *notify.Notification, 1)
+	client.SetStreamHandler(notify.ProtocolID, func(s network.Stream) {
+		defer s.Close()
+		data, err := codec.ReadFrame(s)
+		if err != nil {
+			t.Errorf("read notification: %v", err)
+			return
+		}
+		n, err := notify.DecodeNotification(data)
+		if err != nil {
+			t.Errorf("decode notification: %v", err)
+			return
+		}
+		got <- n
+	})
+
+	addr := &core.MailboxAddress{OwnerID: client.ID(), Type: core.MailboxPrivate, FolderPath: "inbox"}
+	NewNotifier(server, nil, nil, quietLogger()).NotifyNewMessage(context.Background(), addr, &core.Message{MessageID: "m1"})
+
+	select {
+	case n := <-got:
+		if n.OwnerPeerID != client.ID().String() || n.MailboxPath != "inbox" {
+			t.Errorf("notification = %+v, want owner %s and folder inbox", n, client.ID())
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("no notification arrived")
 	}
 }

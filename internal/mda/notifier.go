@@ -180,6 +180,7 @@ func (n *Notifier) NotifyNewMessage(ctx context.Context, addr *core.MailboxAddre
 	notification := &notify.Notification{
 		MailboxPath:  addr.FolderPath,
 		MailboxType:  addr.Type.String(),
+		OwnerPeerID:  addr.OwnerID.String(),
 		MessageCount: 1,
 		Timestamp:    time.Now().Unix(),
 		ServerPeerID: n.host.ID().String(),

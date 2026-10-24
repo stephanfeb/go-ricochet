@@ -313,8 +313,9 @@ _, err = cl.RestoreDocumentVersion(ctx, "config/settings", old.VersionNumber)
 
 ```go
 cl.RegisterNotificationHandler(func(n *wire.Notification) {
-    fmt.Printf("New message in %s (type: %s)\n",
-        n.MailboxPath, n.MailboxType)
+    // MailboxPath is the folder; OwnerPeerID says whose mailbox it is.
+    fmt.Printf("New message in %s/%s (type: %s)\n",
+        n.OwnerPeerID, n.MailboxPath, n.MailboxType)
 })
 ```
 
