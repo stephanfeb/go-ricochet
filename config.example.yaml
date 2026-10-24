@@ -207,7 +207,10 @@ features:
   enable_relay: true
   enable_relay_service: true
   enable_auto_relay: false          # use discovered public relays for our own reachability
-  enable_hole_punching: false       # DCUtR; needs relay to be reachable first
+  # DCUtR for connections relayed to this server, which happen only when it
+  # is behind a NAT and enable_auto_relay is on. Clients that meet through
+  # this server's relay hole punch without it.
+  enable_hole_punching: false
   enable_autonat: true
 
 # Operator HTTP surface

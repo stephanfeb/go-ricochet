@@ -12,7 +12,7 @@ go-ricochet is the Go implementation of the Ricochet protocol (module `github.co
 - **End-to-End Encryption** -- NaCl box encryption (X25519 + XSalsa20-Poly1305) derived from Ed25519 identity keys
 - **LZ4 Compression** -- Transparent payload compression with configurable threshold
 - **Push Notifications** -- Hybrid delivery: direct P2P streams for private mailboxes, GossipSub for shared/public
-- **Relay Support** -- Circuit Relay v2 service, on by default. AutoRelay through static relays and DCUtR hole punching are off by default and take their relay candidates from `bootstrap_peers`; see [NAT Traversal](#nat-traversal)
+- **Relay Support** -- Circuit Relay v2 service, on by default: clients behind NAT reach each other through it, and go direct by hole punching where their NATs allow. AutoRelay through static relays, and hole punching for the server's own connections, are off by default and take their relay candidates from `bootstrap_peers`; see [NAT Traversal](#nat-traversal)
 - **IMAP-Style Flags** -- Seen, flagged, deleted, draft flags with expunge support
 - **Presence Detection** -- Real-time peer online/offline status with TTL-based caching
 - **Service Discovery** -- GossipSub-based server announcements and heartbeats; a server whose self-check fails leaves the list at its next heartbeat, and one that goes silent drops out after two hours
@@ -606,15 +606,23 @@ The server runs a Kademlia DHT in server mode for peer routing. A peer enters th
 ### NAT Traversal
 
 The relay service is on by default, so a public server relays for the peers
-behind NATs. A server that is itself behind a NAT reaches the network through
-other relays; that is off by default and configured in the YAML file, with the
-relay candidates taken from the bootstrap peers:
+behind NATs. Two clients that cannot reach each other connect through it, and
+then try a hole punch (DCUtR) for a direct connection. Hole punching is the
+clients' to turn on (dart-libp2p has it on by default); the server needs no
+setting for it, since the relay carries the clients' coordination like any
+other traffic. Behind a cone NAT the punch succeeds; a symmetric NAT defeats
+it and the connection stays on the relay. `test/nat/run.sh` checks this in the
+mailbox example's Docker setup.
+
+A server that is itself behind a NAT reaches the network through other relays;
+that is off by default and configured in the YAML file, with the relay
+candidates taken from the bootstrap peers:
 
 ```yaml
 features:
   enable_relay: true           # Circuit Relay v2 (default)
   enable_auto_relay: true      # reserve slots on the static relays below
-  enable_hole_punching: true   # DCUtR: upgrade relayed connections to direct
+  enable_hole_punching: true   # DCUtR for connections relayed to this server
 server:
   bootstrap_peers:
     - /ip4/relay.example.com/udp/55223/udx/p2p/12D3KooW...

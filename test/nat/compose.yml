@@ -1,0 +1,30 @@
+# Layered over examples/mailbox/docker/compose.yml by run.sh: two probes,
+# each behind its own NAT router, in place of the mailbox clients.
+
+x-probe: &probe
+  image: ricochet-nat-probe
+  build:
+    context: ../../..
+    dockerfile: test/nat/probe.Dockerfile
+  cap_add: [NET_ADMIN]
+  init: true
+
+services:
+  listener:
+    <<: *probe
+    environment:
+      PUBLIC_NET: 11.70.0.0/16
+      NAT_GATEWAY: 192.168.2.10
+    volumes:
+      - shared:/shared:ro
+    networks: [home-b]
+    command: listen
+
+  dialer:
+    <<: *probe
+    environment:
+      PUBLIC_NET: 11.70.0.0/16
+      NAT_GATEWAY: 192.168.1.10
+    volumes:
+      - shared:/shared:ro
+    networks: [home-a]

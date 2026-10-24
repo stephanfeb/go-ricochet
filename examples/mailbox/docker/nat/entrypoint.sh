@@ -7,8 +7,8 @@
 #                     router). Hole punching works through it.
 # NAT_TYPE=symmetric  picks a random public port for every new destination,
 #                     so the port a peer learns from the relay is not the
-#                     one its punch uses: hole punching fails, and the chat
-#                     stays on the relay.
+#                     one its punch uses: hole punching fails, and the
+#                     connection stays on the relay.
 set -e
 
 # Docker does not fix the interface order, so find the internal interface
