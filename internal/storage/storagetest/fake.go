@@ -285,6 +285,25 @@ func (f *Fake) RetrieveMessages(_ context.Context, mailbox *storage.MailboxRecor
 	return out, nil
 }
 
+func (f *Fake) ClaimMessage(_ context.Context, mailboxID int64) (*core.Message, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	now := time.Now().UnixMilli()
+	var oldest *core.Message
+	for _, m := range f.messages[mailboxID] {
+		if m.ExpiryTimestamp > 0 && m.ExpiryTimestamp <= now {
+			continue
+		}
+		if oldest == nil || m.SequenceNumber < oldest.SequenceNumber {
+			oldest = m
+		}
+	}
+	if oldest != nil {
+		f.remove(mailboxID, func(m *core.Message) bool { return m == oldest })
+	}
+	return oldest, nil
+}
+
 // remove deletes messages matching keep==false and fixes the counters.
 func (f *Fake) remove(mailboxID int64, drop func(*core.Message) bool) int {
 	kept := f.messages[mailboxID][:0]

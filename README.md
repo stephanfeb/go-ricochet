@@ -46,7 +46,7 @@ The system follows an email-inspired agent separation:
 | Agent | Protocol ID | Purpose |
 |-------|------------|---------|
 | **MSA** (Mail Submission) | `/sf-network/submit/1.0.0` | Message submission (write path) |
-| **MAA** (Mail Access) | `/sf-network/access/1.0.0` | Message retrieval, flags, expunge |
+| **MAA** (Mail Access) | `/sf-network/access/1.0.0` | Message retrieval, flags, expunge, claim |
 | **MMA** (Mailbox Management) | `/sf-network/admin/1.0.0` | Mailbox lifecycle, ACLs, capacity |
 | **MSA** batch | `/sf-network/submit/batch/1.0.0` | Many submissions in one request |
 | **SDA** (Store-Document) | `/ricochet/store/doc/1.0.0` | Document CRUD operations |
@@ -360,7 +360,7 @@ request. Writes are the owner's alone, with one exception.
 
 | Store | Default | Readable by | Writable by |
 |-------|---------|-------------|-------------|
-| Mailboxes | private | Owner; shared mailboxes by the peers on their ACL; public mailboxes by anyone | Per mailbox type and ACL; see [doc/MAILBOX_LIFECYCLE_AND_ACLS.md](doc/MAILBOX_LIFECYCLE_AND_ACLS.md) |
+| Mailboxes | private | Owner; shared mailboxes by the peers on their ACL; public mailboxes by anyone; claim mailboxes are listed by the owner and claimed from by anyone, one message per claim | Per mailbox type and ACL (a claim mailbox: owner only); see [doc/MAILBOX_LIFECYCLE_AND_ACLS.md](doc/MAILBOX_LIFECYCLE_AND_ACLS.md) |
 | Documents (`GET`, `HEAD`, `LIST`, `HISTORY`) | private | Per document, every stored version with it | Owner only (`PUT`, `PATCH`, `DELETE`, `BATCH_PUT`, `ACCESS`, `RESTORE`) |
 | Feeds (`GET`, `LIST`, `BATCH_GET`) | public | Per feed, every entry with it | Owner only (`CREATE`, `DELETE`, `ACCESS`), except that any peer may `APPEND` to a feed its owner created as collaborative |
 | Collections (`GET`, `LIST`, `QUERY`) | private | Per collection, every item and query with it | Owner only (`CREATE`, `PUT`, `DELETE`, `ACCESS`) |

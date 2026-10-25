@@ -75,6 +75,11 @@ type Storage interface {
 	// their own record; a caller-facing path must use DeleteOwnedMessages.
 	DeleteMessages(ctx context.Context, messageIDs []string) error
 	GetMessageCount(ctx context.Context, mailboxID int64) (int, error)
+	// ClaimMessage deletes the oldest unexpired message of a mailbox and
+	// returns it, or nil when there is none. Concurrent claims never return
+	// the same message. Authorization is the caller's: only claim mailboxes
+	// may be claimed from.
+	ClaimMessage(ctx context.Context, mailboxID int64) (*core.Message, error)
 
 	// Caller-facing mutations. Each is scoped to mailboxes ownerID owns, in
 	// the statement itself, so a message ID that belongs to someone else is

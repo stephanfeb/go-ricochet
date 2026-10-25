@@ -116,6 +116,7 @@ type MailboxServer struct {
 	logger        *slog.Logger
 	notifier      *Notifier
 	defaults      MailboxDefaults
+	claims        claimLimiters
 }
 
 // SetNotifier sets the push notification sender for the MDA.
@@ -359,6 +360,8 @@ func (s *MailboxServer) wrapRecord(record *storage.MailboxRecord) (mailboxes.Mai
 		return mailboxes.NewSharedMailbox(record, s.Storage, s.logger), nil
 	case core.MailboxPublic:
 		return mailboxes.NewPublicMailbox(record, s.Storage, s.logger), nil
+	case core.MailboxClaim:
+		return mailboxes.NewClaimMailbox(record, s.Storage, s.logger), nil
 	default:
 		return nil, fmt.Errorf("unknown mailbox type: %d", record.Type)
 	}

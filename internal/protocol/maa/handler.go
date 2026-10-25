@@ -41,6 +41,7 @@ func NewPipeline(logger *slog.Logger, pool *codec.BufferPool, reg *forge.Registr
 		"updateFlags":    middleware.Chain(forge.JSONDeserialize[core.UpdateFlagsRequest](), handleUpdateFlags),
 		"expunge":        middleware.Chain(forge.JSONDeserialize[core.ExpungeRequest](), handleExpunge),
 		"deleteMessages": middleware.Chain(forge.JSONDeserialize[core.DeleteMessagesRequest](), handleDeleteMessages),
+		"claim":          middleware.Chain(forge.JSONDeserialize[core.ClaimRequest](), handleClaim),
 	}
 
 	return wire.Bounded(forge.NewPipeline(logger,
@@ -368,4 +369,43 @@ func handleDeleteMessages(sc *forge.StreamContext, next func()) {
 	sc.Response = ack
 
 	sc.Logger.Debug("deleted messages", "requested", len(req.MessageIDs), "deleted", deleted)
+}
+
+// handleClaim takes one message from a claim mailbox. The answer is the
+// retrieve response with no message or one, so a client decodes it as it
+// decodes a retrieve; hasMore is always false, since how many remain is the
+// owner's business.
+func handleClaim(sc *forge.StreamContext, next func()) {
+	req := sc.Request.(*core.ClaimRequest)
+	mailbox, _ := forge.ServiceFrom[*mda.MailboxServer](sc, "mda")
+
+	ownerPeerID, err := peer.Decode(req.PeerID)
+	if err != nil {
+		sc.Response = &ErrorResponse{Error: "invalid peer ID", Status: wire.StatusBadRequest}
+		return
+	}
+	addr, err := core.NewMailboxAddress(ownerPeerID, req.FolderPath, core.MailboxClaim)
+	if err != nil {
+		sc.Response = &ErrorResponse{Error: "invalid folder path", Status: wire.StatusBadRequest}
+		return
+	}
+
+	msg, err := mailbox.Claim(sc.Ctx, addr, sc.PeerID)
+	if err != nil {
+		sc.Logger.Warn("claim failed", "error", err)
+		sc.Err = err
+		return
+	}
+
+	var messages []*core.Message
+	if msg != nil {
+		messages = []*core.Message{msg}
+	}
+	compoundBytes, err := encodeCompoundRetrieveResponse(messages, false)
+	if err != nil {
+		sc.Logger.Error("failed to encode claim response", "error", err)
+		sc.Response = map[string]string{"error": "internal encoding error"}
+		return
+	}
+	sc.Response = rawResponse(compoundBytes)
 }

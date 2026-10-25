@@ -226,6 +226,36 @@ security section has the full table under "Who Can Read What".
 
 ---
 
+## Claim mailboxes — items handed out once each
+
+A **claim** mailbox (`mailboxType: "claim"`, added in v1.6.0) holds items its
+owner hands out one at a time, such as Signal one-time prekeys. Only the owner
+stores into it or retrieves from it. Any peer may send the MAA operation
+
+```json
+{"operationType": "claim", "peerId": "<owner>", "folderPath": "<folder>"}
+```
+
+which takes the oldest unexpired message and deletes it in one statement, so
+two claimers never get the same one. The answer is a retrieve response with one
+message, or none when the mailbox is empty; `hasMore` is always false. A claim
+on any other mailbox type is a 403, so a claim cannot delete a public
+mailbox's posts; a claim on a mailbox that does not exist is a 404.
+
+Peer IDs cost nothing, so the bound on claims is per mailbox, not per claimer:
+30 an hour by default. Past it a claim finds nothing, as if the owner had run
+out. The owner watches `messageCount` (`getMailboxInfo`) and stores more when it
+runs low.
+
+Create it before the first store, as for a shared mailbox (Gotcha 3): a
+delivery to a folder that does not exist creates a private mailbox. Do not give
+it a `retentionCount`: the rolling window would delete items nobody claimed.
+A server older than v1.6.0 refuses `mailboxType: "claim"` and answers the
+operation with 400 "unknown operation"; a client treats either as "no claim
+mailbox here".
+
+---
+
 ## A client-integration checklist (what we wish we'd had on day one)
 
 1. **Drain what you consume.** After applying a retrieved message, `deleteMessages`

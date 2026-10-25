@@ -392,6 +392,38 @@ func (s *PostgresStorage) DeleteOwnedMessages(ctx context.Context, ownerID peer.
 	return int(tag.RowsAffected()), nil
 }
 
+// ClaimMessage is one statement: the inner SELECT locks the row it picks and
+// skips rows another claim has locked, so two concurrent claims take two
+// different messages rather than one waiting and then finding it gone. The
+// delete trigger keeps the mailbox counters right.
+func (s *PostgresStorage) ClaimMessage(ctx context.Context, mailboxID int64) (*core.Message, error) {
+	rows, err := s.pool.Query(ctx, `
+		DELETE FROM stored_messages
+		WHERE id = (
+			SELECT id FROM stored_messages
+			WHERE mailbox_id = $1 AND expires_at > NOW()
+			ORDER BY sequence_number ASC
+			LIMIT 1
+			FOR UPDATE SKIP LOCKED)
+		RETURNING id, mailbox_id, sequence_number, message_id, recipient_peer_id,
+			   sender_peer_id, payload, priority, created_at, expires_at,
+			   hop_count, flags_bitmap, sf_flags, persistent, folder_path`,
+		mailboxID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("claim message: %w", err)
+	}
+	defer rows.Close()
+
+	var msg *core.Message
+	if rows.Next() {
+		if msg, err = scanMessage(rows); err != nil {
+			return nil, err
+		}
+	}
+	return msg, rows.Err()
+}
+
 // GetMessageCount reads the maintained counter, the same figure the cap check
 // uses, rather than counting rows.
 func (s *PostgresStorage) GetMessageCount(ctx context.Context, mailboxID int64) (int, error) {

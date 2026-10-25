@@ -272,6 +272,15 @@ type ExpungeAck struct {
 	ErrorMessage string `json:"errorMessage,omitempty"`
 }
 
+// ClaimRequest takes one message from a claim mailbox: the oldest unexpired
+// one, which is deleted as it is returned. The answer has the retrieve
+// response's shape, holding no message when none is left.
+type ClaimRequest struct {
+	OperationType string `json:"operationType"`
+	PeerID        string `json:"peerId"`
+	FolderPath    string `json:"folderPath"`
+}
+
 // DeleteMessagesRequest immediately deletes messages by ID.
 type DeleteMessagesRequest struct {
 	OperationType string   `json:"operationType"`

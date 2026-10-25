@@ -28,6 +28,7 @@ type (
 	ExpungeRequest        = wire.ExpungeRequest
 	ExpungeAck            = wire.ExpungeAck
 	DeleteMessagesRequest = wire.DeleteMessagesRequest
+	ClaimRequest          = wire.ClaimRequest
 	DeleteMessagesAck     = wire.DeleteMessagesAck
 	DocumentResponse      = wire.DocumentResponse
 	DocumentPutResponse   = wire.DocumentPutResponse
@@ -87,6 +88,7 @@ const (
 	MailboxPrivate = wire.MailboxPrivate
 	MailboxShared  = wire.MailboxShared
 	MailboxPublic  = wire.MailboxPublic
+	MailboxClaim   = wire.MailboxClaim
 
 	AccessReadOnly  = wire.AccessReadOnly
 	AccessWriteOnly = wire.AccessWriteOnly

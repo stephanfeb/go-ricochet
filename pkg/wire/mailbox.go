@@ -12,12 +12,18 @@ const (
 	MailboxPrivate MailboxType = 0
 	MailboxShared  MailboxType = 1
 	MailboxPublic  MailboxType = 2
+	// MailboxClaim holds items its owner hands out one at a time: only the
+	// owner stores or lists, and anyone may claim, which returns the oldest
+	// unexpired message and deletes it in the same step. Signal one-time
+	// prekeys live here, so that no two senders are given the same one.
+	MailboxClaim MailboxType = 3
 )
 
 var mailboxTypeNames = map[MailboxType]string{
 	MailboxPrivate: "private",
 	MailboxShared:  "shared",
 	MailboxPublic:  "public",
+	MailboxClaim:   "claim",
 }
 
 func (t MailboxType) String() string {
@@ -35,6 +41,8 @@ func MailboxTypeFromString(s string) (MailboxType, error) {
 		return MailboxShared, nil
 	case "public":
 		return MailboxPublic, nil
+	case "claim":
+		return MailboxClaim, nil
 	default:
 		return 0, fmt.Errorf("unknown MailboxType: %s", s)
 	}

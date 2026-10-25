@@ -181,3 +181,39 @@ func TestUnknownOperationIsTheClientsMistake(t *testing.T) {
 		t.Errorf("unknown operation: %+v, want 400", resp)
 	}
 }
+
+// A claim takes one message from a claim mailbox and deletes it; the answer
+// is a retrieve page of one, then of none once the mailbox is empty. A
+// public mailbox cannot be claimed from.
+func TestClaimTakesOneMessageFromAClaimMailbox(t *testing.T) {
+	env, call, owner, _ := setup(t)
+	claimer := protocoltest.PeerID(t)
+	addr := &core.MailboxAddress{OwnerID: owner, Type: core.MailboxClaim, FolderPath: "signal/otk"}
+	if err := env.MDA.CreateMailbox(t.Context(), addr, 100, 30, nil); err != nil {
+		t.Fatalf("create claim mailbox: %v", err)
+	}
+	env.Deliver(t, owner, owner, "signal/otk", []byte("key one"))
+	env.Deliver(t, owner, owner, "signal/otk", []byte("key two"))
+
+	req := core.ClaimRequest{OperationType: "claim", PeerID: owner.String(), FolderPath: "signal/otk"}
+	for _, want := range []string{"key one", "key two"} {
+		page := protocoltest.DecodeRetrieve(t, call(claimer, req))
+		if len(page.Messages) != 1 || string(page.Messages[0].Payload) != want || page.HasMore {
+			t.Fatalf("claim gave %d messages, want %q", len(page.Messages), want)
+		}
+	}
+	page := protocoltest.DecodeRetrieve(t, call(claimer, req))
+	if page.MessageCount != 0 || len(page.Messages) != 0 {
+		t.Fatalf("claim from an empty mailbox gave %d messages", page.MessageCount)
+	}
+
+	public := &core.MailboxAddress{OwnerID: owner, Type: core.MailboxPublic, FolderPath: "posts"}
+	if err := env.MDA.CreateMailbox(t.Context(), public, 100, 30, nil); err != nil {
+		t.Fatalf("create public mailbox: %v", err)
+	}
+	env.Deliver(t, owner, owner, "posts", []byte("a post"))
+	resp := protocoltest.Decode[maa.ErrorResponse](t, call(claimer, core.ClaimRequest{OperationType: "claim", PeerID: owner.String(), FolderPath: "posts"}))
+	if resp.Status != wire.StatusForbidden {
+		t.Fatalf("claim from a public mailbox: %+v, want 403", resp)
+	}
+}
